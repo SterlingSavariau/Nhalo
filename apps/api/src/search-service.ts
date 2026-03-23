@@ -1,4 +1,5 @@
 import { DEFAULT_RESULT_LIMIT } from "@nhalo/config";
+import { distanceMiles } from "@nhalo/providers";
 import { rankListings } from "@nhalo/scoring";
 import type {
   GeocoderProvider,
@@ -8,6 +9,7 @@ import type {
   MarketSnapshotRepository,
   RankedListing,
   SearchRepository,
+  SearchOriginMetadata,
   SearchResponse,
   SearchSuggestion,
   SearchWarning,
@@ -25,9 +27,38 @@ export interface SearchServiceDependencies {
   marketSnapshotRepository: MarketSnapshotRepository;
   metrics: MetricsCollector;
   getProviderFreshnessHours(): Promise<{
+    geocoder: number | null;
     listings: number | null;
     safety: number | null;
   }>;
+}
+
+function buildSearchOriginMetadata(resolvedLocation: {
+  locationType: SearchOriginMetadata["locationType"];
+  locationValue: string;
+  formattedAddress?: string | null;
+  latitude?: number;
+  longitude?: number;
+  precision?: SearchOriginMetadata["precision"];
+  geocodeDataSource?: SearchOriginMetadata["geocodeDataSource"];
+  provider?: string | null;
+  fetchedAt?: string | null;
+  rawGeocodeInputs?: SearchOriginMetadata["rawGeocodeInputs"];
+  normalizedGeocodeInputs?: SearchOriginMetadata["normalizedGeocodeInputs"];
+}): SearchOriginMetadata {
+  return {
+    locationType: resolvedLocation.locationType,
+    locationValue: resolvedLocation.locationValue,
+    resolvedFormattedAddress: resolvedLocation.formattedAddress ?? null,
+    latitude: resolvedLocation.latitude ?? null,
+    longitude: resolvedLocation.longitude ?? null,
+    precision: resolvedLocation.precision ?? "none",
+    geocodeDataSource: resolvedLocation.geocodeDataSource ?? "none",
+    geocodeProvider: resolvedLocation.provider ?? null,
+    geocodeFetchedAt: resolvedLocation.fetchedAt ?? null,
+    rawGeocodeInputs: resolvedLocation.rawGeocodeInputs ?? null,
+    normalizedGeocodeInputs: resolvedLocation.normalizedGeocodeInputs ?? null
+  };
 }
 
 function applyHardFilters(
@@ -122,7 +153,7 @@ function buildSuggestions(request: SearchRequestInput, totalMatched: number): Se
   return suggestions;
 }
 
-function mapRankedHome(ranked: RankedListing) {
+function mapRankedHome(ranked: RankedListing, distanceByPropertyId: Map<string, number>) {
   return {
     id: ranked.listing.id,
     address: ranked.listing.address,
@@ -140,6 +171,8 @@ function mapRankedHome(ranked: RankedListing) {
     listingProvider: ranked.listing.sourceProvider,
     sourceListingId: ranked.listing.sourceListingId,
     listingFetchedAt: ranked.listing.fetchedAt,
+    distanceMiles: Number((distanceByPropertyId.get(ranked.listing.id) ?? 0).toFixed(2)),
+    insideRequestedRadius: true,
     neighborhoodSafetyScore: ranked.scores.safety,
     explanation: ranked.explanation,
     scores: ranked.scores
@@ -201,8 +234,21 @@ export async function runSearch(
   );
 
   if (!resolvedLocation) {
+    const issue = dependencies.geocoder.getLastResolutionIssue?.();
+    if (issue) {
+      const statusCode =
+        issue.code === "AMBIGUOUS_ADDRESS"
+          ? 409
+          : issue.code === "INVALID_ZIP" ||
+              issue.code === "INVALID_LOCATION" ||
+              issue.code === "MALFORMED_GEOCODER_RESPONSE"
+            ? 400
+            : 404;
+      throw new ApiError(statusCode, issue.code, issue.message, issue.details);
+    }
     throw new ApiError(404, "LOCATION_NOT_FOUND", "Location is not available from the current provider set.");
   }
+  const searchOrigin = buildSearchOriginMetadata(resolvedLocation);
 
   const candidates = await dependencies.listingProvider.fetchListings({
     center: resolvedLocation.center,
@@ -210,25 +256,32 @@ export async function runSearch(
     location: resolvedLocation,
     propertyTypes: request.propertyTypes
   });
+  const distanceByPropertyId = new Map(
+    candidates.map((listing) => [listing.id, distanceMiles(resolvedLocation.center, listing.coordinates)])
+  );
+  const radiusCandidates = candidates.filter(
+    (listing) => (distanceByPropertyId.get(listing.id) ?? Number.POSITIVE_INFINITY) <= request.radiusMiles
+  );
   const marketSnapshot = await resolveMarketSnapshot(
     request,
-    candidates,
+    radiusCandidates,
     dependencies.marketSnapshotRepository
   );
-  const safetyByPropertyId = await dependencies.safetyProvider.fetchSafetyData(candidates);
+  const safetyByPropertyId = await dependencies.safetyProvider.fetchSafetyData(radiusCandidates);
   const providerFreshnessHours = await dependencies.getProviderFreshnessHours();
-  const matchedListings = applyHardFilters(candidates, request);
+  const matchedListings = applyHardFilters(radiusCandidates, request);
   const rankedListings = rankListings(matchedListings, {
     budget: request.budget,
-    comparableListings: candidates,
+    comparableListings: radiusCandidates,
     marketSnapshot,
     minBedrooms: request.minBedrooms,
     minSqft: request.minSqft,
     providerFreshnessHours,
     safetyByPropertyId,
-    weights: request.weights
+    weights: request.weights,
+    searchOrigin
   }).slice(0, DEFAULT_RESULT_LIMIT);
-  const homes = rankedListings.map(mapRankedHome);
+  const homes = rankedListings.map((ranked) => mapRankedHome(ranked, distanceByPropertyId));
   const warnings = [
     ...buildWarnings(matchedListings.length),
     ...buildReliabilityWarnings(homes)
@@ -247,13 +300,14 @@ export async function runSearch(
     },
     appliedWeights: request.weights,
     metadata: {
-      totalCandidatesScanned: candidates.length,
+      totalCandidatesScanned: radiusCandidates.length,
       totalMatched: matchedListings.length,
       returnedCount: rankedListings.length,
       durationMs: Date.now() - startedAt,
       warnings,
       suggestions: buildSuggestions(request, matchedListings.length),
-      rejectionSummary: dependencies.listingProvider.getLastRejectionSummary?.() ?? undefined
+      rejectionSummary: dependencies.listingProvider.getLastRejectionSummary?.() ?? undefined,
+      searchOrigin
     }
   };
 
@@ -269,7 +323,7 @@ export async function runSearch(
     request,
     response,
     resolvedLocation,
-    listings: candidates,
+    listings: radiusCandidates,
     marketSnapshot,
     scoredResults: rankedListings.map((ranked) => ({
       propertyId: ranked.listing.id,
@@ -304,6 +358,8 @@ export async function runSearch(
       listingFetchedAt: ranked.listing.fetchedAt ?? null,
       rawListingInputs: ranked.listing.rawListingInputs ?? null,
       normalizedListingInputs: ranked.listing.normalizedListingInputs ?? null,
+      distanceMiles: distanceByPropertyId.get(ranked.listing.id) ?? null,
+      insideRequestedRadius: true,
       inputs: {
         price: Number(ranked.scoreInputs.price ?? ranked.listing.price),
         squareFootage: Number(ranked.scoreInputs.squareFootage ?? ranked.listing.squareFootage),

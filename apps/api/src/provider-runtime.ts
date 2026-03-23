@@ -165,7 +165,7 @@ class MonitoredGeocoderProvider extends MonitoredProvider implements GeocoderPro
     this.name = provider.name;
   }
 
-  async geocode(locationType: "city" | "zip", locationValue: string): Promise<ResolvedLocation | null> {
+  async geocode(locationType: "city" | "zip" | "address", locationValue: string): Promise<ResolvedLocation | null> {
     const cacheKey = `${locationType}:${locationValue.trim().toLowerCase()}`;
     const startedAt = Date.now();
 
@@ -186,6 +186,10 @@ class MonitoredGeocoderProvider extends MonitoredProvider implements GeocoderPro
 
       return this.cache.get(cacheKey) ?? null;
     }
+  }
+
+  getLastResolutionIssue() {
+    return (this.provider as GeocoderProvider).getLastResolutionIssue?.() ?? null;
   }
 }
 
@@ -291,6 +295,7 @@ class MonitoredSafetyProvider extends MonitoredProvider implements SafetyProvide
 export interface RuntimeProviders extends ProviderBundle {
   getStatuses(): Promise<ProviderStatus[]>;
   getFreshnessHours(): Promise<{
+    geocoder: number | null;
     listings: number | null;
     safety: number | null;
   }>;
@@ -316,12 +321,14 @@ export function instrumentProviders(
       ]);
     },
     async getFreshnessHours() {
-      const [listingStatus, safetyStatus] = await Promise.all([
+      const [geocoderStatus, listingStatus, safetyStatus] = await Promise.all([
+        runtimeProviders.geocoder.getStatus(),
         runtimeProviders.listings.getStatus(),
         runtimeProviders.safety.getStatus()
       ]);
 
       return {
+        geocoder: geocoderStatus.dataAgeHours,
         listings: listingStatus.dataAgeHours,
         safety: safetyStatus.dataAgeHours
       };

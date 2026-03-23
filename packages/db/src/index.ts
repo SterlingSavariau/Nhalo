@@ -1,4 +1,6 @@
 import {
+  DEFAULT_GEOCODE_CACHE_TTL_HOURS,
+  DEFAULT_GEOCODE_STALE_TTL_HOURS,
   DEFAULT_LISTING_CACHE_TTL_HOURS,
   DEFAULT_LISTING_STALE_TTL_HOURS,
   DEFAULT_SAFETY_CACHE_TTL_HOURS,
@@ -6,6 +8,8 @@ import {
   MARKET_SNAPSHOT_FRESH_HOURS
 } from "@nhalo/config";
 import type {
+  GeocodeCacheRecord,
+  GeocodeCacheRepository,
   ListingCacheRecord,
   ListingCacheRepository,
   ListingRecord,
@@ -43,6 +47,8 @@ type StoredSnapshot = {
   createdAt: string;
   safetyProvenance: NonNullable<ScoreAuditRecord["safetyProvenance"]>;
   listingProvenance: NonNullable<ScoreAuditRecord["listingProvenance"]>;
+  searchOrigin?: ScoreAuditRecord["searchOrigin"];
+  spatialContext?: ScoreAuditRecord["spatialContext"];
 };
 
 function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
@@ -61,7 +67,9 @@ function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
     safetyConfidence: snapshot.safetyConfidence,
     overallConfidence: snapshot.overallConfidence,
     safetyProvenance: snapshot.safetyProvenance,
-    listingProvenance: snapshot.listingProvenance
+    listingProvenance: snapshot.listingProvenance,
+    searchOrigin: snapshot.searchOrigin,
+    spatialContext: snapshot.spatialContext
   };
 }
 
@@ -104,6 +112,12 @@ export class InMemorySearchRepository implements SearchRepository {
           listingFetchedAt: result.listingFetchedAt,
           rawListingInputs: result.rawListingInputs,
           normalizedListingInputs: result.normalizedListingInputs
+        },
+        searchOrigin: payload.response.metadata.searchOrigin,
+        spatialContext: {
+          distanceMiles: result.distanceMiles,
+          radiusMiles: payload.response.appliedFilters.radiusMiles,
+          insideRequestedRadius: result.insideRequestedRadius
         }
       });
     }
@@ -216,6 +230,44 @@ export class InMemoryListingCacheRepository implements ListingCacheRepository {
   }
 }
 
+export class InMemoryGeocodeCacheRepository implements GeocodeCacheRepository {
+  public readonly entries: GeocodeCacheRecord[] = [];
+
+  async save(entry: Omit<GeocodeCacheRecord, "id">): Promise<GeocodeCacheRecord> {
+    const record: GeocodeCacheRecord = {
+      ...entry,
+      id: createId("geocode-cache")
+    };
+
+    this.entries.push(record);
+
+    return record;
+  }
+
+  async getLatest(queryType: GeocodeCacheRecord["queryType"], queryValue: string): Promise<GeocodeCacheRecord | null> {
+    const normalizedValue = queryValue.trim().toLowerCase();
+    const record = [...this.entries]
+      .filter(
+        (entry) =>
+          entry.queryType === queryType && entry.queryValue.trim().toLowerCase() === normalizedValue
+      )
+      .sort((left, right) => right.fetchedAt.localeCompare(left.fetchedAt))[0];
+
+    return record ?? null;
+  }
+
+  isFresh(entry: GeocodeCacheRecord, ttlHours = DEFAULT_GEOCODE_CACHE_TTL_HOURS): boolean {
+    return ageHours(entry.fetchedAt) <= ttlHours;
+  }
+
+  isStaleUsable(
+    entry: GeocodeCacheRecord,
+    staleTtlHours = DEFAULT_GEOCODE_STALE_TTL_HOURS
+  ): boolean {
+    return ageHours(entry.fetchedAt) <= staleTtlHours;
+  }
+}
+
 type PrismaClientLike = {
   property: {
     upsert(args: Record<string, unknown>): Promise<unknown>;
@@ -239,10 +291,15 @@ type PrismaClientLike = {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   };
+  geocodeCache: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+  };
 };
 
 function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord {
-  const weights = ((record.searchRequest as { weights?: ScoreAuditRecord["weights"] }).weights ??
+  const searchRequest = (record.searchRequest as Record<string, unknown> | undefined) ?? {};
+  const weights = ((searchRequest as { weights?: ScoreAuditRecord["weights"] }).weights ??
     {
       price: 40,
       size: 30,
@@ -305,6 +362,35 @@ function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord
       rawListingInputs: (record.rawListingInputs as Record<string, unknown> | null) ?? null,
       normalizedListingInputs:
         (record.normalizedListingInputs as Record<string, unknown> | null) ?? null
+    },
+    searchOrigin: searchRequest.locationType
+      ? {
+          locationType: searchRequest.locationType as ScoreAuditRecord["searchOrigin"]["locationType"],
+          locationValue: (searchRequest.locationValue as string) ?? "",
+          resolvedFormattedAddress: (searchRequest.resolvedFormattedAddress as string | null) ?? null,
+          latitude: (searchRequest.originLatitude as number | null) ?? null,
+          longitude: (searchRequest.originLongitude as number | null) ?? null,
+          precision:
+            (searchRequest.originPrecision as ScoreAuditRecord["searchOrigin"]["precision"] | null) ??
+            "none",
+          geocodeDataSource:
+            (searchRequest.geocodeDataSource as ScoreAuditRecord["searchOrigin"]["geocodeDataSource"] | null) ??
+            "none",
+          geocodeProvider: (searchRequest.geocodeProvider as string | null) ?? null,
+          geocodeFetchedAt: searchRequest.geocodeFetchedAt
+            ? (searchRequest.geocodeFetchedAt as Date).toISOString()
+            : null,
+          rawGeocodeInputs:
+            (searchRequest.rawGeocodeInputs as Record<string, unknown> | Record<string, unknown>[] | null) ??
+            null,
+          normalizedGeocodeInputs:
+            (searchRequest.normalizedGeocodeInputs as Record<string, unknown> | null) ?? null
+        }
+      : undefined,
+    spatialContext: {
+      distanceMiles: (record.distanceMiles as number | null) ?? null,
+      radiusMiles: (searchRequest.radiusMiles as number | null | undefined) ?? null,
+      insideRequestedRadius: Boolean(record.insideRequestedRadius ?? true)
     }
   };
 }
@@ -322,6 +408,18 @@ export class PrismaSearchRepository implements SearchRepository {
         resolvedCity: payload.resolvedLocation.city,
         resolvedState: payload.resolvedLocation.state,
         resolvedPostalCode: payload.resolvedLocation.postalCode,
+        resolvedFormattedAddress: payload.response.metadata.searchOrigin?.resolvedFormattedAddress,
+        originLatitude: payload.response.metadata.searchOrigin?.latitude,
+        originLongitude: payload.response.metadata.searchOrigin?.longitude,
+        originPrecision: payload.response.metadata.searchOrigin?.precision,
+        geocodeProvider: payload.response.metadata.searchOrigin?.geocodeProvider,
+        geocodeDataSource: payload.response.metadata.searchOrigin?.geocodeDataSource,
+        geocodeFetchedAt: payload.response.metadata.searchOrigin?.geocodeFetchedAt
+          ? new Date(payload.response.metadata.searchOrigin.geocodeFetchedAt)
+          : null,
+        rawGeocodeInputs: payload.response.metadata.searchOrigin?.rawGeocodeInputs ?? null,
+        normalizedGeocodeInputs:
+          payload.response.metadata.searchOrigin?.normalizedGeocodeInputs ?? null,
         radiusMiles: payload.response.appliedFilters.radiusMiles,
         budget: payload.request.budget,
         filters: payload.response.appliedFilters,
@@ -367,6 +465,8 @@ export class PrismaSearchRepository implements SearchRepository {
           listingFetchedAt: result.listingFetchedAt ? new Date(result.listingFetchedAt) : null,
           rawListingInputs: result.rawListingInputs,
           normalizedListingInputs: result.normalizedListingInputs,
+          distanceMiles: result.distanceMiles,
+          insideRequestedRadius: result.insideRequestedRadius,
           scoreInputs: {
             ...result.inputs,
             ...result.scoreInputs
@@ -385,7 +485,19 @@ export class PrismaSearchRepository implements SearchRepository {
       include: {
         searchRequest: {
           select: {
-            weights: true
+            weights: true,
+            locationType: true,
+            locationValue: true,
+            resolvedFormattedAddress: true,
+            originLatitude: true,
+            originLongitude: true,
+            originPrecision: true,
+            geocodeProvider: true,
+            geocodeDataSource: true,
+            geocodeFetchedAt: true,
+            rawGeocodeInputs: true,
+            normalizedGeocodeInputs: true,
+            radiusMiles: true
           }
         }
       },
@@ -664,11 +776,108 @@ export class PrismaListingCacheRepository implements ListingCacheRepository {
   }
 }
 
+export class PrismaGeocodeCacheRepository implements GeocodeCacheRepository {
+  constructor(private readonly client: PrismaClientLike) {}
+
+  async save(entry: Omit<GeocodeCacheRecord, "id">): Promise<GeocodeCacheRecord> {
+    const record = await this.client.geocodeCache.create({
+      data: {
+        queryType: entry.queryType,
+        queryValue: entry.queryValue,
+        provider: entry.provider,
+        formattedAddress: entry.formattedAddress,
+        latitude: entry.latitude,
+        longitude: entry.longitude,
+        precision: entry.precision,
+        rawPayload: entry.rawPayload,
+        normalizedPayload: entry.normalizedPayload,
+        fetchedAt: new Date(entry.fetchedAt),
+        expiresAt: new Date(entry.expiresAt),
+        sourceType: entry.sourceType,
+        city: entry.city,
+        state: entry.state,
+        zip: entry.zip,
+        country: entry.country
+      }
+    });
+
+    return {
+      id: record.id as string,
+      queryType: record.queryType as GeocodeCacheRecord["queryType"],
+      queryValue: record.queryValue as string,
+      provider: record.provider as string,
+      formattedAddress: (record.formattedAddress as string | null) ?? null,
+      latitude: Number(record.latitude),
+      longitude: Number(record.longitude),
+      precision: record.precision as GeocodeCacheRecord["precision"],
+      rawPayload:
+        (record.rawPayload as Record<string, unknown> | Record<string, unknown>[] | null) ?? null,
+      normalizedPayload: (record.normalizedPayload as Record<string, unknown> | null) ?? null,
+      fetchedAt: (record.fetchedAt as Date).toISOString(),
+      expiresAt: (record.expiresAt as Date).toISOString(),
+      sourceType: record.sourceType as GeocodeCacheRecord["sourceType"],
+      city: (record.city as string | null) ?? null,
+      state: (record.state as string | null) ?? null,
+      zip: (record.zip as string | null) ?? null,
+      country: (record.country as string | null) ?? null
+    };
+  }
+
+  async getLatest(queryType: GeocodeCacheRecord["queryType"], queryValue: string): Promise<GeocodeCacheRecord | null> {
+    const record = await this.client.geocodeCache.findFirst({
+      where: {
+        queryType,
+        queryValue
+      },
+      orderBy: {
+        fetchedAt: "desc"
+      }
+    });
+
+    if (!record) {
+      return null;
+    }
+
+    return {
+      id: record.id as string,
+      queryType: record.queryType as GeocodeCacheRecord["queryType"],
+      queryValue: record.queryValue as string,
+      provider: record.provider as string,
+      formattedAddress: (record.formattedAddress as string | null) ?? null,
+      latitude: Number(record.latitude),
+      longitude: Number(record.longitude),
+      precision: record.precision as GeocodeCacheRecord["precision"],
+      rawPayload:
+        (record.rawPayload as Record<string, unknown> | Record<string, unknown>[] | null) ?? null,
+      normalizedPayload: (record.normalizedPayload as Record<string, unknown> | null) ?? null,
+      fetchedAt: (record.fetchedAt as Date).toISOString(),
+      expiresAt: (record.expiresAt as Date).toISOString(),
+      sourceType: record.sourceType as GeocodeCacheRecord["sourceType"],
+      city: (record.city as string | null) ?? null,
+      state: (record.state as string | null) ?? null,
+      zip: (record.zip as string | null) ?? null,
+      country: (record.country as string | null) ?? null
+    };
+  }
+
+  isFresh(entry: GeocodeCacheRecord, ttlHours = DEFAULT_GEOCODE_CACHE_TTL_HOURS): boolean {
+    return ageHours(entry.fetchedAt) <= ttlHours;
+  }
+
+  isStaleUsable(
+    entry: GeocodeCacheRecord,
+    staleTtlHours = DEFAULT_GEOCODE_STALE_TTL_HOURS
+  ): boolean {
+    return ageHours(entry.fetchedAt) <= staleTtlHours;
+  }
+}
+
 export interface PersistenceLayer {
   searchRepository: SearchRepository;
   marketSnapshotRepository: MarketSnapshotRepository;
   safetySignalCacheRepository: SafetySignalCacheRepository;
   listingCacheRepository: ListingCacheRepository;
+  geocodeCacheRepository: GeocodeCacheRepository;
 }
 
 export async function createPersistenceLayer(databaseUrl?: string): Promise<PersistenceLayer> {
@@ -677,7 +886,8 @@ export async function createPersistenceLayer(databaseUrl?: string): Promise<Pers
       searchRepository: new InMemorySearchRepository(),
       marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
       safetySignalCacheRepository: new InMemorySafetySignalCacheRepository(),
-      listingCacheRepository: new InMemoryListingCacheRepository()
+      listingCacheRepository: new InMemoryListingCacheRepository(),
+      geocodeCacheRepository: new InMemoryGeocodeCacheRepository()
     };
   }
 
@@ -695,14 +905,16 @@ export async function createPersistenceLayer(databaseUrl?: string): Promise<Pers
       searchRepository: new PrismaSearchRepository(client),
       marketSnapshotRepository: new PrismaMarketSnapshotRepository(client),
       safetySignalCacheRepository: new PrismaSafetySignalCacheRepository(client),
-      listingCacheRepository: new PrismaListingCacheRepository(client)
+      listingCacheRepository: new PrismaListingCacheRepository(client),
+      geocodeCacheRepository: new PrismaGeocodeCacheRepository(client)
     };
   } catch {
     return {
       searchRepository: new InMemorySearchRepository(),
       marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
       safetySignalCacheRepository: new InMemorySafetySignalCacheRepository(),
-      listingCacheRepository: new InMemoryListingCacheRepository()
+      listingCacheRepository: new InMemoryListingCacheRepository(),
+      geocodeCacheRepository: new InMemoryGeocodeCacheRepository()
     };
   }
 }

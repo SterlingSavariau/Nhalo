@@ -15,6 +15,7 @@ const baseContext = {
     createdAt: "2026-03-22T00:00:00.000Z"
   },
   providerFreshnessHours: {
+    geocoder: 1,
     listings: 1,
     safety: 1
   }
@@ -72,6 +73,7 @@ describe("rankListings", () => {
       comparableListings,
       safetyByPropertyId,
       providerFreshnessHours: {
+        geocoder: 1,
         listings: 1,
         safety: 1
       }

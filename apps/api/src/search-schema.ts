@@ -18,7 +18,7 @@ const budgetSchema = z
   });
 
 export const searchRequestSchema = z.object({
-  locationType: z.enum(["city", "zip"]),
+  locationType: z.enum(["city", "zip", "address"]),
   locationValue: z.string().trim().min(1, "locationValue is required"),
   radiusMiles: z.number().positive().max(50).default(DEFAULT_RADIUS_MILES),
   budget: budgetSchema,
@@ -44,6 +44,14 @@ export const searchRequestSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: "weights must be non-negative and sum to 100",
       path: ["weights"]
+    });
+  }
+
+  if (payload.locationType === "zip" && !/^\d{5}$/.test(payload.locationValue.trim())) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "locationValue must be a 5-digit ZIP code when locationType is zip",
+      path: ["locationValue"]
     });
   }
 });

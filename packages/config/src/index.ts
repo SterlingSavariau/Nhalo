@@ -1,4 +1,5 @@
 import type {
+  GeocoderProviderMode,
   ListingProviderMode,
   PropertyType,
   SafetyProviderMode,
@@ -15,6 +16,9 @@ export const DEFAULT_SAFETY_STALE_TTL_HOURS = 168;
 export const DEFAULT_LISTING_PROVIDER_MODE: ListingProviderMode = "hybrid";
 export const DEFAULT_LISTING_CACHE_TTL_HOURS = 24;
 export const DEFAULT_LISTING_STALE_TTL_HOURS = 72;
+export const DEFAULT_GEOCODER_PROVIDER_MODE: GeocoderProviderMode = "hybrid";
+export const DEFAULT_GEOCODE_CACHE_TTL_HOURS = 168;
+export const DEFAULT_GEOCODE_STALE_TTL_HOURS = 720;
 export const DEFAULT_WEIGHTS: SearchWeights = {
   price: 40,
   size: 30,
@@ -35,6 +39,7 @@ export interface AppConfig {
   databaseUrl?: string;
   safety: SafetyConfig;
   listings: ListingConfig;
+  geocoder: GeocoderConfig;
 }
 
 export interface ExternalProviderConfig {
@@ -53,6 +58,13 @@ export interface SafetyConfig {
 
 export interface ListingConfig {
   mode: ListingProviderMode;
+  cacheTtlHours: number;
+  staleTtlHours: number;
+  provider: ExternalProviderConfig;
+}
+
+export interface GeocoderConfig {
+  mode: GeocoderProviderMode;
   cacheTtlHours: number;
   staleTtlHours: number;
   provider: ExternalProviderConfig;
@@ -82,6 +94,14 @@ function parseListingMode(value: string | undefined): ListingProviderMode {
   }
 
   return DEFAULT_LISTING_PROVIDER_MODE;
+}
+
+function parseGeocoderMode(value: string | undefined): GeocoderProviderMode {
+  if (value === "mock" || value === "hybrid" || value === "live") {
+    return value;
+  }
+
+  return DEFAULT_GEOCODER_PROVIDER_MODE;
 }
 
 export function getSafetyConfig(): SafetyConfig {
@@ -135,13 +155,36 @@ export function getListingConfig(): ListingConfig {
   };
 }
 
+export function getGeocoderConfig(): GeocoderConfig {
+  const geocoderBaseUrl = process.env.GEOCODER_PROVIDER_BASE_URL?.trim();
+  const geocoderApiKey = process.env.GEOCODER_PROVIDER_API_KEY?.trim();
+
+  return {
+    mode: parseGeocoderMode(process.env.GEOCODER_PROVIDER_MODE),
+    cacheTtlHours: parsePositiveInteger(
+      process.env.GEOCODE_CACHE_TTL_HOURS,
+      DEFAULT_GEOCODE_CACHE_TTL_HOURS
+    ),
+    staleTtlHours: parsePositiveInteger(
+      process.env.GEOCODE_STALE_TTL_HOURS,
+      DEFAULT_GEOCODE_STALE_TTL_HOURS
+    ),
+    provider: {
+      baseUrl: geocoderBaseUrl,
+      apiKey: geocoderApiKey,
+      configured: Boolean(geocoderBaseUrl && geocoderApiKey)
+    }
+  };
+}
+
 export function getConfig(): AppConfig {
   return {
     port: Number(process.env.PORT ?? 3000),
     apiUrl: process.env.NHALO_API_URL ?? `http://localhost:${process.env.PORT ?? 3000}`,
     databaseUrl: process.env.DATABASE_URL,
     safety: getSafetyConfig(),
-    listings: getListingConfig()
+    listings: getListingConfig(),
+    geocoder: getGeocoderConfig()
   };
 }
 

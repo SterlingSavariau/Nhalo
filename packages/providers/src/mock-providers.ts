@@ -54,7 +54,8 @@ export class MockGeocoderProvider implements GeocoderProvider {
       latencyMs: 0,
       failureCount: 0,
       mode: "mock",
-      detail: "Mock geocoder covers seeded city and ZIP examples."
+      detail: "Mock geocoder covers seeded city, ZIP, and selected address examples.",
+      lastSourceUsed: "mock"
     };
   }
 }

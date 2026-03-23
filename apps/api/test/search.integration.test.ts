@@ -1,4 +1,5 @@
 import {
+  InMemoryGeocodeCacheRepository,
   InMemoryListingCacheRepository,
   InMemoryMarketSnapshotRepository,
   InMemorySafetySignalCacheRepository,
@@ -14,6 +15,7 @@ describe("POST /search", () => {
   const marketSnapshotRepository = new InMemoryMarketSnapshotRepository();
   const safetySignalCacheRepository = new InMemorySafetySignalCacheRepository();
   const listingCacheRepository = new InMemoryListingCacheRepository();
+  const geocodeCacheRepository = new InMemoryGeocodeCacheRepository();
   const providers = createMockProviders();
   let app: Awaited<ReturnType<typeof buildApp>>;
 
@@ -22,6 +24,7 @@ describe("POST /search", () => {
       marketSnapshotRepository,
       metrics: new MetricsCollector(),
       repository,
+      geocodeCacheRepository,
       listingCacheRepository,
       safetySignalCacheRepository,
       providers

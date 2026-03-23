@@ -1,4 +1,5 @@
 import {
+  InMemoryGeocodeCacheRepository,
   InMemoryListingCacheRepository,
   InMemoryMarketSnapshotRepository,
   InMemorySafetySignalCacheRepository,
@@ -25,6 +26,7 @@ describe("reliability infrastructure", () => {
       marketSnapshotRepository,
       metrics,
       repository,
+      geocodeCacheRepository: new InMemoryGeocodeCacheRepository(),
       listingCacheRepository: new InMemoryListingCacheRepository(),
       safetySignalCacheRepository: new InMemorySafetySignalCacheRepository(),
       providers: {

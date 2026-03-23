@@ -288,34 +288,50 @@ function calculateOverallConfidence(
   freshnessHours: number | null,
   safetyRecord: SafetyRecord | undefined,
   listing: ListingRecord,
-  listingFreshnessHours: number | null
+  listingFreshnessHours: number | null,
+  searchOrigin: RankingContext["searchOrigin"],
+  geocoderFreshnessHours: number | null
 ): SafetyConfidence {
   const source = safetyRecord ? safetyRecord.safetyDataSource ?? "live" : "none";
   const listingSource = listing.listingDataSource ?? "live";
+  const geocodeSource = searchOrigin?.geocodeDataSource ?? "live";
+  const geocodePrecision = searchOrigin?.precision ?? "rooftop";
 
   if (safetyConfidence === "none" || dataCompleteness === 0 || source === "none") {
     return "none";
   }
 
-  if (listingSource === "none") {
+  if (listingSource === "none" || geocodeSource === "none" || geocodePrecision === "none") {
     return "none";
   }
 
   const providerFresh = freshnessHours === null || freshnessHours <= 24;
   const listingFresh = listingFreshnessHours === null || listingFreshnessHours <= 24;
+  const geocodeFresh = geocoderFreshnessHours === null || geocoderFreshnessHours <= 24;
   if (
     source === "stale_cached_live" ||
     source === "mock" ||
-    listingSource === "stale_cached_live"
+    listingSource === "stale_cached_live" ||
+    geocodeSource === "mock" ||
+    geocodeSource === "stale_cached_live" ||
+    geocodePrecision === "mock" ||
+    geocodePrecision === "approximate" ||
+    geocodePrecision === "centroid"
   ) {
     return "low";
   }
 
-  if (safetyConfidence === "high" && providerFresh && listingFresh) {
+  if (geocodePrecision === "range_interpolated") {
+    return safetyConfidence === "high" && providerFresh && listingFresh && geocodeFresh
+      ? "medium"
+      : "low";
+  }
+
+  if (safetyConfidence === "high" && providerFresh && listingFresh && geocodeFresh) {
     return "high";
   }
 
-  if (safetyConfidence === "medium" && providerFresh && listingFresh) {
+  if (safetyConfidence === "medium" && providerFresh && listingFresh && geocodeFresh) {
     return "medium";
   }
 
@@ -397,7 +413,9 @@ export function rankListings(listings: ListingRecord[], context: RankingContext)
         context.providerFreshnessHours.safety,
         safetyRecord,
         listing,
-        context.providerFreshnessHours.listings
+        context.providerFreshnessHours.listings,
+        context.searchOrigin,
+        context.providerFreshnessHours.geocoder
       );
       const auditInputs = createAuditInputs(
         listing,
@@ -425,7 +443,8 @@ export function rankListings(listings: ListingRecord[], context: RankingContext)
           safetyDataSource: safetyRecord?.safetyDataSource ?? "none",
           rawSafetyInputs: safetyRecord?.rawSafetyInputs ?? null,
           normalizedSafetyInputs: safetyRecord?.normalizedSafetyInputs ?? null,
-          listingDataSource: listing.listingDataSource ?? "none"
+          listingDataSource: listing.listingDataSource ?? "none",
+          searchOrigin: context.searchOrigin ?? null
         },
         scores: {
           price: price.score,

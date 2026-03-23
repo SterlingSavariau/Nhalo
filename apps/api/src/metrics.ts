@@ -65,6 +65,22 @@ export class MetricsCollector {
     totalProcessed: 0
   };
   private readonly listingResultsReturned = createSeries();
+  private readonly geocodeResolution = {
+    cacheHits: 0,
+    cacheMisses: 0,
+    liveFetches: 0,
+    total: 0,
+    fallbacks: 0,
+    ambiguities: 0
+  };
+  private readonly geocodePrecisionDistribution = {
+    rooftop: 0,
+    range_interpolated: 0,
+    approximate: 0,
+    centroid: 0,
+    mock: 0,
+    none: 0
+  };
 
   recordSearch(payload: {
     durationMs: number;
@@ -126,6 +142,32 @@ export class MetricsCollector {
 
   recordListingResultsReturned(count: number): void {
     recordSeries(this.listingResultsReturned, count);
+  }
+
+  recordGeocodeResolution(payload: {
+    source: "live" | "cached_live" | "stale_cached_live" | "mock" | "none";
+    cacheHit: boolean;
+    liveFetch: boolean;
+    fallback: boolean;
+    ambiguous: boolean;
+    precision: keyof MetricsCollector["geocodePrecisionDistribution"];
+  }): void {
+    this.geocodeResolution.total += 1;
+    if (payload.cacheHit) {
+      this.geocodeResolution.cacheHits += 1;
+    } else {
+      this.geocodeResolution.cacheMisses += 1;
+    }
+    if (payload.liveFetch) {
+      this.geocodeResolution.liveFetches += 1;
+    }
+    if (payload.fallback) {
+      this.geocodeResolution.fallbacks += 1;
+    }
+    if (payload.ambiguous) {
+      this.geocodeResolution.ambiguities += 1;
+    }
+    this.geocodePrecisionDistribution[payload.precision] += 1;
   }
 
   recordSafetyResolution(payload: {
@@ -295,6 +337,48 @@ export class MetricsCollector {
         total: this.listingResultsReturned.total,
         average: average(this.listingResultsReturned),
         last: this.listingResultsReturned.last
+      },
+      geocoderLatencyMs: this.providerLatency("GeocodingSourceProvider"),
+      geocoderFailureRate: this.providerRate("GeocodingSourceProvider"),
+      geocodeCacheHitRate: {
+        hits: this.geocodeResolution.cacheHits,
+        misses: this.geocodeResolution.cacheMisses,
+        rate:
+          this.geocodeResolution.cacheHits + this.geocodeResolution.cacheMisses === 0
+            ? 0
+            : Number(
+                (
+                  this.geocodeResolution.cacheHits /
+                  (this.geocodeResolution.cacheHits + this.geocodeResolution.cacheMisses)
+                ).toFixed(4)
+              )
+      },
+      geocodeLiveFetchRate: {
+        liveFetches: this.geocodeResolution.liveFetches,
+        totalResolutions: this.geocodeResolution.total,
+        rate:
+          this.geocodeResolution.total === 0
+            ? 0
+            : Number((this.geocodeResolution.liveFetches / this.geocodeResolution.total).toFixed(4))
+      },
+      geocodeFallbackRate: {
+        fallbacks: this.geocodeResolution.fallbacks,
+        totalResolutions: this.geocodeResolution.total,
+        rate:
+          this.geocodeResolution.total === 0
+            ? 0
+            : Number((this.geocodeResolution.fallbacks / this.geocodeResolution.total).toFixed(4))
+      },
+      geocodeAmbiguityRate: {
+        ambiguous: this.geocodeResolution.ambiguities,
+        totalResolutions: this.geocodeResolution.total,
+        rate:
+          this.geocodeResolution.total === 0
+            ? 0
+            : Number((this.geocodeResolution.ambiguities / this.geocodeResolution.total).toFixed(4))
+      },
+      geocodePrecisionDistribution: {
+        ...this.geocodePrecisionDistribution
       },
       scoreDistribution: {
         count: this.scores.count,

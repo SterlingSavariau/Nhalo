@@ -1,4 +1,4 @@
-export type LocationType = "city" | "zip";
+export type LocationType = "city" | "zip" | "address";
 
 export type PropertyType =
   | "single_family"
@@ -20,9 +20,23 @@ export type ListingDataSource =
   | "stale_cached_live"
   | "mock"
   | "none";
+export type GeocodeDataSource =
+  | "live"
+  | "cached_live"
+  | "stale_cached_live"
+  | "mock"
+  | "none";
 export type SafetyProviderMode = "mock" | "hybrid" | "live";
 export type ListingProviderMode = "mock" | "hybrid" | "live";
+export type GeocoderProviderMode = "mock" | "hybrid" | "live";
 export type ListingStatus = "active" | "pending" | "sold" | "unknown";
+export type GeocodePrecision =
+  | "rooftop"
+  | "range_interpolated"
+  | "approximate"
+  | "centroid"
+  | "mock"
+  | "none";
 
 export interface SearchWeights {
   price: number;
@@ -53,12 +67,23 @@ export interface Coordinates {
 }
 
 export interface ResolvedLocation {
+  geocodeId: string;
   locationType: LocationType;
   locationValue: string;
+  formattedAddress?: string | null;
+  latitude: number;
+  longitude: number;
+  precision: GeocodePrecision;
   center: Coordinates;
   city?: string;
   state?: string;
   postalCode?: string;
+  country?: string;
+  provider?: string | null;
+  geocodeDataSource?: GeocodeDataSource;
+  fetchedAt?: string | null;
+  rawGeocodeInputs?: Record<string, unknown> | Record<string, unknown>[] | null;
+  normalizedGeocodeInputs?: Record<string, unknown> | null;
 }
 
 export interface ListingRecord {
@@ -202,6 +227,43 @@ export interface GeocoderProvider {
   readonly name: string;
   geocode(locationType: LocationType, locationValue: string): Promise<ResolvedLocation | null>;
   getStatus(): Promise<ProviderStatus>;
+  getLastResolutionIssue?(): GeocodeResolutionIssue | null;
+}
+
+export interface GeocodingSourceProvider {
+  readonly name: string;
+  fetchRawGeocode(locationType: LocationType, locationValue: string): Promise<unknown>;
+  getStatus(): Promise<ProviderStatus>;
+}
+
+export interface GeocodingNormalizationResult {
+  geocode: ResolvedLocation | null;
+  ambiguous: boolean;
+  rawPayload: Record<string, unknown> | Record<string, unknown>[] | null;
+  normalizedPayload: Record<string, unknown> | null;
+  issue?: GeocodeResolutionIssue | null;
+}
+
+export interface GeocodingNormalizationService {
+  normalize(
+    payload: unknown,
+    providerName: string,
+    locationType: LocationType,
+    locationValue: string,
+    fetchedAt: string,
+    sourceType: GeocodeDataSource
+  ): GeocodingNormalizationResult;
+}
+
+export interface GeocodeResolutionIssue {
+  code:
+    | "AMBIGUOUS_ADDRESS"
+    | "INVALID_LOCATION"
+    | "INVALID_ZIP"
+    | "MALFORMED_GEOCODER_RESPONSE"
+    | "LOCATION_NOT_FOUND";
+  message: string;
+  details?: Array<{ field?: string; message: string }>;
 }
 
 export interface ProviderStatus {
@@ -215,7 +277,7 @@ export interface ProviderStatus {
   mode: "mock" | "live";
   detail: string;
   children?: ProviderStatus[];
-  lastSourceUsed?: SafetyDataSource | ListingDataSource | null;
+  lastSourceUsed?: SafetyDataSource | ListingDataSource | GeocodeDataSource | null;
 }
 
 export interface AppliedFilters {
@@ -256,6 +318,8 @@ export interface ScoredHome {
   listingProvider?: string | null;
   sourceListingId?: string | null;
   listingFetchedAt?: string | null;
+  distanceMiles?: number;
+  insideRequestedRadius?: boolean;
   neighborhoodSafetyScore: number;
   explanation: string;
   scores: ScoreBreakdown;
@@ -279,6 +343,7 @@ export interface SearchMetadata {
   warnings: SearchWarning[];
   suggestions: SearchSuggestion[];
   rejectionSummary?: ListingRejectionSummary;
+  searchOrigin?: SearchOriginMetadata;
 }
 
 export interface SearchResponse {
@@ -316,6 +381,8 @@ export interface PersistedSearchResult {
   listingFetchedAt: string | null;
   rawListingInputs: Record<string, unknown> | null;
   normalizedListingInputs: Record<string, unknown> | null;
+  distanceMiles: number | null;
+  insideRequestedRadius: boolean;
 }
 
 export interface SearchPersistenceInput {
@@ -341,9 +408,11 @@ export interface RankingContext {
   safetyByPropertyId: Map<string, SafetyRecord>;
   marketSnapshot: MarketSnapshot;
   providerFreshnessHours: {
+    geocoder: number | null;
     listings: number | null;
     safety: number | null;
   };
+  searchOrigin?: SearchOriginMetadata;
 }
 
 export interface RankedListing {
@@ -420,6 +489,12 @@ export interface ScoreAuditRecord {
     listingFetchedAt: string | null;
     rawListingInputs: Record<string, unknown> | null;
     normalizedListingInputs: Record<string, unknown> | null;
+  };
+  searchOrigin?: SearchOriginMetadata;
+  spatialContext?: {
+    distanceMiles: number | null;
+    radiusMiles: number | null;
+    insideRequestedRadius: boolean;
   };
 }
 
@@ -519,6 +594,37 @@ export interface SearchMetrics {
     average: number;
     last: number | null;
   };
+  geocoderLatencyMs: {
+    count: number;
+    average: number;
+    last: number | null;
+  };
+  geocoderFailureRate: {
+    requests: number;
+    failures: number;
+    rate: number;
+  };
+  geocodeCacheHitRate: {
+    hits: number;
+    misses: number;
+    rate: number;
+  };
+  geocodeLiveFetchRate: {
+    liveFetches: number;
+    totalResolutions: number;
+    rate: number;
+  };
+  geocodeFallbackRate: {
+    fallbacks: number;
+    totalResolutions: number;
+    rate: number;
+  };
+  geocodeAmbiguityRate: {
+    ambiguous: number;
+    totalResolutions: number;
+    rate: number;
+  };
+  geocodePrecisionDistribution: Record<GeocodePrecision, number>;
   scoreDistribution: {
     count: number;
     average: number;
@@ -582,4 +688,45 @@ export interface ListingRejectionSummary {
   missingSquareFootage: number;
   unsupportedPropertyType: number;
   normalizationFailures: number;
+}
+
+export interface GeocodeCacheRecord {
+  id: string;
+  queryType: LocationType;
+  queryValue: string;
+  provider: string;
+  formattedAddress: string | null;
+  latitude: number;
+  longitude: number;
+  precision: GeocodePrecision;
+  rawPayload: Record<string, unknown> | Record<string, unknown>[] | null;
+  fetchedAt: string;
+  expiresAt: string;
+  sourceType: GeocodeDataSource;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  country?: string | null;
+  normalizedPayload?: Record<string, unknown> | null;
+}
+
+export interface GeocodeCacheRepository {
+  save(entry: Omit<GeocodeCacheRecord, "id">): Promise<GeocodeCacheRecord>;
+  getLatest(queryType: LocationType, queryValue: string): Promise<GeocodeCacheRecord | null>;
+  isFresh(entry: GeocodeCacheRecord, ttlHours?: number): boolean;
+  isStaleUsable(entry: GeocodeCacheRecord, staleTtlHours?: number): boolean;
+}
+
+export interface SearchOriginMetadata {
+  locationType: LocationType;
+  locationValue: string;
+  resolvedFormattedAddress: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  precision: GeocodePrecision;
+  geocodeDataSource: GeocodeDataSource;
+  geocodeProvider: string | null;
+  geocodeFetchedAt: string | null;
+  rawGeocodeInputs?: Record<string, unknown> | Record<string, unknown>[] | null;
+  normalizedGeocodeInputs?: Record<string, unknown> | null;
 }

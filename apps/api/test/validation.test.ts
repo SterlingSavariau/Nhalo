@@ -1,4 +1,5 @@
 import {
+  InMemoryGeocodeCacheRepository,
   InMemoryListingCacheRepository,
   InMemoryMarketSnapshotRepository,
   InMemorySafetySignalCacheRepository,
@@ -17,6 +18,7 @@ describe("validation errors", () => {
       marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
       metrics: new MetricsCollector(),
       repository: new InMemorySearchRepository(),
+      geocodeCacheRepository: new InMemoryGeocodeCacheRepository(),
       listingCacheRepository: new InMemoryListingCacheRepository(),
       safetySignalCacheRepository: new InMemorySafetySignalCacheRepository(),
       providers: createMockProviders()

@@ -3,6 +3,7 @@ import { getConfig } from "@nhalo/config";
 import { createPersistenceLayer } from "@nhalo/db";
 import { createMockProviders, createProviders } from "@nhalo/providers";
 import type {
+  GeocodeCacheRepository,
   ListingCacheRepository,
   MarketSnapshotRepository,
   ProviderStatus,
@@ -22,6 +23,7 @@ export interface AppDependencies {
   marketSnapshotRepository: MarketSnapshotRepository;
   safetySignalCacheRepository: SafetySignalCacheRepository;
   listingCacheRepository: ListingCacheRepository;
+  geocodeCacheRepository: GeocodeCacheRepository;
   providers: ReturnType<typeof createMockProviders>;
   metrics: MetricsCollector;
 }
@@ -45,18 +47,21 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     dependencies?.repository &&
     dependencies?.marketSnapshotRepository &&
     dependencies?.safetySignalCacheRepository &&
-    dependencies?.listingCacheRepository
+    dependencies?.listingCacheRepository &&
+    dependencies?.geocodeCacheRepository
       ? {
           searchRepository: dependencies.repository,
           marketSnapshotRepository: dependencies.marketSnapshotRepository,
           safetySignalCacheRepository: dependencies.safetySignalCacheRepository,
-          listingCacheRepository: dependencies.listingCacheRepository
+          listingCacheRepository: dependencies.listingCacheRepository,
+          geocodeCacheRepository: dependencies.geocodeCacheRepository
         }
       : await createPersistenceLayer(config.databaseUrl);
   const metrics = dependencies?.metrics ?? new MetricsCollector();
   const providers = instrumentProviders(
     dependencies?.providers ??
       createProviders({
+        geocodeCacheRepository: persistence.geocodeCacheRepository,
         listingCacheRepository: persistence.listingCacheRepository,
         safetySignalCacheRepository: persistence.safetySignalCacheRepository,
         metrics

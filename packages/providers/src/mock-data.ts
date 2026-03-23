@@ -73,55 +73,116 @@ function normalizeMockListing(seed: MockListingSeed): ListingRecord {
   };
 }
 
+function normalizeMockLocation(seed: {
+  locationType: ResolvedLocation["locationType"];
+  locationValue: string;
+  center: { lat: number; lng: number };
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+  formattedAddress?: string;
+}): ResolvedLocation {
+  return {
+    geocodeId: `${seed.locationType}:${seed.locationValue}`.toLowerCase(),
+    locationType: seed.locationType,
+    locationValue: seed.locationValue,
+    formattedAddress: seed.formattedAddress ?? seed.locationValue,
+    latitude: seed.center.lat,
+    longitude: seed.center.lng,
+    precision: seed.locationType === "address" ? "mock" : "centroid",
+    center: seed.center,
+    city: seed.city,
+    state: seed.state,
+    postalCode: seed.postalCode,
+    country: seed.country ?? "US",
+    provider: "mock-geocoder",
+    geocodeDataSource: "mock",
+    fetchedAt: now,
+    rawGeocodeInputs: {
+      locationType: seed.locationType,
+      locationValue: seed.locationValue
+    },
+    normalizedGeocodeInputs: {
+      formattedAddress: seed.formattedAddress ?? seed.locationValue,
+      latitude: seed.center.lat,
+      longitude: seed.center.lng,
+      precision: seed.locationType === "address" ? "mock" : "centroid",
+      city: seed.city ?? null,
+      state: seed.state ?? null,
+      zip: seed.postalCode ?? null,
+      country: seed.country ?? "US"
+    }
+  };
+}
+
 export const MOCK_LOCATIONS: Record<string, ResolvedLocation> = {
-  "city:southfield, mi": {
+  "city:southfield, mi": normalizeMockLocation({
     locationType: "city",
     locationValue: "Southfield, MI",
     center: { lat: 42.4734, lng: -83.2219 },
     city: "Southfield",
     state: "MI",
     postalCode: "48075"
-  },
-  "city:royal oak, mi": {
+  }),
+  "city:royal oak, mi": normalizeMockLocation({
     locationType: "city",
     locationValue: "Royal Oak, MI",
     center: { lat: 42.4895, lng: -83.1446 },
     city: "Royal Oak",
     state: "MI",
     postalCode: "48067"
-  },
-  "city:novi, mi": {
+  }),
+  "city:novi, mi": normalizeMockLocation({
     locationType: "city",
     locationValue: "Novi, MI",
     center: { lat: 42.4806, lng: -83.4755 },
     city: "Novi",
     state: "MI",
     postalCode: "48375"
-  },
-  "city:austin, tx": {
+  }),
+  "city:austin, tx": normalizeMockLocation({
     locationType: "city",
     locationValue: "Austin, TX",
     center: { lat: 30.2672, lng: -97.7431 },
     city: "Austin",
     state: "TX",
     postalCode: "78701"
-  },
-  "zip:48075": {
+  }),
+  "zip:48075": normalizeMockLocation({
     locationType: "zip",
     locationValue: "48075",
     center: { lat: 42.4841, lng: -83.2542 },
     city: "Southfield",
     state: "MI",
     postalCode: "48075"
-  },
-  "zip:78704": {
+  }),
+  "zip:78704": normalizeMockLocation({
     locationType: "zip",
     locationValue: "78704",
     center: { lat: 30.2444, lng: -97.7659 },
     city: "Austin",
     state: "TX",
     postalCode: "78704"
-  }
+  }),
+  "address:28510 pierce st, southfield, mi 48076": normalizeMockLocation({
+    locationType: "address",
+    locationValue: "28510 Pierce St, Southfield, MI 48076",
+    formattedAddress: "28510 Pierce St, Southfield, MI 48076, USA",
+    center: { lat: 42.5004, lng: -83.2208 },
+    city: "Southfield",
+    state: "MI",
+    postalCode: "48076"
+  }),
+  "address:22841 bell rd, southfield, mi 48034": normalizeMockLocation({
+    locationType: "address",
+    locationValue: "22841 Bell Rd, Southfield, MI 48034",
+    formattedAddress: "22841 Bell Rd, Southfield, MI 48034, USA",
+    center: { lat: 42.4645, lng: -83.2651 },
+    city: "Southfield",
+    state: "MI",
+    postalCode: "48034"
+  })
 };
 
 const RAW_MOCK_LISTINGS: MockListingSeed[] = [

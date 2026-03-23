@@ -36,6 +36,15 @@ model SearchRequest {
   resolvedCity          String?
   resolvedState         String?
   resolvedPostalCode    String?
+  resolvedFormattedAddress String?
+  originLatitude        Float?
+  originLongitude       Float?
+  originPrecision       String?
+  geocodeProvider       String?
+  geocodeDataSource     String?         @default("none")
+  geocodeFetchedAt      DateTime?
+  rawGeocodeInputs      Json?
+  normalizedGeocodeInputs Json?
   radiusMiles           Float
   budget                Json?
   filters               Json
@@ -81,6 +90,8 @@ model ScoreSnapshot {
   listingFetchedAt      DateTime?
   rawListingInputs      Json?
   normalizedListingInputs Json?
+  distanceMiles         Float?
+  insideRequestedRadius Boolean       @default(true)
   scoreInputs           Json
   createdAt             DateTime      @default(now())
   property              Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
@@ -136,4 +147,26 @@ model ListingCache {
   rejectionSummary   Json
 
   @@index([locationKey, fetchedAt])
+}
+
+model GeocodeCache {
+  id                 String   @id @default(cuid())
+  queryType          String
+  queryValue         String
+  provider           String
+  formattedAddress   String?
+  latitude           Float
+  longitude          Float
+  precision          String
+  rawPayload         Json?
+  normalizedPayload  Json?
+  fetchedAt          DateTime
+  expiresAt          DateTime
+  sourceType         String
+  city               String?
+  state              String?
+  zip                String?
+  country            String?
+
+  @@index([queryType, queryValue, fetchedAt])
 }
