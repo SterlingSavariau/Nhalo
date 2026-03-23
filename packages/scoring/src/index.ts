@@ -461,7 +461,18 @@ export function rankListings(listings: ListingRecord[], context: RankingContext)
       if (right.scores.nhalo !== left.scores.nhalo) {
         return right.scores.nhalo - left.scores.nhalo;
       }
+      if (right.scores.safety !== left.scores.safety) {
+        return right.scores.safety - left.scores.safety;
+      }
+      if (right.scores.price !== left.scores.price) {
+        return right.scores.price - left.scores.price;
+      }
+      if (right.scores.size !== left.scores.size) {
+        return right.scores.size - left.scores.size;
+      }
 
-      return average([right.scores.safety, right.scores.size]) - average([left.scores.safety, left.scores.size]);
+      return (left.listing.canonicalPropertyId ?? left.listing.id).localeCompare(
+        right.listing.canonicalPropertyId ?? right.listing.id
+      );
     });
 }

@@ -1,4 +1,4 @@
-import { DEFAULT_RESULT_LIMIT } from "@nhalo/config";
+import { DEFAULT_RESULT_LIMIT, getSearchQualityConfig } from "@nhalo/config";
 import { distanceMiles } from "@nhalo/providers";
 import { rankListings } from "@nhalo/scoring";
 import type {
@@ -17,6 +17,17 @@ import type {
 } from "@nhalo/types";
 import { ApiError } from "./errors";
 import { MetricsCollector } from "./metrics";
+import {
+  addRejectionCounts,
+  applyHardFiltersWithSummary,
+  applyQualityGate,
+  buildQualityFlags,
+  countRankingTies,
+  createEmptyRejectionSummary,
+  deduplicateListings,
+  selectComparableListings,
+  type EnrichedListing
+} from "./search-quality";
 import type { SearchRequestInput } from "./search-schema";
 
 export interface SearchServiceDependencies {
@@ -59,23 +70,6 @@ function buildSearchOriginMetadata(resolvedLocation: {
     rawGeocodeInputs: resolvedLocation.rawGeocodeInputs ?? null,
     normalizedGeocodeInputs: resolvedLocation.normalizedGeocodeInputs ?? null
   };
-}
-
-function applyHardFilters(
-  listings: ListingRecord[],
-  request: SearchRequestInput
-): ListingRecord[] {
-  return listings.filter((listing) => {
-    const budgetPass =
-      typeof request.budget?.max !== "number" || listing.price <= request.budget.max;
-    const sqftPass =
-      typeof request.minSqft !== "number" || listing.squareFootage >= request.minSqft;
-    const bedroomPass =
-      typeof request.minBedrooms !== "number" || listing.bedrooms >= request.minBedrooms;
-    const propertyTypePass = request.propertyTypes.includes(listing.propertyType);
-
-    return budgetPass && sqftPass && bedroomPass && propertyTypePass;
-  });
 }
 
 function buildWarnings(totalMatched: number): SearchWarning[] {
@@ -171,8 +165,10 @@ function mapRankedHome(ranked: RankedListing, distanceByPropertyId: Map<string, 
     listingProvider: ranked.listing.sourceProvider,
     sourceListingId: ranked.listing.sourceListingId,
     listingFetchedAt: ranked.listing.fetchedAt,
+    canonicalPropertyId: ranked.listing.canonicalPropertyId ?? null,
     distanceMiles: Number((distanceByPropertyId.get(ranked.listing.id) ?? 0).toFixed(2)),
     insideRequestedRadius: true,
+    qualityFlags: ranked.qualityFlags ?? [],
     neighborhoodSafetyScore: ranked.scores.safety,
     explanation: ranked.explanation,
     scores: ranked.scores
@@ -227,6 +223,7 @@ export async function runSearch(
   request: SearchRequestInput,
   dependencies: SearchServiceDependencies
 ): Promise<SearchResponse> {
+  const searchQualityConfig = getSearchQualityConfig();
   const startedAt = Date.now();
   const resolvedLocation = await dependencies.geocoder.geocode(
     request.locationType,
@@ -256,12 +253,29 @@ export async function runSearch(
     location: resolvedLocation,
     propertyTypes: request.propertyTypes
   });
+  const normalizationRejections = dependencies.listingProvider.getLastRejectionSummary?.() ?? createEmptyRejectionSummary();
+  const candidatesRetrieved =
+    candidates.length +
+    normalizationRejections.duplicateListings +
+    normalizationRejections.invalidCoordinates +
+    normalizationRejections.missingAddress +
+    normalizationRejections.missingPrice +
+    normalizationRejections.missingSquareFootage +
+    normalizationRejections.unsupportedPropertyType +
+    normalizationRejections.normalizationFailures;
+
+  const qualityGate = applyQualityGate(candidates, searchQualityConfig);
+  const deduplicated = deduplicateListings(qualityGate.listings);
   const distanceByPropertyId = new Map(
-    candidates.map((listing) => [listing.id, distanceMiles(resolvedLocation.center, listing.coordinates)])
+    deduplicated.listings.map((listing) => [
+      listing.id,
+      distanceMiles(resolvedLocation.center, listing.coordinates)
+    ])
   );
-  const radiusCandidates = candidates.filter(
+  const radiusCandidates = deduplicated.listings.filter(
     (listing) => (distanceByPropertyId.get(listing.id) ?? Number.POSITIVE_INFINITY) <= request.radiusMiles
   );
+  const hardFilterResult = applyHardFiltersWithSummary(radiusCandidates, request);
   const marketSnapshot = await resolveMarketSnapshot(
     request,
     radiusCandidates,
@@ -269,19 +283,104 @@ export async function runSearch(
   );
   const safetyByPropertyId = await dependencies.safetyProvider.fetchSafetyData(radiusCandidates);
   const providerFreshnessHours = await dependencies.getProviderFreshnessHours();
-  const matchedListings = applyHardFilters(radiusCandidates, request);
-  const rankedListings = rankListings(matchedListings, {
-    budget: request.budget,
-    comparableListings: radiusCandidates,
-    marketSnapshot,
-    minBedrooms: request.minBedrooms,
-    minSqft: request.minSqft,
-    providerFreshnessHours,
-    safetyByPropertyId,
-    weights: request.weights,
-    searchOrigin
-  }).slice(0, DEFAULT_RESULT_LIMIT);
+  const matchedListings = hardFilterResult.listings;
+  const rankedListings = matchedListings
+    .map((listing): RankedListing => {
+      const comparableSelection = selectComparableListings(
+        listing as EnrichedListing,
+        radiusCandidates as EnrichedListing[],
+        searchQualityConfig
+      );
+      dependencies.metrics.recordComparableSelection({
+        fallback: comparableSelection.strategyUsed !== "strict"
+      });
+      const ranked = rankListings([listing], {
+        budget: request.budget,
+        comparableListings: comparableSelection.listings,
+        marketSnapshot,
+        minBedrooms: request.minBedrooms,
+        minSqft: request.minSqft,
+        providerFreshnessHours,
+        safetyByPropertyId,
+        weights: request.weights,
+        searchOrigin
+      })[0];
+      const qualityFlags = buildQualityFlags({
+        listing: listing as EnrichedListing,
+        safetyDataSource: safetyByPropertyId.get(listing.id)?.safetyDataSource ?? null,
+        dataCompleteness: Number(ranked.scoreInputs.dataCompleteness ?? 0),
+        comparableSampleSize: comparableSelection.listings.length,
+        comparableStrategyUsed: comparableSelection.strategyUsed,
+        minComparableSampleSize: searchQualityConfig.minComparableSampleSize,
+        searchOrigin
+      });
+
+      return {
+        ...ranked,
+        qualityFlags,
+        scoreInputs: {
+          ...ranked.scoreInputs,
+          canonicalPropertyId: (listing as EnrichedListing).canonicalPropertyId,
+          comparableSampleSize: comparableSelection.listings.length,
+          comparableStrategyUsed: comparableSelection.strategyUsed,
+          deduplicationDecision: "selected",
+          qualityGateDecision: "passed",
+          rejectionContext: null,
+          rankingTieBreakInputs: {
+            nhalo: ranked.scores.nhalo,
+            safety: ranked.scores.safety,
+            price: ranked.scores.price,
+            size: ranked.scores.size,
+            distanceMiles: Number((distanceByPropertyId.get(listing.id) ?? 0).toFixed(2)),
+            canonicalPropertyId: (listing as EnrichedListing).canonicalPropertyId
+          },
+          resultQualityFlags: qualityFlags
+        }
+      };
+    })
+    .sort((left, right) => {
+      if (right.scores.nhalo !== left.scores.nhalo) {
+        return right.scores.nhalo - left.scores.nhalo;
+      }
+      if (right.scores.safety !== left.scores.safety) {
+        return right.scores.safety - left.scores.safety;
+      }
+      if (right.scores.price !== left.scores.price) {
+        return right.scores.price - left.scores.price;
+      }
+      if (right.scores.size !== left.scores.size) {
+        return right.scores.size - left.scores.size;
+      }
+      const distanceDelta =
+        (distanceByPropertyId.get(left.listing.id) ?? 0) -
+        (distanceByPropertyId.get(right.listing.id) ?? 0);
+      if (distanceDelta !== 0) {
+        return distanceDelta;
+      }
+      return (left.listing.canonicalPropertyId ?? left.listing.id).localeCompare(
+        right.listing.canonicalPropertyId ?? right.listing.id
+      );
+    })
+    .slice(0, DEFAULT_RESULT_LIMIT);
   const homes = rankedListings.map((ranked) => mapRankedHome(ranked, distanceByPropertyId));
+  const combinedRejectionSummary = addRejectionCounts(
+    addRejectionCounts(
+      addRejectionCounts(normalizationRejections, qualityGate.rejectionSummary),
+      {
+        duplicate: deduplicated.deduplicatedCount,
+        duplicateListings: deduplicated.deduplicatedCount
+      }
+    ),
+    addRejectionCounts(hardFilterResult.rejectionSummary, {
+      outsideRadius: deduplicated.listings.length - radiusCandidates.length
+    })
+  );
+  const comparableSampleSizes = rankedListings.map((listing) =>
+    Number(listing.scoreInputs.comparableSampleSize ?? radiusCandidates.length)
+  );
+  const comparableStrategies = [...new Set(
+    rankedListings.map((listing) => String(listing.scoreInputs.comparableStrategyUsed ?? "local_radius_fallback"))
+  )];
   const warnings = [
     ...buildWarnings(matchedListings.length),
     ...buildReliabilityWarnings(homes)
@@ -300,13 +399,27 @@ export async function runSearch(
     },
     appliedWeights: request.weights,
     metadata: {
+      candidatesRetrieved,
+      candidatesAfterNormalization: candidates.length,
+      candidatesAfterQualityGate: qualityGate.listings.length,
+      candidatesAfterDeduplication: deduplicated.listings.length,
+      candidatesAfterRadiusFilter: radiusCandidates.length,
+      candidatesAfterHardFilters: matchedListings.length,
+      comparableSampleSize:
+        comparableSampleSizes.length === 0
+          ? 0
+          : Number((comparableSampleSizes.reduce((sum, value) => sum + value, 0) / comparableSampleSizes.length).toFixed(2)),
+      comparableStrategyUsed:
+        comparableStrategies.length === 1 ? comparableStrategies[0] : "mixed",
+      deduplicatedCount: deduplicated.deduplicatedCount,
+      duplicateGroupsDetected: deduplicated.duplicateGroupsDetected,
       totalCandidatesScanned: radiusCandidates.length,
       totalMatched: matchedListings.length,
       returnedCount: rankedListings.length,
       durationMs: Date.now() - startedAt,
       warnings,
       suggestions: buildSuggestions(request, matchedListings.length),
-      rejectionSummary: dependencies.listingProvider.getLastRejectionSummary?.() ?? undefined,
+      rejectionSummary: combinedRejectionSummary,
       searchOrigin
     }
   };
@@ -318,6 +431,24 @@ export async function runSearch(
     scores: response.homes.map((home) => home.scores.nhalo)
   });
   dependencies.metrics.recordListingResultsReturned(response.metadata.returnedCount);
+  dependencies.metrics.recordListingQuality({
+    failures: qualityGate.qualityFailures,
+    totalCandidates: candidates.length
+  });
+  dependencies.metrics.recordDeduplication({
+    deduplicated: deduplicated.deduplicatedCount,
+    totalCandidates: qualityGate.listings.length
+  });
+  dependencies.metrics.recordRejectionCounts({
+    outsideRadius: deduplicated.listings.length - radiusCandidates.length,
+    duplicate: deduplicated.deduplicatedCount,
+    invalidListing: qualityGate.qualityFailures
+  });
+  dependencies.metrics.recordRankingTies(countRankingTies(rankedListings));
+  dependencies.metrics.recordActiveListingRatio({
+    active: qualityGate.activeEligibleCount,
+    eligible: qualityGate.listings.length
+  });
 
   await dependencies.repository.saveSearch({
     request,
@@ -358,8 +489,17 @@ export async function runSearch(
       listingFetchedAt: ranked.listing.fetchedAt ?? null,
       rawListingInputs: ranked.listing.rawListingInputs ?? null,
       normalizedListingInputs: ranked.listing.normalizedListingInputs ?? null,
+      canonicalPropertyId: ranked.listing.canonicalPropertyId ?? null,
       distanceMiles: distanceByPropertyId.get(ranked.listing.id) ?? null,
       insideRequestedRadius: true,
+      comparableSampleSize: Number(ranked.scoreInputs.comparableSampleSize ?? radiusCandidates.length),
+      comparableStrategyUsed: String(ranked.scoreInputs.comparableStrategyUsed ?? "local_radius_fallback"),
+      deduplicationDecision: String(ranked.scoreInputs.deduplicationDecision ?? "selected"),
+      qualityGateDecision: String(ranked.scoreInputs.qualityGateDecision ?? "passed"),
+      rankingTieBreakInputs:
+        (ranked.scoreInputs.rankingTieBreakInputs as Record<string, unknown> | null) ?? null,
+      resultQualityFlags:
+        (ranked.scoreInputs.resultQualityFlags as string[] | undefined) ?? ranked.qualityFlags ?? [],
       inputs: {
         price: Number(ranked.scoreInputs.price ?? ranked.listing.price),
         squareFootage: Number(ranked.scoreInputs.squareFootage ?? ranked.listing.squareFootage),

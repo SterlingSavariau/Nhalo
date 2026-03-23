@@ -69,7 +69,25 @@ function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
     safetyProvenance: snapshot.safetyProvenance,
     listingProvenance: snapshot.listingProvenance,
     searchOrigin: snapshot.searchOrigin,
-    spatialContext: snapshot.spatialContext
+    spatialContext: snapshot.spatialContext,
+    searchQualityContext: {
+      canonicalPropertyId:
+        (snapshot.scoreInputs.canonicalPropertyId as string | null | undefined) ?? null,
+      deduplicationDecision:
+        (snapshot.scoreInputs.deduplicationDecision as string | null | undefined) ?? null,
+      comparableSampleSize:
+        (snapshot.scoreInputs.comparableSampleSize as number | null | undefined) ?? null,
+      comparableStrategyUsed:
+        (snapshot.scoreInputs.comparableStrategyUsed as string | null | undefined) ?? null,
+      qualityGateDecision:
+        (snapshot.scoreInputs.qualityGateDecision as string | null | undefined) ?? null,
+      rejectionContext:
+        (snapshot.scoreInputs.rejectionContext as Record<string, number> | null | undefined) ?? null,
+      rankingTieBreakInputs:
+        (snapshot.scoreInputs.rankingTieBreakInputs as Record<string, unknown> | null | undefined) ?? null,
+      resultQualityFlags:
+        (snapshot.scoreInputs.resultQualityFlags as string[] | undefined) ?? []
+    }
   };
 }
 
@@ -391,6 +409,22 @@ function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord
       distanceMiles: (record.distanceMiles as number | null) ?? null,
       radiusMiles: (searchRequest.radiusMiles as number | null | undefined) ?? null,
       insideRequestedRadius: Boolean(record.insideRequestedRadius ?? true)
+    },
+    searchQualityContext: {
+      canonicalPropertyId: (scoreInputs.canonicalPropertyId as string | null | undefined) ?? null,
+      deduplicationDecision:
+        (scoreInputs.deduplicationDecision as string | null | undefined) ?? null,
+      comparableSampleSize:
+        (scoreInputs.comparableSampleSize as number | null | undefined) ?? null,
+      comparableStrategyUsed:
+        (scoreInputs.comparableStrategyUsed as string | null | undefined) ?? null,
+      qualityGateDecision:
+        (scoreInputs.qualityGateDecision as string | null | undefined) ?? null,
+      rejectionContext:
+        (scoreInputs.rejectionContext as Record<string, number> | null | undefined) ?? null,
+      rankingTieBreakInputs:
+        (scoreInputs.rankingTieBreakInputs as Record<string, unknown> | null | undefined) ?? null,
+      resultQualityFlags: (scoreInputs.resultQualityFlags as string[] | undefined) ?? []
     }
   };
 }

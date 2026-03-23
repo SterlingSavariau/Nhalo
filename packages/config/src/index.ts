@@ -19,6 +19,10 @@ export const DEFAULT_LISTING_STALE_TTL_HOURS = 72;
 export const DEFAULT_GEOCODER_PROVIDER_MODE: GeocoderProviderMode = "hybrid";
 export const DEFAULT_GEOCODE_CACHE_TTL_HOURS = 168;
 export const DEFAULT_GEOCODE_STALE_TTL_HOURS = 720;
+export const DEFAULT_ALLOWED_LISTING_STATUSES = ["active", "coming_soon"] as const;
+export const DEFAULT_COMPARABLE_SQFT_TOLERANCE_PERCENT = 25;
+export const DEFAULT_COMPARABLE_BEDROOM_TOLERANCE = 1;
+export const DEFAULT_MIN_COMPARABLE_SAMPLE_SIZE = 5;
 export const DEFAULT_WEIGHTS: SearchWeights = {
   price: 40,
   size: 30,
@@ -40,6 +44,7 @@ export interface AppConfig {
   safety: SafetyConfig;
   listings: ListingConfig;
   geocoder: GeocoderConfig;
+  searchQuality: SearchQualityConfig;
 }
 
 export interface ExternalProviderConfig {
@@ -68,6 +73,13 @@ export interface GeocoderConfig {
   cacheTtlHours: number;
   staleTtlHours: number;
   provider: ExternalProviderConfig;
+}
+
+export interface SearchQualityConfig {
+  allowedListingStatuses: string[];
+  comparableSqftTolerancePercent: number;
+  comparableBedroomTolerance: number;
+  minComparableSampleSize: number;
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -184,7 +196,32 @@ export function getConfig(): AppConfig {
     databaseUrl: process.env.DATABASE_URL,
     safety: getSafetyConfig(),
     listings: getListingConfig(),
-    geocoder: getGeocoderConfig()
+    geocoder: getGeocoderConfig(),
+    searchQuality: getSearchQualityConfig()
+  };
+}
+
+export function getSearchQualityConfig(): SearchQualityConfig {
+  const allowedListingStatuses = (process.env.ALLOWED_LISTING_STATUSES ?? DEFAULT_ALLOWED_LISTING_STATUSES.join(","))
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return {
+    allowedListingStatuses:
+      allowedListingStatuses.length > 0 ? allowedListingStatuses : [...DEFAULT_ALLOWED_LISTING_STATUSES],
+    comparableSqftTolerancePercent: parsePositiveInteger(
+      process.env.COMPARABLE_SQFT_TOLERANCE_PERCENT,
+      DEFAULT_COMPARABLE_SQFT_TOLERANCE_PERCENT
+    ),
+    comparableBedroomTolerance: parsePositiveInteger(
+      process.env.COMPARABLE_BEDROOM_TOLERANCE,
+      DEFAULT_COMPARABLE_BEDROOM_TOLERANCE
+    ),
+    minComparableSampleSize: parsePositiveInteger(
+      process.env.MIN_COMPARABLE_SAMPLE_SIZE,
+      DEFAULT_MIN_COMPARABLE_SAMPLE_SIZE
+    )
   };
 }
 

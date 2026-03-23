@@ -81,6 +81,26 @@ export class MetricsCollector {
     mock: 0,
     none: 0
   };
+  private readonly listingQuality = {
+    failures: 0,
+    totalCandidates: 0
+  };
+  private readonly deduplication = {
+    deduplicated: 0,
+    totalCandidates: 0
+  };
+  private readonly comparableSelection = {
+    fallbacks: 0,
+    totalSelections: 0
+  };
+  private readonly rejectedOutsideRadius = { count: 0 };
+  private readonly rejectedDuplicate = { count: 0 };
+  private readonly rejectedInvalidListing = { count: 0 };
+  private readonly rankingTie = { count: 0 };
+  private readonly activeListing = {
+    active: 0,
+    eligible: 0
+  };
 
   recordSearch(payload: {
     durationMs: number;
@@ -168,6 +188,42 @@ export class MetricsCollector {
       this.geocodeResolution.ambiguities += 1;
     }
     this.geocodePrecisionDistribution[payload.precision] += 1;
+  }
+
+  recordListingQuality(payload: { failures: number; totalCandidates: number }): void {
+    this.listingQuality.failures += payload.failures;
+    this.listingQuality.totalCandidates += payload.totalCandidates;
+  }
+
+  recordDeduplication(payload: { deduplicated: number; totalCandidates: number }): void {
+    this.deduplication.deduplicated += payload.deduplicated;
+    this.deduplication.totalCandidates += payload.totalCandidates;
+  }
+
+  recordComparableSelection(payload: { fallback: boolean }): void {
+    this.comparableSelection.totalSelections += 1;
+    if (payload.fallback) {
+      this.comparableSelection.fallbacks += 1;
+    }
+  }
+
+  recordRejectionCounts(payload: {
+    outsideRadius: number;
+    duplicate: number;
+    invalidListing: number;
+  }): void {
+    this.rejectedOutsideRadius.count += payload.outsideRadius;
+    this.rejectedDuplicate.count += payload.duplicate;
+    this.rejectedInvalidListing.count += payload.invalidListing;
+  }
+
+  recordRankingTies(count: number): void {
+    this.rankingTie.count += count;
+  }
+
+  recordActiveListingRatio(payload: { active: number; eligible: number }): void {
+    this.activeListing.active += payload.active;
+    this.activeListing.eligible += payload.eligible;
   }
 
   recordSafetyResolution(payload: {
@@ -379,6 +435,42 @@ export class MetricsCollector {
       },
       geocodePrecisionDistribution: {
         ...this.geocodePrecisionDistribution
+      },
+      listingDeduplicationRate: {
+        deduplicated: this.deduplication.deduplicated,
+        totalCandidates: this.deduplication.totalCandidates,
+        rate:
+          this.deduplication.totalCandidates === 0
+            ? 0
+            : Number((this.deduplication.deduplicated / this.deduplication.totalCandidates).toFixed(4))
+      },
+      listingQualityFailureRate: {
+        failures: this.listingQuality.failures,
+        totalCandidates: this.listingQuality.totalCandidates,
+        rate:
+          this.listingQuality.totalCandidates === 0
+            ? 0
+            : Number((this.listingQuality.failures / this.listingQuality.totalCandidates).toFixed(4))
+      },
+      comparableFallbackRate: {
+        fallbacks: this.comparableSelection.fallbacks,
+        totalSelections: this.comparableSelection.totalSelections,
+        rate:
+          this.comparableSelection.totalSelections === 0
+            ? 0
+            : Number((this.comparableSelection.fallbacks / this.comparableSelection.totalSelections).toFixed(4))
+      },
+      rejectedOutsideRadiusCount: this.rejectedOutsideRadius.count,
+      rejectedDuplicateCount: this.rejectedDuplicate.count,
+      rejectedInvalidListingCount: this.rejectedInvalidListing.count,
+      rankingTieCount: this.rankingTie.count,
+      activeListingRatio: {
+        active: this.activeListing.active,
+        eligible: this.activeListing.eligible,
+        ratio:
+          this.activeListing.eligible === 0
+            ? 0
+            : Number((this.activeListing.active / this.activeListing.eligible).toFixed(4))
       },
       scoreDistribution: {
         count: this.scores.count,

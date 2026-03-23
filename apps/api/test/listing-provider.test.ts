@@ -244,12 +244,21 @@ describe("composite listing provider", () => {
       expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
       sourceType: "live",
       rejectionSummary: {
+        outsideRadius: 0,
+        aboveBudget: 0,
+        belowSqft: 0,
+        belowBedrooms: 0,
+        wrongPropertyType: 0,
+        duplicate: 0,
+        invalidPrice: 0,
         duplicateListings: 0,
         invalidCoordinates: 0,
         missingAddress: 0,
         missingPrice: 0,
         missingSquareFootage: 0,
         unsupportedPropertyType: 0,
+        malformedListing: 0,
+        unsupportedListingStatus: 0,
         normalizationFailures: 0
       }
     });
@@ -302,12 +311,21 @@ describe("composite listing provider", () => {
       expiresAt: "2026-03-21T00:00:00.000Z",
       sourceType: "live",
       rejectionSummary: {
+        outsideRadius: 0,
+        aboveBudget: 0,
+        belowSqft: 0,
+        belowBedrooms: 0,
+        wrongPropertyType: 0,
+        duplicate: 0,
+        invalidPrice: 0,
         duplicateListings: 0,
         invalidCoordinates: 0,
         missingAddress: 0,
         missingPrice: 0,
         missingSquareFootage: 0,
         unsupportedPropertyType: 0,
+        malformedListing: 0,
+        unsupportedListingStatus: 0,
         normalizationFailures: 0
       }
     });

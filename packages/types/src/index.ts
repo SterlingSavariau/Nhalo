@@ -29,7 +29,14 @@ export type GeocodeDataSource =
 export type SafetyProviderMode = "mock" | "hybrid" | "live";
 export type ListingProviderMode = "mock" | "hybrid" | "live";
 export type GeocoderProviderMode = "mock" | "hybrid" | "live";
-export type ListingStatus = "active" | "pending" | "sold" | "unknown";
+export type ListingStatus =
+  | "active"
+  | "coming_soon"
+  | "pending"
+  | "contingent"
+  | "sold"
+  | "off_market"
+  | "unknown";
 export type GeocodePrecision =
   | "rooftop"
   | "range_interpolated"
@@ -118,6 +125,8 @@ export interface ListingRecord {
   rawPayload?: Record<string, unknown>;
   rawListingInputs?: Record<string, unknown> | null;
   normalizedListingInputs?: Record<string, unknown> | null;
+  canonicalPropertyId?: string;
+  normalizedAddress?: string;
 }
 
 export interface SafetyRecord {
@@ -318,8 +327,10 @@ export interface ScoredHome {
   listingProvider?: string | null;
   sourceListingId?: string | null;
   listingFetchedAt?: string | null;
+  canonicalPropertyId?: string;
   distanceMiles?: number;
   insideRequestedRadius?: boolean;
+  qualityFlags?: string[];
   neighborhoodSafetyScore: number;
   explanation: string;
   scores: ScoreBreakdown;
@@ -336,6 +347,16 @@ export interface SearchSuggestion {
 }
 
 export interface SearchMetadata {
+  candidatesRetrieved?: number;
+  candidatesAfterNormalization?: number;
+  candidatesAfterQualityGate?: number;
+  candidatesAfterDeduplication?: number;
+  candidatesAfterRadiusFilter?: number;
+  candidatesAfterHardFilters?: number;
+  comparableSampleSize?: number;
+  comparableStrategyUsed?: string;
+  deduplicatedCount?: number;
+  duplicateGroupsDetected?: number;
   totalCandidatesScanned: number;
   totalMatched: number;
   returnedCount: number;
@@ -381,8 +402,15 @@ export interface PersistedSearchResult {
   listingFetchedAt: string | null;
   rawListingInputs: Record<string, unknown> | null;
   normalizedListingInputs: Record<string, unknown> | null;
+  canonicalPropertyId: string | null;
   distanceMiles: number | null;
   insideRequestedRadius: boolean;
+  comparableSampleSize?: number | null;
+  comparableStrategyUsed?: string | null;
+  deduplicationDecision?: string | null;
+  qualityGateDecision?: string | null;
+  rankingTieBreakInputs?: Record<string, unknown> | null;
+  resultQualityFlags?: string[];
 }
 
 export interface SearchPersistenceInput {
@@ -420,6 +448,7 @@ export interface RankedListing {
   explanation: string;
   scoreInputs: Record<string, unknown>;
   scores: ScoreBreakdown;
+  qualityFlags?: string[];
 }
 
 export interface MarketSnapshot {
@@ -495,6 +524,16 @@ export interface ScoreAuditRecord {
     distanceMiles: number | null;
     radiusMiles: number | null;
     insideRequestedRadius: boolean;
+  };
+  searchQualityContext?: {
+    canonicalPropertyId: string | null;
+    deduplicationDecision?: string | null;
+    comparableSampleSize?: number | null;
+    comparableStrategyUsed?: string | null;
+    qualityGateDecision?: string | null;
+    rejectionContext?: Record<string, number> | null;
+    rankingTieBreakInputs?: Record<string, unknown> | null;
+    resultQualityFlags?: string[];
   };
 }
 
@@ -625,6 +664,30 @@ export interface SearchMetrics {
     rate: number;
   };
   geocodePrecisionDistribution: Record<GeocodePrecision, number>;
+  listingDeduplicationRate: {
+    deduplicated: number;
+    totalCandidates: number;
+    rate: number;
+  };
+  listingQualityFailureRate: {
+    failures: number;
+    totalCandidates: number;
+    rate: number;
+  };
+  comparableFallbackRate: {
+    fallbacks: number;
+    totalSelections: number;
+    rate: number;
+  };
+  rejectedOutsideRadiusCount: number;
+  rejectedDuplicateCount: number;
+  rejectedInvalidListingCount: number;
+  rankingTieCount: number;
+  activeListingRatio: {
+    active: number;
+    eligible: number;
+    ratio: number;
+  };
   scoreDistribution: {
     count: number;
     average: number;
@@ -681,12 +744,21 @@ export interface ListingCacheRepository {
 }
 
 export interface ListingRejectionSummary {
+  outsideRadius: number;
+  aboveBudget: number;
+  belowSqft: number;
+  belowBedrooms: number;
+  wrongPropertyType: number;
+  duplicate: number;
+  invalidPrice: number;
   duplicateListings: number;
   invalidCoordinates: number;
   missingAddress: number;
   missingPrice: number;
   missingSquareFootage: number;
   unsupportedPropertyType: number;
+  malformedListing: number;
+  unsupportedListingStatus: number;
   normalizationFailures: number;
 }
 

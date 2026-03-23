@@ -73,12 +73,21 @@ function roundToTwo(value: number): number {
 
 function emptyRejectionSummary(): ListingRejectionSummary {
   return {
+    outsideRadius: 0,
+    aboveBudget: 0,
+    belowSqft: 0,
+    belowBedrooms: 0,
+    wrongPropertyType: 0,
+    duplicate: 0,
+    invalidPrice: 0,
     duplicateListings: 0,
     invalidCoordinates: 0,
     missingAddress: 0,
     missingPrice: 0,
     missingSquareFootage: 0,
     unsupportedPropertyType: 0,
+    malformedListing: 0,
+    unsupportedListingStatus: 0,
     normalizationFailures: 0
   };
 }
@@ -88,12 +97,21 @@ function addRejectionSummary(
   next: ListingRejectionSummary
 ): ListingRejectionSummary {
   return {
+    outsideRadius: base.outsideRadius + next.outsideRadius,
+    aboveBudget: base.aboveBudget + next.aboveBudget,
+    belowSqft: base.belowSqft + next.belowSqft,
+    belowBedrooms: base.belowBedrooms + next.belowBedrooms,
+    wrongPropertyType: base.wrongPropertyType + next.wrongPropertyType,
+    duplicate: base.duplicate + next.duplicate,
+    invalidPrice: base.invalidPrice + next.invalidPrice,
     duplicateListings: base.duplicateListings + next.duplicateListings,
     invalidCoordinates: base.invalidCoordinates + next.invalidCoordinates,
     missingAddress: base.missingAddress + next.missingAddress,
     missingPrice: base.missingPrice + next.missingPrice,
     missingSquareFootage: base.missingSquareFootage + next.missingSquareFootage,
     unsupportedPropertyType: base.unsupportedPropertyType + next.unsupportedPropertyType,
+    malformedListing: base.malformedListing + next.malformedListing,
+    unsupportedListingStatus: base.unsupportedListingStatus + next.unsupportedListingStatus,
     normalizationFailures: base.normalizationFailures + next.normalizationFailures
   };
 }
@@ -163,11 +181,20 @@ function mapListingStatus(value: string | null): ListingStatus {
   }
 
   const normalized = value.trim().toLowerCase();
+  if (normalized.includes("coming")) {
+    return "coming_soon";
+  }
   if (normalized.includes("pending")) {
     return "pending";
   }
+  if (normalized.includes("contingent")) {
+    return "contingent";
+  }
   if (normalized.includes("sold") || normalized.includes("closed")) {
     return "sold";
+  }
+  if (normalized.includes("off")) {
+    return "off_market";
   }
   if (normalized.includes("active") || normalized.includes("new")) {
     return "active";
@@ -464,6 +491,8 @@ export class DefaultListingNormalizationService implements ListingNormalizationS
           updatedAt,
           rawPayload: rawListing,
           rawListingInputs: rawListing,
+          canonicalPropertyId: canonicalId,
+          normalizedAddress: address.toLowerCase(),
           normalizedListingInputs: {
             address,
             city,
