@@ -7,7 +7,14 @@ export type PropertyType =
   | "multi_family";
 
 export type SafetyConfidence = "low" | "medium" | "high" | "none";
-export type ProviderHealthStatus = "healthy" | "degraded" | "failing";
+export type ProviderHealthStatus = "healthy" | "degraded" | "failing" | "unavailable";
+export type SafetyDataSource =
+  | "live"
+  | "cached_live"
+  | "stale_cached_live"
+  | "mock"
+  | "none";
+export type SafetyProviderMode = "mock" | "hybrid" | "live";
 
 export interface SearchWeights {
   price: number;
@@ -74,6 +81,17 @@ export interface SafetyRecord {
   emergencyResponseMinutes?: number | null;
   source: string;
   updatedAt: string;
+  safetyDataSource?: SafetyDataSource;
+  crimeProvider?: string | null;
+  schoolProvider?: string | null;
+  crimeFetchedAt?: string | null;
+  schoolFetchedAt?: string | null;
+  crimeIndexRaw?: Record<string, unknown> | number | null;
+  crimeIndexNormalized?: number | null;
+  schoolRatingRaw?: Record<string, unknown> | number | null;
+  schoolRatingNormalized?: number | null;
+  rawSafetyInputs?: Record<string, unknown> | null;
+  normalizedSafetyInputs?: Record<string, unknown> | null;
 }
 
 export interface ProviderFetchResult<T> {
@@ -102,6 +120,40 @@ export interface SafetyProvider {
   getStatus(): Promise<ProviderStatus>;
 }
 
+export interface CrimeSignal {
+  propertyId: string;
+  provider: string;
+  fetchedAt: string;
+  raw: Record<string, unknown> | number | null;
+  normalized: number | null;
+}
+
+export interface SchoolSignal {
+  propertyId: string;
+  provider: string;
+  fetchedAt: string;
+  raw: Record<string, unknown> | number | null;
+  normalized: number | null;
+}
+
+export interface CrimeSignalProvider {
+  readonly name: string;
+  fetchCrimeSignal(listing: ListingRecord): Promise<CrimeSignal | null>;
+  getStatus(): Promise<ProviderStatus>;
+}
+
+export interface SchoolSignalProvider {
+  readonly name: string;
+  fetchSchoolSignal(listing: ListingRecord): Promise<SchoolSignal | null>;
+  getStatus(): Promise<ProviderStatus>;
+}
+
+export interface SafetyAggregationProvider {
+  readonly name: string;
+  fetchSafetyData(listings: ListingRecord[]): Promise<Map<string, SafetyRecord>>;
+  getStatus(): Promise<ProviderStatus>;
+}
+
 export interface GeocoderProvider {
   readonly name: string;
   geocode(locationType: LocationType, locationValue: string): Promise<ResolvedLocation | null>;
@@ -118,6 +170,8 @@ export interface ProviderStatus {
   failureCount: number;
   mode: "mock" | "live";
   detail: string;
+  children?: ProviderStatus[];
+  lastSourceUsed?: SafetyDataSource | null;
 }
 
 export interface AppliedFilters {
@@ -200,6 +254,13 @@ export interface PersistedSearchResult {
   neighborhoodStability: number | null;
   dataCompleteness: number;
   inputs: ScoreAuditInputs;
+  safetyDataSource: SafetyDataSource;
+  crimeProvider: string | null;
+  schoolProvider: string | null;
+  crimeFetchedAt: string | null;
+  schoolFetchedAt: string | null;
+  rawSafetyInputs: Record<string, unknown> | null;
+  normalizedSafetyInputs: Record<string, unknown> | null;
 }
 
 export interface SearchPersistenceInput {
@@ -264,6 +325,14 @@ export interface ScoreAuditInputs {
   pricePerSqft: number;
   medianPricePerSqft: number;
   dataCompleteness: number;
+  schoolRatingRaw?: Record<string, unknown> | number | null;
+  schoolRatingNormalized?: number | null;
+  schoolProvider?: string | null;
+  schoolFetchedAt?: string | null;
+  crimeIndexRaw?: Record<string, unknown> | number | null;
+  crimeIndexNormalized?: number | null;
+  crimeProvider?: string | null;
+  crimeFetchedAt?: string | null;
 }
 
 export interface ScoreAuditRecord {
@@ -280,6 +349,15 @@ export interface ScoreAuditRecord {
   computedAt: string;
   safetyConfidence: SafetyConfidence;
   overallConfidence: SafetyConfidence;
+  safetyProvenance?: {
+    safetyDataSource: SafetyDataSource;
+    crimeProvider: string | null;
+    schoolProvider: string | null;
+    crimeFetchedAt: string | null;
+    schoolFetchedAt: string | null;
+    rawSafetyInputs: Record<string, unknown> | null;
+    normalizedSafetyInputs: Record<string, unknown> | null;
+  };
 }
 
 export interface SearchMetrics {
@@ -308,10 +386,70 @@ export interface SearchMetrics {
     failures: number;
     rate: number;
   }>;
+  crimeProviderLatencyMs: {
+    count: number;
+    average: number;
+    last: number | null;
+  };
+  schoolProviderLatencyMs: {
+    count: number;
+    average: number;
+    last: number | null;
+  };
+  crimeProviderFailureRate: {
+    requests: number;
+    failures: number;
+    rate: number;
+  };
+  schoolProviderFailureRate: {
+    requests: number;
+    failures: number;
+    rate: number;
+  };
+  safetyCacheHitRate: {
+    hits: number;
+    misses: number;
+    rate: number;
+  };
+  safetyLiveFetchRate: {
+    liveFetches: number;
+    totalResolutions: number;
+    rate: number;
+  };
+  safetyFallbackRate: {
+    fallbacks: number;
+    totalResolutions: number;
+    rate: number;
+  };
   scoreDistribution: {
     count: number;
     average: number;
     min: number | null;
     max: number | null;
   };
+}
+
+export interface SafetySignalCacheRecord {
+  id: string;
+  locationKey: string;
+  lat: number;
+  lng: number;
+  crimeProvider: string | null;
+  schoolProvider: string | null;
+  crimeRaw: Record<string, unknown> | number | null;
+  crimeNormalized: number | null;
+  schoolRaw: Record<string, unknown> | number | null;
+  schoolNormalized: number | null;
+  stabilityRaw: Record<string, unknown> | number | null;
+  stabilityNormalized: number | null;
+  fetchedAt: string;
+  expiresAt: string;
+  sourceType: SafetyDataSource;
+}
+
+export interface SafetySignalCacheRepository {
+  save(entry: Omit<SafetySignalCacheRecord, "id">): Promise<SafetySignalCacheRecord>;
+  getLatest(locationKey: string): Promise<SafetySignalCacheRecord | null>;
+  isFresh(entry: SafetySignalCacheRecord, ttlHours?: number): boolean;
+  isStaleUsable(entry: SafetySignalCacheRecord, staleTtlHours?: number): boolean;
 }

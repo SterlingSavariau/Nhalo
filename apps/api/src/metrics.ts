@@ -46,6 +46,13 @@ export class MetricsCollector {
   private readonly matchesReturned = createSeries();
   private readonly scores = createSeries();
   private readonly providers = new Map<string, ProviderSeries>();
+  private readonly safetyResolution = {
+    cacheHits: 0,
+    cacheMisses: 0,
+    liveFetches: 0,
+    total: 0,
+    fallbacks: 0
+  };
 
   recordSearch(payload: {
     durationMs: number;
@@ -75,6 +82,54 @@ export class MetricsCollector {
     }
     recordSeries(entry.latency, latencyMs);
     this.providers.set(providerName, entry);
+  }
+
+  recordSafetyResolution(payload: {
+    source: "live" | "cached_live" | "stale_cached_live" | "mock" | "none";
+    cacheHit: boolean;
+    liveFetch: boolean;
+    fallback: boolean;
+  }): void {
+    this.safetyResolution.total += 1;
+    if (payload.cacheHit) {
+      this.safetyResolution.cacheHits += 1;
+    } else {
+      this.safetyResolution.cacheMisses += 1;
+    }
+    if (payload.liveFetch) {
+      this.safetyResolution.liveFetches += 1;
+    }
+    if (payload.fallback) {
+      this.safetyResolution.fallbacks += 1;
+    }
+  }
+
+  private providerRate(providerName: string) {
+    const entry = this.providers.get(providerName);
+
+    if (!entry) {
+      return {
+        requests: 0,
+        failures: 0,
+        rate: 0
+      };
+    }
+
+    return {
+      requests: entry.requests,
+      failures: entry.failures,
+      rate: entry.requests === 0 ? 0 : Number((entry.failures / entry.requests).toFixed(4))
+    };
+  }
+
+  private providerLatency(providerName: string) {
+    const entry = this.providers.get(providerName);
+
+    return {
+      count: entry?.latency.count ?? 0,
+      average: entry ? average(entry.latency) : 0,
+      last: entry?.latency.last ?? null
+    };
   }
 
   snapshot(): SearchMetrics {
@@ -118,6 +173,39 @@ export class MetricsCollector {
       },
       providerLatencyMs,
       providerFailureRate,
+      crimeProviderLatencyMs: this.providerLatency("CrimeSignalProvider"),
+      schoolProviderLatencyMs: this.providerLatency("SchoolSignalProvider"),
+      crimeProviderFailureRate: this.providerRate("CrimeSignalProvider"),
+      schoolProviderFailureRate: this.providerRate("SchoolSignalProvider"),
+      safetyCacheHitRate: {
+        hits: this.safetyResolution.cacheHits,
+        misses: this.safetyResolution.cacheMisses,
+        rate:
+          this.safetyResolution.cacheHits + this.safetyResolution.cacheMisses === 0
+            ? 0
+            : Number(
+                (
+                  this.safetyResolution.cacheHits /
+                  (this.safetyResolution.cacheHits + this.safetyResolution.cacheMisses)
+                ).toFixed(4)
+              )
+      },
+      safetyLiveFetchRate: {
+        liveFetches: this.safetyResolution.liveFetches,
+        totalResolutions: this.safetyResolution.total,
+        rate:
+          this.safetyResolution.total === 0
+            ? 0
+            : Number((this.safetyResolution.liveFetches / this.safetyResolution.total).toFixed(4))
+      },
+      safetyFallbackRate: {
+        fallbacks: this.safetyResolution.fallbacks,
+        totalResolutions: this.safetyResolution.total,
+        rate:
+          this.safetyResolution.total === 0
+            ? 0
+            : Number((this.safetyResolution.fallbacks / this.safetyResolution.total).toFixed(4))
+      },
       scoreDistribution: {
         count: this.scores.count,
         average: average(this.scores),

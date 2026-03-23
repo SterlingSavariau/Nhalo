@@ -279,6 +279,17 @@ export async function runSearch(
       schoolRating: (ranked.scoreInputs.schoolRating as number | null) ?? null,
       neighborhoodStability: (ranked.scoreInputs.neighborhoodStability as number | null) ?? null,
       dataCompleteness: Number(ranked.scoreInputs.dataCompleteness ?? 0),
+      safetyDataSource:
+        (ranked.scoreInputs.safetyDataSource as "live" | "cached_live" | "stale_cached_live" | "mock" | "none") ??
+        "none",
+      crimeProvider: (ranked.scoreInputs.crimeProvider as string | null) ?? null,
+      schoolProvider: (ranked.scoreInputs.schoolProvider as string | null) ?? null,
+      crimeFetchedAt: (ranked.scoreInputs.crimeFetchedAt as string | null) ?? null,
+      schoolFetchedAt: (ranked.scoreInputs.schoolFetchedAt as string | null) ?? null,
+      rawSafetyInputs:
+        (ranked.scoreInputs.rawSafetyInputs as Record<string, unknown> | null) ?? null,
+      normalizedSafetyInputs:
+        (ranked.scoreInputs.normalizedSafetyInputs as Record<string, unknown> | null) ?? null,
       inputs: {
         price: Number(ranked.scoreInputs.price ?? ranked.listing.price),
         squareFootage: Number(ranked.scoreInputs.squareFootage ?? ranked.listing.sqft),
@@ -290,7 +301,17 @@ export async function runSearch(
         neighborhoodStability: (ranked.scoreInputs.neighborhoodStability as number | null) ?? null,
         pricePerSqft: Number(ranked.scoreInputs.pricePerSqft ?? 0),
         medianPricePerSqft: Number(ranked.scoreInputs.medianPricePerSqft ?? 0),
-        dataCompleteness: Number(ranked.scoreInputs.dataCompleteness ?? 0)
+        dataCompleteness: Number(ranked.scoreInputs.dataCompleteness ?? 0),
+        schoolRatingRaw:
+          (ranked.scoreInputs.schoolRatingRaw as Record<string, unknown> | number | null) ?? null,
+        schoolRatingNormalized: (ranked.scoreInputs.schoolRatingNormalized as number | null) ?? null,
+        schoolProvider: (ranked.scoreInputs.schoolProvider as string | null) ?? null,
+        schoolFetchedAt: (ranked.scoreInputs.schoolFetchedAt as string | null) ?? null,
+        crimeIndexRaw:
+          (ranked.scoreInputs.crimeIndexRaw as Record<string, unknown> | number | null) ?? null,
+        crimeIndexNormalized: (ranked.scoreInputs.crimeIndexNormalized as number | null) ?? null,
+        crimeProvider: (ranked.scoreInputs.crimeProvider as string | null) ?? null,
+        crimeFetchedAt: (ranked.scoreInputs.crimeFetchedAt as string | null) ?? null
       }
     }))
   });

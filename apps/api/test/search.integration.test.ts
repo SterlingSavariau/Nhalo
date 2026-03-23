@@ -1,4 +1,8 @@
-import { InMemoryMarketSnapshotRepository, InMemorySearchRepository } from "@nhalo/db";
+import {
+  InMemoryMarketSnapshotRepository,
+  InMemorySafetySignalCacheRepository,
+  InMemorySearchRepository
+} from "@nhalo/db";
 import { createMockProviders } from "@nhalo/providers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app";
@@ -7,6 +11,7 @@ import { MetricsCollector } from "../src/metrics";
 describe("POST /search", () => {
   const repository = new InMemorySearchRepository();
   const marketSnapshotRepository = new InMemoryMarketSnapshotRepository();
+  const safetySignalCacheRepository = new InMemorySafetySignalCacheRepository();
   const providers = createMockProviders();
   let app: Awaited<ReturnType<typeof buildApp>>;
 
@@ -15,6 +20,7 @@ describe("POST /search", () => {
       marketSnapshotRepository,
       metrics: new MetricsCollector(),
       repository,
+      safetySignalCacheRepository,
       providers
     });
   });

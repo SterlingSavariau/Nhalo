@@ -1,4 +1,8 @@
-import { InMemoryMarketSnapshotRepository, InMemorySearchRepository } from "@nhalo/db";
+import {
+  InMemoryMarketSnapshotRepository,
+  InMemorySafetySignalCacheRepository,
+  InMemorySearchRepository
+} from "@nhalo/db";
 import { createMockProviders } from "@nhalo/providers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app";
@@ -12,6 +16,7 @@ describe("validation errors", () => {
       marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
       metrics: new MetricsCollector(),
       repository: new InMemorySearchRepository(),
+      safetySignalCacheRepository: new InMemorySafetySignalCacheRepository(),
       providers: createMockProviders()
     });
   });

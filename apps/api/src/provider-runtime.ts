@@ -67,6 +67,23 @@ function providerStatusFromState(state: ProviderState): ProviderHealthStatus {
   return "failing";
 }
 
+function statusRank(status: ProviderHealthStatus): number {
+  switch (status) {
+    case "healthy":
+      return 0;
+    case "degraded":
+      return 1;
+    case "unavailable":
+      return 2;
+    case "failing":
+      return 3;
+  }
+}
+
+function combineStatuses(left: ProviderHealthStatus, right: ProviderHealthStatus): ProviderHealthStatus {
+  return statusRank(left) >= statusRank(right) ? left : right;
+}
+
 abstract class MonitoredProvider {
   protected readonly state: ProviderState = {
     lastUpdatedAt: null,
@@ -108,20 +125,33 @@ abstract class MonitoredProvider {
   }
 
   async getStatus(): Promise<ProviderStatus> {
-    await this.refreshStaticStatus();
+    let providerStatus: ProviderStatus | null = null;
 
+    try {
+      providerStatus = await this.provider.getStatus();
+      this.state.mode = providerStatus.mode;
+      this.state.detail = providerStatus.detail;
+    } catch {
+      await this.refreshStaticStatus();
+    }
+
+    const runtimeStatus = providerStatusFromState(this.state);
     return {
       provider: this.providerLabel,
       providerName: this.providerLabel,
-      status: providerStatusFromState(this.state),
-      lastUpdatedAt: this.state.lastUpdatedAt,
-      dataAgeHours: dataAgeHours(this.state.lastUpdatedAt),
+      status: providerStatus
+        ? combineStatuses(providerStatus.status, runtimeStatus)
+        : runtimeStatus,
+      lastUpdatedAt: this.state.lastUpdatedAt ?? providerStatus?.lastUpdatedAt ?? null,
+      dataAgeHours: dataAgeHours(this.state.lastUpdatedAt ?? providerStatus?.lastUpdatedAt ?? null),
       latencyMs: this.state.latencyMs,
-      failureCount: this.state.failureCount,
+      failureCount: Math.max(this.state.failureCount, providerStatus?.failureCount ?? 0),
       mode: this.state.mode,
       detail: this.state.lastError
         ? `${this.state.detail}. Last error: ${this.state.lastError}`
-        : this.state.detail
+        : this.state.detail,
+      children: providerStatus?.children,
+      lastSourceUsed: providerStatus?.lastSourceUsed ?? null
     };
   }
 }

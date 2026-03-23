@@ -1,8 +1,14 @@
-import { MARKET_SNAPSHOT_FRESH_HOURS } from "@nhalo/config";
+import {
+  DEFAULT_SAFETY_CACHE_TTL_HOURS,
+  DEFAULT_SAFETY_STALE_TTL_HOURS,
+  MARKET_SNAPSHOT_FRESH_HOURS
+} from "@nhalo/config";
 import type {
   ListingRecord,
   MarketSnapshot,
   MarketSnapshotRepository,
+  SafetySignalCacheRecord,
+  SafetySignalCacheRepository,
   ScoreAuditRecord,
   SearchPersistenceInput,
   SearchRepository
@@ -10,6 +16,10 @@ import type {
 
 function createId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function ageHours(timestamp: string): number {
+  return (Date.now() - new Date(timestamp).getTime()) / 3_600_000;
 }
 
 type StoredSnapshot = {
@@ -27,6 +37,7 @@ type StoredSnapshot = {
   inputs: ScoreAuditRecord["inputs"];
   scoreInputs: Record<string, unknown>;
   createdAt: string;
+  safetyProvenance: NonNullable<ScoreAuditRecord["safetyProvenance"]>;
 };
 
 function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
@@ -43,7 +54,8 @@ function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
     finalScore: snapshot.nhaloScore,
     computedAt: snapshot.createdAt,
     safetyConfidence: snapshot.safetyConfidence,
-    overallConfidence: snapshot.overallConfidence
+    overallConfidence: snapshot.overallConfidence,
+    safetyProvenance: snapshot.safetyProvenance
   };
 }
 
@@ -69,7 +81,16 @@ export class InMemorySearchRepository implements SearchRepository {
         weights: result.weights,
         inputs: result.inputs,
         scoreInputs: result.scoreInputs,
-        createdAt: result.computedAt
+        createdAt: result.computedAt,
+        safetyProvenance: {
+          safetyDataSource: result.safetyDataSource,
+          crimeProvider: result.crimeProvider,
+          schoolProvider: result.schoolProvider,
+          crimeFetchedAt: result.crimeFetchedAt,
+          schoolFetchedAt: result.schoolFetchedAt,
+          rawSafetyInputs: result.rawSafetyInputs,
+          normalizedSafetyInputs: result.normalizedSafetyInputs
+        }
       });
     }
   }
@@ -106,9 +127,44 @@ export class InMemoryMarketSnapshotRepository implements MarketSnapshotRepositor
   }
 
   isSnapshotFresh(snapshot: MarketSnapshot, maxAgeHours = MARKET_SNAPSHOT_FRESH_HOURS): boolean {
-    const ageHours = (Date.now() - new Date(snapshot.createdAt).getTime()) / 3_600_000;
+    return ageHours(snapshot.createdAt) <= maxAgeHours;
+  }
+}
 
-    return ageHours <= maxAgeHours;
+export class InMemorySafetySignalCacheRepository implements SafetySignalCacheRepository {
+  public readonly entries: SafetySignalCacheRecord[] = [];
+
+  async save(entry: Omit<SafetySignalCacheRecord, "id">): Promise<SafetySignalCacheRecord> {
+    const record: SafetySignalCacheRecord = {
+      ...entry,
+      id: createId("safety")
+    };
+
+    this.entries.push(record);
+
+    return record;
+  }
+
+  async getLatest(locationKey: string): Promise<SafetySignalCacheRecord | null> {
+    const record = [...this.entries]
+      .filter((entry) => entry.locationKey === locationKey)
+      .sort((left, right) => right.fetchedAt.localeCompare(left.fetchedAt))[0];
+
+    return record ?? null;
+  }
+
+  isFresh(
+    entry: SafetySignalCacheRecord,
+    ttlHours = DEFAULT_SAFETY_CACHE_TTL_HOURS
+  ): boolean {
+    return ageHours(entry.fetchedAt) <= ttlHours;
+  }
+
+  isStaleUsable(
+    entry: SafetySignalCacheRecord,
+    staleTtlHours = DEFAULT_SAFETY_STALE_TTL_HOURS
+  ): boolean {
+    return ageHours(entry.fetchedAt) <= staleTtlHours;
   }
 }
 
@@ -127,6 +183,10 @@ type PrismaClientLike = {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   };
+  safetySignalCache: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+  };
 };
 
 function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord {
@@ -136,24 +196,31 @@ function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord
       size: 30,
       safety: 30
     }) as ScoreAuditRecord["weights"];
+  const scoreInputs = (record.scoreInputs as Record<string, unknown> | undefined) ?? {};
 
   return {
     propertyId: record.propertyId as string,
     formulaVersion: record.formulaVersion as string,
     inputs: {
-      price: Number(record.scoreInputs ? ((record.scoreInputs as { price?: number }).price ?? 0) : 0),
-      squareFootage: Number(
-        record.scoreInputs ? ((record.scoreInputs as { squareFootage?: number }).squareFootage ?? 0) : 0
-      ),
-      bedrooms: Number(record.scoreInputs ? ((record.scoreInputs as { bedrooms?: number }).bedrooms ?? 0) : 0),
-      bathrooms: Number(record.scoreInputs ? ((record.scoreInputs as { bathrooms?: number }).bathrooms ?? 0) : 0),
-      lotSize: (record.scoreInputs as { lotSize?: number | null } | undefined)?.lotSize ?? null,
+      price: Number(scoreInputs.price ?? 0),
+      squareFootage: Number(scoreInputs.squareFootage ?? 0),
+      bedrooms: Number(scoreInputs.bedrooms ?? 0),
+      bathrooms: Number(scoreInputs.bathrooms ?? 0),
+      lotSize: (scoreInputs.lotSize as number | null | undefined) ?? null,
       crimeIndex: (record.crimeIndex as number | null) ?? null,
       schoolRating: (record.schoolRating as number | null) ?? null,
       neighborhoodStability: (record.neighborhoodStability as number | null) ?? null,
       pricePerSqft: Number(record.pricePerSqft ?? 0),
       medianPricePerSqft: Number(record.medianPricePerSqft ?? 0),
-      dataCompleteness: Number(record.dataCompleteness ?? 0)
+      dataCompleteness: Number(record.dataCompleteness ?? 0),
+      schoolRatingRaw: (scoreInputs.schoolRatingRaw as Record<string, unknown> | number | null | undefined) ?? null,
+      schoolRatingNormalized: (scoreInputs.schoolRatingNormalized as number | null | undefined) ?? null,
+      schoolProvider: (record.schoolProvider as string | null) ?? null,
+      schoolFetchedAt: record.schoolFetchedAt ? (record.schoolFetchedAt as Date).toISOString() : null,
+      crimeIndexRaw: (scoreInputs.crimeIndexRaw as Record<string, unknown> | number | null | undefined) ?? null,
+      crimeIndexNormalized: (scoreInputs.crimeIndexNormalized as number | null | undefined) ?? null,
+      crimeProvider: (record.crimeProvider as string | null) ?? null,
+      crimeFetchedAt: record.crimeFetchedAt ? (record.crimeFetchedAt as Date).toISOString() : null
     },
     weights,
     subScores: {
@@ -164,7 +231,17 @@ function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord
     finalScore: Number(record.nhaloScore ?? 0),
     computedAt: (record.createdAt as Date).toISOString(),
     safetyConfidence: record.safetyConfidence as ScoreAuditRecord["safetyConfidence"],
-    overallConfidence: record.overallConfidence as ScoreAuditRecord["overallConfidence"]
+    overallConfidence: record.overallConfidence as ScoreAuditRecord["overallConfidence"],
+    safetyProvenance: {
+      safetyDataSource:
+        (record.safetyDataSource as NonNullable<ScoreAuditRecord["safetyProvenance"]>["safetyDataSource"]) ?? "none",
+      crimeProvider: (record.crimeProvider as string | null) ?? null,
+      schoolProvider: (record.schoolProvider as string | null) ?? null,
+      crimeFetchedAt: record.crimeFetchedAt ? (record.crimeFetchedAt as Date).toISOString() : null,
+      schoolFetchedAt: record.schoolFetchedAt ? (record.schoolFetchedAt as Date).toISOString() : null,
+      rawSafetyInputs: (record.rawSafetyInputs as Record<string, unknown> | null) ?? null,
+      normalizedSafetyInputs: (record.normalizedSafetyInputs as Record<string, unknown> | null) ?? null
+    }
   };
 }
 
@@ -213,6 +290,13 @@ export class PrismaSearchRepository implements SearchRepository {
           schoolRating: result.schoolRating,
           neighborhoodStability: result.neighborhoodStability,
           dataCompleteness: result.dataCompleteness,
+          safetyDataSource: result.safetyDataSource,
+          crimeProvider: result.crimeProvider,
+          schoolProvider: result.schoolProvider,
+          crimeFetchedAt: result.crimeFetchedAt ? new Date(result.crimeFetchedAt) : null,
+          schoolFetchedAt: result.schoolFetchedAt ? new Date(result.schoolFetchedAt) : null,
+          rawSafetyInputs: result.rawSafetyInputs,
+          normalizedSafetyInputs: result.normalizedSafetyInputs,
           scoreInputs: {
             ...result.inputs,
             ...result.scoreInputs
@@ -338,22 +422,112 @@ export class PrismaMarketSnapshotRepository implements MarketSnapshotRepository 
   }
 
   isSnapshotFresh(snapshot: MarketSnapshot, maxAgeHours = MARKET_SNAPSHOT_FRESH_HOURS): boolean {
-    const ageHours = (Date.now() - new Date(snapshot.createdAt).getTime()) / 3_600_000;
+    return ageHours(snapshot.createdAt) <= maxAgeHours;
+  }
+}
 
-    return ageHours <= maxAgeHours;
+export class PrismaSafetySignalCacheRepository implements SafetySignalCacheRepository {
+  constructor(private readonly client: PrismaClientLike) {}
+
+  async save(entry: Omit<SafetySignalCacheRecord, "id">): Promise<SafetySignalCacheRecord> {
+    const record = await this.client.safetySignalCache.create({
+      data: {
+        locationKey: entry.locationKey,
+        lat: entry.lat,
+        lng: entry.lng,
+        crimeProvider: entry.crimeProvider,
+        schoolProvider: entry.schoolProvider,
+        crimeRaw: entry.crimeRaw,
+        crimeNormalized: entry.crimeNormalized,
+        schoolRaw: entry.schoolRaw,
+        schoolNormalized: entry.schoolNormalized,
+        stabilityRaw: entry.stabilityRaw,
+        stabilityNormalized: entry.stabilityNormalized,
+        fetchedAt: new Date(entry.fetchedAt),
+        expiresAt: new Date(entry.expiresAt),
+        sourceType: entry.sourceType
+      }
+    });
+
+    return {
+      id: record.id as string,
+      locationKey: record.locationKey as string,
+      lat: Number(record.lat),
+      lng: Number(record.lng),
+      crimeProvider: (record.crimeProvider as string | null) ?? null,
+      schoolProvider: (record.schoolProvider as string | null) ?? null,
+      crimeRaw: (record.crimeRaw as Record<string, unknown> | number | null) ?? null,
+      crimeNormalized: (record.crimeNormalized as number | null) ?? null,
+      schoolRaw: (record.schoolRaw as Record<string, unknown> | number | null) ?? null,
+      schoolNormalized: (record.schoolNormalized as number | null) ?? null,
+      stabilityRaw: (record.stabilityRaw as Record<string, unknown> | number | null) ?? null,
+      stabilityNormalized: (record.stabilityNormalized as number | null) ?? null,
+      fetchedAt: (record.fetchedAt as Date).toISOString(),
+      expiresAt: (record.expiresAt as Date).toISOString(),
+      sourceType: record.sourceType as SafetySignalCacheRecord["sourceType"]
+    };
+  }
+
+  async getLatest(locationKey: string): Promise<SafetySignalCacheRecord | null> {
+    const record = await this.client.safetySignalCache.findFirst({
+      where: {
+        locationKey
+      },
+      orderBy: {
+        fetchedAt: "desc"
+      }
+    });
+
+    if (!record) {
+      return null;
+    }
+
+    return {
+      id: record.id as string,
+      locationKey: record.locationKey as string,
+      lat: Number(record.lat),
+      lng: Number(record.lng),
+      crimeProvider: (record.crimeProvider as string | null) ?? null,
+      schoolProvider: (record.schoolProvider as string | null) ?? null,
+      crimeRaw: (record.crimeRaw as Record<string, unknown> | number | null) ?? null,
+      crimeNormalized: (record.crimeNormalized as number | null) ?? null,
+      schoolRaw: (record.schoolRaw as Record<string, unknown> | number | null) ?? null,
+      schoolNormalized: (record.schoolNormalized as number | null) ?? null,
+      stabilityRaw: (record.stabilityRaw as Record<string, unknown> | number | null) ?? null,
+      stabilityNormalized: (record.stabilityNormalized as number | null) ?? null,
+      fetchedAt: (record.fetchedAt as Date).toISOString(),
+      expiresAt: (record.expiresAt as Date).toISOString(),
+      sourceType: record.sourceType as SafetySignalCacheRecord["sourceType"]
+    };
+  }
+
+  isFresh(
+    entry: SafetySignalCacheRecord,
+    ttlHours = DEFAULT_SAFETY_CACHE_TTL_HOURS
+  ): boolean {
+    return ageHours(entry.fetchedAt) <= ttlHours;
+  }
+
+  isStaleUsable(
+    entry: SafetySignalCacheRecord,
+    staleTtlHours = DEFAULT_SAFETY_STALE_TTL_HOURS
+  ): boolean {
+    return ageHours(entry.fetchedAt) <= staleTtlHours;
   }
 }
 
 export interface PersistenceLayer {
   searchRepository: SearchRepository;
   marketSnapshotRepository: MarketSnapshotRepository;
+  safetySignalCacheRepository: SafetySignalCacheRepository;
 }
 
 export async function createPersistenceLayer(databaseUrl?: string): Promise<PersistenceLayer> {
   if (!databaseUrl) {
     return {
       searchRepository: new InMemorySearchRepository(),
-      marketSnapshotRepository: new InMemoryMarketSnapshotRepository()
+      marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
+      safetySignalCacheRepository: new InMemorySafetySignalCacheRepository()
     };
   }
 
@@ -369,12 +543,14 @@ export async function createPersistenceLayer(databaseUrl?: string): Promise<Pers
 
     return {
       searchRepository: new PrismaSearchRepository(client),
-      marketSnapshotRepository: new PrismaMarketSnapshotRepository(client)
+      marketSnapshotRepository: new PrismaMarketSnapshotRepository(client),
+      safetySignalCacheRepository: new PrismaSafetySignalCacheRepository(client)
     };
   } catch {
     return {
       searchRepository: new InMemorySearchRepository(),
-      marketSnapshotRepository: new InMemoryMarketSnapshotRepository()
+      marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
+      safetySignalCacheRepository: new InMemorySafetySignalCacheRepository()
     };
   }
 }

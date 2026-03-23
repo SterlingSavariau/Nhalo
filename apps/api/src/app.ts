@@ -1,10 +1,11 @@
 import cors from "@fastify/cors";
 import { getConfig } from "@nhalo/config";
 import { createPersistenceLayer } from "@nhalo/db";
-import { createMockProviders } from "@nhalo/providers";
+import { createMockProviders, createProviders } from "@nhalo/providers";
 import type {
   MarketSnapshotRepository,
   ProviderStatus,
+  SafetySignalCacheRepository,
   SearchRepository
 } from "@nhalo/types";
 import Fastify from "fastify";
@@ -18,6 +19,7 @@ import { runSearch } from "./search-service";
 export interface AppDependencies {
   repository: SearchRepository;
   marketSnapshotRepository: MarketSnapshotRepository;
+  safetySignalCacheRepository: SafetySignalCacheRepository;
   providers: ReturnType<typeof createMockProviders>;
   metrics: MetricsCollector;
 }
@@ -38,15 +40,22 @@ function formatValidationError(error: ZodError) {
 export async function buildApp(dependencies?: Partial<AppDependencies>) {
   const config = getConfig();
   const persistence =
-    dependencies?.repository && dependencies?.marketSnapshotRepository
+    dependencies?.repository &&
+    dependencies?.marketSnapshotRepository &&
+    dependencies?.safetySignalCacheRepository
       ? {
           searchRepository: dependencies.repository,
-          marketSnapshotRepository: dependencies.marketSnapshotRepository
+          marketSnapshotRepository: dependencies.marketSnapshotRepository,
+          safetySignalCacheRepository: dependencies.safetySignalCacheRepository
         }
       : await createPersistenceLayer(config.databaseUrl);
   const metrics = dependencies?.metrics ?? new MetricsCollector();
   const providers = instrumentProviders(
-    dependencies?.providers ?? createMockProviders(),
+    dependencies?.providers ??
+      createProviders({
+        safetySignalCacheRepository: persistence.safetySignalCacheRepository,
+        metrics
+      }),
     metrics
   );
   const app = Fastify({ logger: false });

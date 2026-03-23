@@ -68,6 +68,13 @@ model ScoreSnapshot {
   schoolRating          Float?
   neighborhoodStability Float?
   dataCompleteness      Float
+  safetyDataSource      String        @default("none")
+  crimeProvider         String?
+  schoolProvider        String?
+  crimeFetchedAt        DateTime?
+  schoolFetchedAt       DateTime?
+  rawSafetyInputs       Json?
+  normalizedSafetyInputs Json?
   scoreInputs           Json
   createdAt             DateTime      @default(now())
   property              Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
@@ -86,4 +93,24 @@ model MarketSnapshot {
   createdAt          DateTime @default(now())
 
   @@index([location, radiusMiles, createdAt])
+}
+
+model SafetySignalCache {
+  id                 String   @id @default(cuid())
+  locationKey        String
+  lat                Float
+  lng                Float
+  crimeProvider      String?
+  schoolProvider     String?
+  crimeRaw           Json?
+  crimeNormalized    Float?
+  schoolRaw          Json?
+  schoolNormalized   Float?
+  stabilityRaw       Json?
+  stabilityNormalized Float?
+  fetchedAt          DateTime
+  expiresAt          DateTime
+  sourceType         String
+
+  @@index([locationKey, fetchedAt])
 }

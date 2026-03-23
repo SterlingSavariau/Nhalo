@@ -285,13 +285,19 @@ function calculateDataCompleteness(safetyRecord: SafetyRecord | undefined): numb
 function calculateOverallConfidence(
   safetyConfidence: SafetyConfidence,
   dataCompleteness: number,
-  freshnessHours: number | null
+  freshnessHours: number | null,
+  safetyRecord: SafetyRecord | undefined
 ): SafetyConfidence {
-  if (safetyConfidence === "none" || dataCompleteness === 0) {
+  const source = safetyRecord ? safetyRecord.safetyDataSource ?? "live" : "none";
+
+  if (safetyConfidence === "none" || dataCompleteness === 0 || source === "none") {
     return "none";
   }
 
   const providerFresh = freshnessHours === null || freshnessHours <= 24;
+  if (source === "stale_cached_live" || source === "mock") {
+    return "low";
+  }
 
   if (safetyConfidence === "high" && providerFresh) {
     return "high";
@@ -321,7 +327,15 @@ function createAuditInputs(
     neighborhoodStability: safetyRecord?.stabilityIndex ?? null,
     pricePerSqft: roundToTwo(listing.price / Math.max(listing.sqft, 1)),
     medianPricePerSqft: roundToTwo(medianPricePerSqft),
-    dataCompleteness
+    dataCompleteness,
+    schoolRatingRaw: safetyRecord?.schoolRatingRaw ?? null,
+    schoolRatingNormalized: safetyRecord?.schoolRatingNormalized ?? null,
+    schoolProvider: safetyRecord?.schoolProvider ?? null,
+    schoolFetchedAt: safetyRecord?.schoolFetchedAt ?? null,
+    crimeIndexRaw: safetyRecord?.crimeIndexRaw ?? null,
+    crimeIndexNormalized: safetyRecord?.crimeIndexNormalized ?? null,
+    crimeProvider: safetyRecord?.crimeProvider ?? null,
+    crimeFetchedAt: safetyRecord?.crimeFetchedAt ?? null
   };
 }
 
@@ -368,7 +382,8 @@ export function rankListings(listings: ListingRecord[], context: RankingContext)
       const overallConfidence = calculateOverallConfidence(
         safety.confidence,
         dataCompleteness,
-        context.providerFreshnessHours.safety
+        context.providerFreshnessHours.safety,
+        safetyRecord
       );
       const auditInputs = createAuditInputs(
         listing,
@@ -392,7 +407,10 @@ export function rankListings(listings: ListingRecord[], context: RankingContext)
           sizeBreakdown: size.details,
           safetyBreakdown: safety.details,
           providerFreshnessHours: context.providerFreshnessHours,
-          marketSnapshotId: context.marketSnapshot.id
+          marketSnapshotId: context.marketSnapshot.id,
+          safetyDataSource: safetyRecord?.safetyDataSource ?? "none",
+          rawSafetyInputs: safetyRecord?.rawSafetyInputs ?? null,
+          normalizedSafetyInputs: safetyRecord?.normalizedSafetyInputs ?? null
         },
         scores: {
           price: price.score,

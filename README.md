@@ -9,6 +9,7 @@ Nhalo is a family-first home decision engine that ranks homes by price, size, an
 - Mock provider adapters behind stable interfaces
 - PostgreSQL-ready persistence via Prisma
 - Immutable score audits, market baseline snapshots, provider health tracking, and metrics
+- Hybrid live/mock safety provider architecture with live-capable crime and school adapters
 - Unit and integration tests for scoring and `/search`
 
 ## Run Locally
@@ -53,3 +54,5 @@ Nhalo is a family-first home decision engine that ranks homes by price, size, an
 - Provider failures fall back to cached data where available and otherwise degrade confidence instead of crashing search.
 - Each scored result is persisted with raw numeric inputs, confidence metadata, and immutable formula version.
 - Market price-per-square-foot baselines are snapshotted per search area and reused for up to 24 hours.
+- Safety resolution now supports `live`, `cached_live`, `stale_cached_live`, `mock`, and `none` provenance modes.
+- Live safety configuration is controlled with `SAFETY_PROVIDER_MODE`, crime/school provider base URLs and API keys, and cache TTL env vars.

@@ -1,5 +1,6 @@
 import {
   InMemoryMarketSnapshotRepository,
+  InMemorySafetySignalCacheRepository,
   InMemorySearchRepository
 } from "@nhalo/db";
 import { createMockProviders } from "@nhalo/providers";
@@ -23,6 +24,7 @@ describe("reliability infrastructure", () => {
       marketSnapshotRepository,
       metrics,
       repository,
+      safetySignalCacheRepository: new InMemorySafetySignalCacheRepository(),
       providers: {
         ...baseProviders,
         safety: {
@@ -90,7 +92,7 @@ describe("reliability infrastructure", () => {
     });
 
     expect(auditResponse.statusCode).toBe(200);
-    expect(auditResponse.json()).toEqual({
+    expect(auditResponse.json()).toMatchObject({
       propertyId: firstHome.id,
       formulaVersion: "nhalo-v1",
       inputs: {
