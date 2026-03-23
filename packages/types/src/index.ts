@@ -14,7 +14,15 @@ export type SafetyDataSource =
   | "stale_cached_live"
   | "mock"
   | "none";
+export type ListingDataSource =
+  | "live"
+  | "cached_live"
+  | "stale_cached_live"
+  | "mock"
+  | "none";
 export type SafetyProviderMode = "mock" | "hybrid" | "live";
+export type ListingProviderMode = "mock" | "hybrid" | "live";
+export type ListingStatus = "active" | "pending" | "sold" | "unknown";
 
 export interface SearchWeights {
   price: number;
@@ -55,22 +63,36 @@ export interface ResolvedLocation {
 
 export interface ListingRecord {
   id: string;
+  propertyId: string;
   provider: string;
+  sourceProvider: string;
+  sourceListingId: string;
   sourceUrl?: string;
   address: string;
   city: string;
   state: string;
   zipCode: string;
+  latitude: number;
+  longitude: number;
   coordinates: Coordinates;
   propertyType: PropertyType;
+  listingStatus: ListingStatus;
+  daysOnMarket?: number | null;
   price: number;
+  pricePerSqft: number;
   sqft: number;
+  squareFootage: number;
   bedrooms: number;
   bathrooms: number;
+  lotSize?: number | null;
   lotSqft?: number | null;
+  listingDataSource?: ListingDataSource;
+  fetchedAt: string;
   createdAt: string;
   updatedAt: string;
   rawPayload?: Record<string, unknown>;
+  rawListingInputs?: Record<string, unknown> | null;
+  normalizedListingInputs?: Record<string, unknown> | null;
 }
 
 export interface SafetyRecord {
@@ -112,6 +134,28 @@ export interface ListingProvider {
   readonly name: string;
   fetchListings(context: ListingSearchContext): Promise<ListingRecord[]>;
   getStatus(): Promise<ProviderStatus>;
+  getLastRejectionSummary?(): ListingRejectionSummary | null;
+}
+
+export interface ListingSourceProvider {
+  readonly name: string;
+  fetchRawListings(context: ListingSearchContext): Promise<Record<string, unknown>[]>;
+  getStatus(): Promise<ProviderStatus>;
+}
+
+export interface ListingNormalizationResult {
+  listings: ListingRecord[];
+  rejectionSummary: ListingRejectionSummary;
+  rawPayload: Record<string, unknown>[] | null;
+}
+
+export interface ListingNormalizationService {
+  normalize(
+    payload: Record<string, unknown>[],
+    providerName: string,
+    fetchedAt: string,
+    source: ListingDataSource
+  ): ListingNormalizationResult;
 }
 
 export interface SafetyProvider {
@@ -171,7 +215,7 @@ export interface ProviderStatus {
   mode: "mock" | "live";
   detail: string;
   children?: ProviderStatus[];
-  lastSourceUsed?: SafetyDataSource | null;
+  lastSourceUsed?: SafetyDataSource | ListingDataSource | null;
 }
 
 export interface AppliedFilters {
@@ -208,6 +252,10 @@ export interface ScoredHome {
   bathrooms: number;
   lotSqft?: number | null;
   sourceUrl?: string;
+  listingDataSource?: ListingDataSource;
+  listingProvider?: string | null;
+  sourceListingId?: string | null;
+  listingFetchedAt?: string | null;
   neighborhoodSafetyScore: number;
   explanation: string;
   scores: ScoreBreakdown;
@@ -230,6 +278,7 @@ export interface SearchMetadata {
   durationMs: number;
   warnings: SearchWarning[];
   suggestions: SearchSuggestion[];
+  rejectionSummary?: ListingRejectionSummary;
 }
 
 export interface SearchResponse {
@@ -261,6 +310,12 @@ export interface PersistedSearchResult {
   schoolFetchedAt: string | null;
   rawSafetyInputs: Record<string, unknown> | null;
   normalizedSafetyInputs: Record<string, unknown> | null;
+  listingDataSource: ListingDataSource;
+  listingProvider: string | null;
+  sourceListingId: string | null;
+  listingFetchedAt: string | null;
+  rawListingInputs: Record<string, unknown> | null;
+  normalizedListingInputs: Record<string, unknown> | null;
 }
 
 export interface SearchPersistenceInput {
@@ -358,6 +413,14 @@ export interface ScoreAuditRecord {
     rawSafetyInputs: Record<string, unknown> | null;
     normalizedSafetyInputs: Record<string, unknown> | null;
   };
+  listingProvenance?: {
+    listingDataSource: ListingDataSource;
+    listingProvider: string | null;
+    sourceListingId: string | null;
+    listingFetchedAt: string | null;
+    rawListingInputs: Record<string, unknown> | null;
+    normalizedListingInputs: Record<string, unknown> | null;
+  };
 }
 
 export interface SearchMetrics {
@@ -421,6 +484,41 @@ export interface SearchMetrics {
     totalResolutions: number;
     rate: number;
   };
+  listingProviderLatencyMs: {
+    count: number;
+    average: number;
+    last: number | null;
+  };
+  listingProviderFailureRate: {
+    requests: number;
+    failures: number;
+    rate: number;
+  };
+  listingCacheHitRate: {
+    hits: number;
+    misses: number;
+    rate: number;
+  };
+  listingLiveFetchRate: {
+    liveFetches: number;
+    totalResolutions: number;
+    rate: number;
+  };
+  listingFallbackRate: {
+    fallbacks: number;
+    totalResolutions: number;
+    rate: number;
+  };
+  listingNormalizationFailureRate: {
+    failures: number;
+    totalProcessed: number;
+    rate: number;
+  };
+  listingResultsReturnedCount: {
+    total: number;
+    average: number;
+    last: number | null;
+  };
   scoreDistribution: {
     count: number;
     average: number;
@@ -452,4 +550,36 @@ export interface SafetySignalCacheRepository {
   getLatest(locationKey: string): Promise<SafetySignalCacheRecord | null>;
   isFresh(entry: SafetySignalCacheRecord, ttlHours?: number): boolean;
   isStaleUsable(entry: SafetySignalCacheRecord, staleTtlHours?: number): boolean;
+}
+
+export interface ListingCacheRecord {
+  id: string;
+  locationKey: string;
+  locationType: LocationType;
+  locationValue: string;
+  radiusMiles: number;
+  provider: string;
+  rawPayload: Record<string, unknown>[] | null;
+  normalizedListings: ListingRecord[];
+  fetchedAt: string;
+  expiresAt: string;
+  sourceType: ListingDataSource;
+  rejectionSummary: ListingRejectionSummary;
+}
+
+export interface ListingCacheRepository {
+  save(entry: Omit<ListingCacheRecord, "id">): Promise<ListingCacheRecord>;
+  getLatest(locationKey: string): Promise<ListingCacheRecord | null>;
+  isFresh(entry: ListingCacheRecord, ttlHours?: number): boolean;
+  isStaleUsable(entry: ListingCacheRecord, staleTtlHours?: number): boolean;
+}
+
+export interface ListingRejectionSummary {
+  duplicateListings: number;
+  invalidCoordinates: number;
+  missingAddress: number;
+  missingPrice: number;
+  missingSquareFootage: number;
+  unsupportedPropertyType: number;
+  normalizationFailures: number;
 }

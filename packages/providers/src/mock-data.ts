@@ -2,6 +2,77 @@ import type { ListingRecord, ResolvedLocation, SafetyRecord } from "@nhalo/types
 
 const now = "2026-03-22T00:00:00.000Z";
 
+type MockListingSeed = {
+  id: string;
+  provider: string;
+  sourceUrl?: string;
+  address: string;
+  city: string;
+  state: string;
+  zipCode: string;
+  coordinates: { lat: number; lng: number };
+  propertyType: ListingRecord["propertyType"];
+  price: number;
+  sqft: number;
+  bedrooms: number;
+  bathrooms: number;
+  lotSqft?: number | null;
+  createdAt: string;
+  updatedAt: string;
+  rawPayload?: Record<string, unknown>;
+};
+
+function normalizeMockListing(seed: MockListingSeed): ListingRecord {
+  return {
+    id: seed.id,
+    propertyId: seed.id,
+    provider: seed.provider,
+    sourceProvider: seed.provider,
+    sourceListingId: seed.id,
+    sourceUrl: seed.sourceUrl,
+    address: seed.address,
+    city: seed.city,
+    state: seed.state,
+    zipCode: seed.zipCode,
+    latitude: seed.coordinates.lat,
+    longitude: seed.coordinates.lng,
+    coordinates: seed.coordinates,
+    propertyType: seed.propertyType,
+    listingStatus: "active",
+    daysOnMarket: null,
+    price: seed.price,
+    pricePerSqft: Number((seed.price / Math.max(seed.sqft, 1)).toFixed(2)),
+    sqft: seed.sqft,
+    squareFootage: seed.sqft,
+    bedrooms: seed.bedrooms,
+    bathrooms: seed.bathrooms,
+    lotSize: seed.lotSqft ?? null,
+    lotSqft: seed.lotSqft ?? null,
+    listingDataSource: "mock",
+    fetchedAt: seed.updatedAt,
+    createdAt: seed.createdAt,
+    updatedAt: seed.updatedAt,
+    rawPayload: seed.rawPayload,
+    rawListingInputs: seed.rawPayload ?? null,
+    normalizedListingInputs: {
+      address: seed.address,
+      city: seed.city,
+      state: seed.state,
+      zipCode: seed.zipCode,
+      latitude: seed.coordinates.lat,
+      longitude: seed.coordinates.lng,
+      propertyType: seed.propertyType,
+      listingStatus: "active",
+      price: seed.price,
+      squareFootage: seed.sqft,
+      bedrooms: seed.bedrooms,
+      bathrooms: seed.bathrooms,
+      lotSize: seed.lotSqft ?? null,
+      pricePerSqft: Number((seed.price / Math.max(seed.sqft, 1)).toFixed(2))
+    }
+  };
+}
+
 export const MOCK_LOCATIONS: Record<string, ResolvedLocation> = {
   "city:southfield, mi": {
     locationType: "city",
@@ -53,7 +124,7 @@ export const MOCK_LOCATIONS: Record<string, ResolvedLocation> = {
   }
 };
 
-export const MOCK_LISTINGS: ListingRecord[] = [
+const RAW_MOCK_LISTINGS: MockListingSeed[] = [
   {
     id: "sf-001",
     provider: "mock-mls",
@@ -397,6 +468,8 @@ export const MOCK_LISTINGS: ListingRecord[] = [
     rawPayload: { source: "mock-mls" }
   }
 ];
+
+export const MOCK_LISTINGS: ListingRecord[] = RAW_MOCK_LISTINGS.map(normalizeMockListing);
 
 export const MOCK_SAFETY: SafetyRecord[] = [
   { propertyId: "sf-001", crimeIndex: 28, schoolRating: 7.8, stabilityIndex: 71, source: "mock-safety", updatedAt: now },

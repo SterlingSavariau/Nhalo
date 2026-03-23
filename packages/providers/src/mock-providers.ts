@@ -83,7 +83,8 @@ export class MockListingProvider implements ListingProvider {
       latencyMs: 0,
       failureCount: 0,
       mode: "mock",
-      detail: `Mock listing provider seeded with ${MOCK_LISTINGS.length} listings.`
+      detail: `Mock listing provider seeded with ${MOCK_LISTINGS.length} listings.`,
+      lastSourceUsed: "mock"
     };
   }
 }

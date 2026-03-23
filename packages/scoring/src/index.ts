@@ -286,24 +286,36 @@ function calculateOverallConfidence(
   safetyConfidence: SafetyConfidence,
   dataCompleteness: number,
   freshnessHours: number | null,
-  safetyRecord: SafetyRecord | undefined
+  safetyRecord: SafetyRecord | undefined,
+  listing: ListingRecord,
+  listingFreshnessHours: number | null
 ): SafetyConfidence {
   const source = safetyRecord ? safetyRecord.safetyDataSource ?? "live" : "none";
+  const listingSource = listing.listingDataSource ?? "live";
 
   if (safetyConfidence === "none" || dataCompleteness === 0 || source === "none") {
     return "none";
   }
 
+  if (listingSource === "none") {
+    return "none";
+  }
+
   const providerFresh = freshnessHours === null || freshnessHours <= 24;
-  if (source === "stale_cached_live" || source === "mock") {
+  const listingFresh = listingFreshnessHours === null || listingFreshnessHours <= 24;
+  if (
+    source === "stale_cached_live" ||
+    source === "mock" ||
+    listingSource === "stale_cached_live"
+  ) {
     return "low";
   }
 
-  if (safetyConfidence === "high" && providerFresh) {
+  if (safetyConfidence === "high" && providerFresh && listingFresh) {
     return "high";
   }
 
-  if (safetyConfidence === "medium" && providerFresh) {
+  if (safetyConfidence === "medium" && providerFresh && listingFresh) {
     return "medium";
   }
 
@@ -318,7 +330,7 @@ function createAuditInputs(
 ): ScoreAuditInputs {
   return {
     price: listing.price,
-    squareFootage: listing.sqft,
+    squareFootage: listing.squareFootage,
     bedrooms: listing.bedrooms,
     bathrooms: listing.bathrooms,
     lotSize: listing.lotSqft ?? null,
@@ -383,7 +395,9 @@ export function rankListings(listings: ListingRecord[], context: RankingContext)
         safety.confidence,
         dataCompleteness,
         context.providerFreshnessHours.safety,
-        safetyRecord
+        safetyRecord,
+        listing,
+        context.providerFreshnessHours.listings
       );
       const auditInputs = createAuditInputs(
         listing,
@@ -410,7 +424,8 @@ export function rankListings(listings: ListingRecord[], context: RankingContext)
           marketSnapshotId: context.marketSnapshot.id,
           safetyDataSource: safetyRecord?.safetyDataSource ?? "none",
           rawSafetyInputs: safetyRecord?.rawSafetyInputs ?? null,
-          normalizedSafetyInputs: safetyRecord?.normalizedSafetyInputs ?? null
+          normalizedSafetyInputs: safetyRecord?.normalizedSafetyInputs ?? null,
+          listingDataSource: listing.listingDataSource ?? "none"
         },
         scores: {
           price: price.score,

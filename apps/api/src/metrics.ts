@@ -53,6 +53,18 @@ export class MetricsCollector {
     total: 0,
     fallbacks: 0
   };
+  private readonly listingResolution = {
+    cacheHits: 0,
+    cacheMisses: 0,
+    liveFetches: 0,
+    total: 0,
+    fallbacks: 0
+  };
+  private readonly listingNormalization = {
+    failures: 0,
+    totalProcessed: 0
+  };
+  private readonly listingResultsReturned = createSeries();
 
   recordSearch(payload: {
     durationMs: number;
@@ -82,6 +94,38 @@ export class MetricsCollector {
     }
     recordSeries(entry.latency, latencyMs);
     this.providers.set(providerName, entry);
+  }
+
+  recordListingResolution(payload: {
+    source: "live" | "cached_live" | "stale_cached_live" | "mock" | "none";
+    cacheHit: boolean;
+    liveFetch: boolean;
+    fallback: boolean;
+  }): void {
+    this.listingResolution.total += 1;
+    if (payload.cacheHit) {
+      this.listingResolution.cacheHits += 1;
+    } else {
+      this.listingResolution.cacheMisses += 1;
+    }
+    if (payload.liveFetch) {
+      this.listingResolution.liveFetches += 1;
+    }
+    if (payload.fallback) {
+      this.listingResolution.fallbacks += 1;
+    }
+  }
+
+  recordListingNormalization(payload: {
+    totalProcessed: number;
+    failures: number;
+  }): void {
+    this.listingNormalization.totalProcessed += payload.totalProcessed;
+    this.listingNormalization.failures += payload.failures;
+  }
+
+  recordListingResultsReturned(count: number): void {
+    recordSeries(this.listingResultsReturned, count);
   }
 
   recordSafetyResolution(payload: {
@@ -205,6 +249,52 @@ export class MetricsCollector {
           this.safetyResolution.total === 0
             ? 0
             : Number((this.safetyResolution.fallbacks / this.safetyResolution.total).toFixed(4))
+      },
+      listingProviderLatencyMs: this.providerLatency("ListingSourceProvider"),
+      listingProviderFailureRate: this.providerRate("ListingSourceProvider"),
+      listingCacheHitRate: {
+        hits: this.listingResolution.cacheHits,
+        misses: this.listingResolution.cacheMisses,
+        rate:
+          this.listingResolution.cacheHits + this.listingResolution.cacheMisses === 0
+            ? 0
+            : Number(
+                (
+                  this.listingResolution.cacheHits /
+                  (this.listingResolution.cacheHits + this.listingResolution.cacheMisses)
+                ).toFixed(4)
+              )
+      },
+      listingLiveFetchRate: {
+        liveFetches: this.listingResolution.liveFetches,
+        totalResolutions: this.listingResolution.total,
+        rate:
+          this.listingResolution.total === 0
+            ? 0
+            : Number((this.listingResolution.liveFetches / this.listingResolution.total).toFixed(4))
+      },
+      listingFallbackRate: {
+        fallbacks: this.listingResolution.fallbacks,
+        totalResolutions: this.listingResolution.total,
+        rate:
+          this.listingResolution.total === 0
+            ? 0
+            : Number((this.listingResolution.fallbacks / this.listingResolution.total).toFixed(4))
+      },
+      listingNormalizationFailureRate: {
+        failures: this.listingNormalization.failures,
+        totalProcessed: this.listingNormalization.totalProcessed,
+        rate:
+          this.listingNormalization.totalProcessed === 0
+            ? 0
+            : Number(
+                (this.listingNormalization.failures / this.listingNormalization.totalProcessed).toFixed(4)
+              )
+      },
+      listingResultsReturnedCount: {
+        total: this.listingResultsReturned.total,
+        average: average(this.listingResultsReturned),
+        last: this.listingResultsReturned.last
       },
       scoreDistribution: {
         count: this.scores.count,

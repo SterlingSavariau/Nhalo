@@ -1,4 +1,5 @@
 import {
+  InMemoryListingCacheRepository,
   InMemoryMarketSnapshotRepository,
   InMemorySafetySignalCacheRepository,
   InMemorySearchRepository
@@ -16,6 +17,7 @@ describe("validation errors", () => {
       marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
       metrics: new MetricsCollector(),
       repository: new InMemorySearchRepository(),
+      listingCacheRepository: new InMemoryListingCacheRepository(),
       safetySignalCacheRepository: new InMemorySafetySignalCacheRepository(),
       providers: createMockProviders()
     });

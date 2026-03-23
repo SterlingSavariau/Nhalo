@@ -232,6 +232,10 @@ class MonitoredListingProvider extends MonitoredProvider implements ListingProvi
       return cached;
     }
   }
+
+  getLastRejectionSummary() {
+    return (this.provider as ListingProvider).getLastRejectionSummary?.() ?? null;
+  }
 }
 
 class MonitoredSafetyProvider extends MonitoredProvider implements SafetyProvider {

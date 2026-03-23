@@ -1,4 +1,9 @@
-import type { PropertyType, SafetyProviderMode, SearchWeights } from "@nhalo/types";
+import type {
+  ListingProviderMode,
+  PropertyType,
+  SafetyProviderMode,
+  SearchWeights
+} from "@nhalo/types";
 
 export const DEFAULT_RADIUS_MILES = 5;
 export const DEFAULT_RESULT_LIMIT = 25;
@@ -7,6 +12,9 @@ export const MARKET_SNAPSHOT_FRESH_HOURS = 24;
 export const DEFAULT_SAFETY_PROVIDER_MODE: SafetyProviderMode = "hybrid";
 export const DEFAULT_SAFETY_CACHE_TTL_HOURS = 24;
 export const DEFAULT_SAFETY_STALE_TTL_HOURS = 168;
+export const DEFAULT_LISTING_PROVIDER_MODE: ListingProviderMode = "hybrid";
+export const DEFAULT_LISTING_CACHE_TTL_HOURS = 24;
+export const DEFAULT_LISTING_STALE_TTL_HOURS = 72;
 export const DEFAULT_WEIGHTS: SearchWeights = {
   price: 40,
   size: 30,
@@ -26,6 +34,7 @@ export interface AppConfig {
   apiUrl: string;
   databaseUrl?: string;
   safety: SafetyConfig;
+  listings: ListingConfig;
 }
 
 export interface ExternalProviderConfig {
@@ -40,6 +49,13 @@ export interface SafetyConfig {
   staleTtlHours: number;
   crime: ExternalProviderConfig;
   school: ExternalProviderConfig;
+}
+
+export interface ListingConfig {
+  mode: ListingProviderMode;
+  cacheTtlHours: number;
+  staleTtlHours: number;
+  provider: ExternalProviderConfig;
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -58,6 +74,14 @@ function parseSafetyMode(value: string | undefined): SafetyProviderMode {
   }
 
   return DEFAULT_SAFETY_PROVIDER_MODE;
+}
+
+function parseListingMode(value: string | undefined): ListingProviderMode {
+  if (value === "mock" || value === "hybrid" || value === "live") {
+    return value;
+  }
+
+  return DEFAULT_LISTING_PROVIDER_MODE;
 }
 
 export function getSafetyConfig(): SafetyConfig {
@@ -89,12 +113,35 @@ export function getSafetyConfig(): SafetyConfig {
   };
 }
 
+export function getListingConfig(): ListingConfig {
+  const listingBaseUrl = process.env.LISTING_PROVIDER_BASE_URL?.trim();
+  const listingApiKey = process.env.LISTING_PROVIDER_API_KEY?.trim();
+
+  return {
+    mode: parseListingMode(process.env.LISTING_PROVIDER_MODE),
+    cacheTtlHours: parsePositiveInteger(
+      process.env.LISTING_CACHE_TTL_HOURS,
+      DEFAULT_LISTING_CACHE_TTL_HOURS
+    ),
+    staleTtlHours: parsePositiveInteger(
+      process.env.LISTING_STALE_TTL_HOURS,
+      DEFAULT_LISTING_STALE_TTL_HOURS
+    ),
+    provider: {
+      baseUrl: listingBaseUrl,
+      apiKey: listingApiKey,
+      configured: Boolean(listingBaseUrl && listingApiKey)
+    }
+  };
+}
+
 export function getConfig(): AppConfig {
   return {
     port: Number(process.env.PORT ?? 3000),
     apiUrl: process.env.NHALO_API_URL ?? `http://localhost:${process.env.PORT ?? 3000}`,
     databaseUrl: process.env.DATABASE_URL,
-    safety: getSafetyConfig()
+    safety: getSafetyConfig(),
+    listings: getListingConfig()
   };
 }
 

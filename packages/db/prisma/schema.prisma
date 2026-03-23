@@ -75,6 +75,12 @@ model ScoreSnapshot {
   schoolFetchedAt       DateTime?
   rawSafetyInputs       Json?
   normalizedSafetyInputs Json?
+  listingDataSource     String        @default("none")
+  listingProvider       String?
+  sourceListingId       String?
+  listingFetchedAt      DateTime?
+  rawListingInputs      Json?
+  normalizedListingInputs Json?
   scoreInputs           Json
   createdAt             DateTime      @default(now())
   property              Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
@@ -111,6 +117,23 @@ model SafetySignalCache {
   fetchedAt          DateTime
   expiresAt          DateTime
   sourceType         String
+
+  @@index([locationKey, fetchedAt])
+}
+
+model ListingCache {
+  id                 String   @id @default(cuid())
+  locationKey        String
+  locationType       String
+  locationValue      String
+  radiusMiles        Float
+  provider           String
+  rawPayload         Json?
+  normalizedListings Json
+  fetchedAt          DateTime
+  expiresAt          DateTime
+  sourceType         String
+  rejectionSummary   Json
 
   @@index([locationKey, fetchedAt])
 }

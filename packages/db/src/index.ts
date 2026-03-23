@@ -1,9 +1,13 @@
 import {
+  DEFAULT_LISTING_CACHE_TTL_HOURS,
+  DEFAULT_LISTING_STALE_TTL_HOURS,
   DEFAULT_SAFETY_CACHE_TTL_HOURS,
   DEFAULT_SAFETY_STALE_TTL_HOURS,
   MARKET_SNAPSHOT_FRESH_HOURS
 } from "@nhalo/config";
 import type {
+  ListingCacheRecord,
+  ListingCacheRepository,
   ListingRecord,
   MarketSnapshot,
   MarketSnapshotRepository,
@@ -38,6 +42,7 @@ type StoredSnapshot = {
   scoreInputs: Record<string, unknown>;
   createdAt: string;
   safetyProvenance: NonNullable<ScoreAuditRecord["safetyProvenance"]>;
+  listingProvenance: NonNullable<ScoreAuditRecord["listingProvenance"]>;
 };
 
 function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
@@ -55,7 +60,8 @@ function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
     computedAt: snapshot.createdAt,
     safetyConfidence: snapshot.safetyConfidence,
     overallConfidence: snapshot.overallConfidence,
-    safetyProvenance: snapshot.safetyProvenance
+    safetyProvenance: snapshot.safetyProvenance,
+    listingProvenance: snapshot.listingProvenance
   };
 }
 
@@ -90,6 +96,14 @@ export class InMemorySearchRepository implements SearchRepository {
           schoolFetchedAt: result.schoolFetchedAt,
           rawSafetyInputs: result.rawSafetyInputs,
           normalizedSafetyInputs: result.normalizedSafetyInputs
+        },
+        listingProvenance: {
+          listingDataSource: result.listingDataSource,
+          listingProvider: result.listingProvider,
+          sourceListingId: result.sourceListingId,
+          listingFetchedAt: result.listingFetchedAt,
+          rawListingInputs: result.rawListingInputs,
+          normalizedListingInputs: result.normalizedListingInputs
         }
       });
     }
@@ -168,6 +182,40 @@ export class InMemorySafetySignalCacheRepository implements SafetySignalCacheRep
   }
 }
 
+export class InMemoryListingCacheRepository implements ListingCacheRepository {
+  public readonly entries: ListingCacheRecord[] = [];
+
+  async save(entry: Omit<ListingCacheRecord, "id">): Promise<ListingCacheRecord> {
+    const record: ListingCacheRecord = {
+      ...entry,
+      id: createId("listing-cache")
+    };
+
+    this.entries.push(record);
+
+    return record;
+  }
+
+  async getLatest(locationKey: string): Promise<ListingCacheRecord | null> {
+    const record = [...this.entries]
+      .filter((entry) => entry.locationKey === locationKey)
+      .sort((left, right) => right.fetchedAt.localeCompare(left.fetchedAt))[0];
+
+    return record ?? null;
+  }
+
+  isFresh(entry: ListingCacheRecord, ttlHours = DEFAULT_LISTING_CACHE_TTL_HOURS): boolean {
+    return ageHours(entry.fetchedAt) <= ttlHours;
+  }
+
+  isStaleUsable(
+    entry: ListingCacheRecord,
+    staleTtlHours = DEFAULT_LISTING_STALE_TTL_HOURS
+  ): boolean {
+    return ageHours(entry.fetchedAt) <= staleTtlHours;
+  }
+}
+
 type PrismaClientLike = {
   property: {
     upsert(args: Record<string, unknown>): Promise<unknown>;
@@ -184,6 +232,10 @@ type PrismaClientLike = {
     findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   };
   safetySignalCache: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+  };
+  listingCache: {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   };
@@ -241,6 +293,18 @@ function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord
       schoolFetchedAt: record.schoolFetchedAt ? (record.schoolFetchedAt as Date).toISOString() : null,
       rawSafetyInputs: (record.rawSafetyInputs as Record<string, unknown> | null) ?? null,
       normalizedSafetyInputs: (record.normalizedSafetyInputs as Record<string, unknown> | null) ?? null
+    },
+    listingProvenance: {
+      listingDataSource:
+        (record.listingDataSource as NonNullable<ScoreAuditRecord["listingProvenance"]>["listingDataSource"]) ?? "none",
+      listingProvider: (record.listingProvider as string | null) ?? null,
+      sourceListingId: (record.sourceListingId as string | null) ?? null,
+      listingFetchedAt: record.listingFetchedAt
+        ? (record.listingFetchedAt as Date).toISOString()
+        : null,
+      rawListingInputs: (record.rawListingInputs as Record<string, unknown> | null) ?? null,
+      normalizedListingInputs:
+        (record.normalizedListingInputs as Record<string, unknown> | null) ?? null
     }
   };
 }
@@ -297,6 +361,12 @@ export class PrismaSearchRepository implements SearchRepository {
           schoolFetchedAt: result.schoolFetchedAt ? new Date(result.schoolFetchedAt) : null,
           rawSafetyInputs: result.rawSafetyInputs,
           normalizedSafetyInputs: result.normalizedSafetyInputs,
+          listingDataSource: result.listingDataSource,
+          listingProvider: result.listingProvider,
+          sourceListingId: result.sourceListingId,
+          listingFetchedAt: result.listingFetchedAt ? new Date(result.listingFetchedAt) : null,
+          rawListingInputs: result.rawListingInputs,
+          normalizedListingInputs: result.normalizedListingInputs,
           scoreInputs: {
             ...result.inputs,
             ...result.scoreInputs
@@ -332,17 +402,17 @@ export class PrismaSearchRepository implements SearchRepository {
       where: { id: listing.id },
       create: {
         id: listing.id,
-        provider: listing.provider,
+        provider: listing.sourceProvider,
         sourceUrl: listing.sourceUrl,
         address: listing.address,
         city: listing.city,
         state: listing.state,
         zipCode: listing.zipCode,
-        latitude: listing.coordinates.lat,
-        longitude: listing.coordinates.lng,
+        latitude: listing.latitude,
+        longitude: listing.longitude,
         propertyType: listing.propertyType,
         price: Math.round(listing.price),
-        sqft: Math.round(listing.sqft),
+        sqft: Math.round(listing.squareFootage),
         bedrooms: Math.round(listing.bedrooms),
         bathrooms: listing.bathrooms,
         lotSqft: listing.lotSqft ?? null,
@@ -351,17 +421,17 @@ export class PrismaSearchRepository implements SearchRepository {
         updatedAt: new Date(listing.updatedAt)
       },
       update: {
-        provider: listing.provider,
+        provider: listing.sourceProvider,
         sourceUrl: listing.sourceUrl,
         address: listing.address,
         city: listing.city,
         state: listing.state,
         zipCode: listing.zipCode,
-        latitude: listing.coordinates.lat,
-        longitude: listing.coordinates.lng,
+        latitude: listing.latitude,
+        longitude: listing.longitude,
         propertyType: listing.propertyType,
         price: Math.round(listing.price),
-        sqft: Math.round(listing.sqft),
+        sqft: Math.round(listing.squareFootage),
         bedrooms: Math.round(listing.bedrooms),
         bathrooms: listing.bathrooms,
         lotSqft: listing.lotSqft ?? null,
@@ -516,10 +586,89 @@ export class PrismaSafetySignalCacheRepository implements SafetySignalCacheRepos
   }
 }
 
+export class PrismaListingCacheRepository implements ListingCacheRepository {
+  constructor(private readonly client: PrismaClientLike) {}
+
+  async save(entry: Omit<ListingCacheRecord, "id">): Promise<ListingCacheRecord> {
+    const record = await this.client.listingCache.create({
+      data: {
+        locationKey: entry.locationKey,
+        locationType: entry.locationType,
+        locationValue: entry.locationValue,
+        radiusMiles: entry.radiusMiles,
+        provider: entry.provider,
+        rawPayload: entry.rawPayload,
+        normalizedListings: entry.normalizedListings,
+        fetchedAt: new Date(entry.fetchedAt),
+        expiresAt: new Date(entry.expiresAt),
+        sourceType: entry.sourceType,
+        rejectionSummary: entry.rejectionSummary
+      }
+    });
+
+    return {
+      id: record.id as string,
+      locationKey: record.locationKey as string,
+      locationType: record.locationType as ListingCacheRecord["locationType"],
+      locationValue: record.locationValue as string,
+      radiusMiles: Number(record.radiusMiles),
+      provider: record.provider as string,
+      rawPayload: (record.rawPayload as Record<string, unknown>[] | null) ?? null,
+      normalizedListings: (record.normalizedListings as ListingRecord[]) ?? [],
+      fetchedAt: (record.fetchedAt as Date).toISOString(),
+      expiresAt: (record.expiresAt as Date).toISOString(),
+      sourceType: record.sourceType as ListingCacheRecord["sourceType"],
+      rejectionSummary: record.rejectionSummary as ListingCacheRecord["rejectionSummary"]
+    };
+  }
+
+  async getLatest(locationKey: string): Promise<ListingCacheRecord | null> {
+    const record = await this.client.listingCache.findFirst({
+      where: {
+        locationKey
+      },
+      orderBy: {
+        fetchedAt: "desc"
+      }
+    });
+
+    if (!record) {
+      return null;
+    }
+
+    return {
+      id: record.id as string,
+      locationKey: record.locationKey as string,
+      locationType: record.locationType as ListingCacheRecord["locationType"],
+      locationValue: record.locationValue as string,
+      radiusMiles: Number(record.radiusMiles),
+      provider: record.provider as string,
+      rawPayload: (record.rawPayload as Record<string, unknown>[] | null) ?? null,
+      normalizedListings: (record.normalizedListings as ListingRecord[]) ?? [],
+      fetchedAt: (record.fetchedAt as Date).toISOString(),
+      expiresAt: (record.expiresAt as Date).toISOString(),
+      sourceType: record.sourceType as ListingCacheRecord["sourceType"],
+      rejectionSummary: record.rejectionSummary as ListingCacheRecord["rejectionSummary"]
+    };
+  }
+
+  isFresh(entry: ListingCacheRecord, ttlHours = DEFAULT_LISTING_CACHE_TTL_HOURS): boolean {
+    return ageHours(entry.fetchedAt) <= ttlHours;
+  }
+
+  isStaleUsable(
+    entry: ListingCacheRecord,
+    staleTtlHours = DEFAULT_LISTING_STALE_TTL_HOURS
+  ): boolean {
+    return ageHours(entry.fetchedAt) <= staleTtlHours;
+  }
+}
+
 export interface PersistenceLayer {
   searchRepository: SearchRepository;
   marketSnapshotRepository: MarketSnapshotRepository;
   safetySignalCacheRepository: SafetySignalCacheRepository;
+  listingCacheRepository: ListingCacheRepository;
 }
 
 export async function createPersistenceLayer(databaseUrl?: string): Promise<PersistenceLayer> {
@@ -527,7 +676,8 @@ export async function createPersistenceLayer(databaseUrl?: string): Promise<Pers
     return {
       searchRepository: new InMemorySearchRepository(),
       marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
-      safetySignalCacheRepository: new InMemorySafetySignalCacheRepository()
+      safetySignalCacheRepository: new InMemorySafetySignalCacheRepository(),
+      listingCacheRepository: new InMemoryListingCacheRepository()
     };
   }
 
@@ -544,13 +694,15 @@ export async function createPersistenceLayer(databaseUrl?: string): Promise<Pers
     return {
       searchRepository: new PrismaSearchRepository(client),
       marketSnapshotRepository: new PrismaMarketSnapshotRepository(client),
-      safetySignalCacheRepository: new PrismaSafetySignalCacheRepository(client)
+      safetySignalCacheRepository: new PrismaSafetySignalCacheRepository(client),
+      listingCacheRepository: new PrismaListingCacheRepository(client)
     };
   } catch {
     return {
       searchRepository: new InMemorySearchRepository(),
       marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
-      safetySignalCacheRepository: new InMemorySafetySignalCacheRepository()
+      safetySignalCacheRepository: new InMemorySafetySignalCacheRepository(),
+      listingCacheRepository: new InMemoryListingCacheRepository()
     };
   }
 }

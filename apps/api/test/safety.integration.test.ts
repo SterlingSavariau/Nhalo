@@ -1,4 +1,5 @@
 import {
+  InMemoryListingCacheRepository,
   InMemoryMarketSnapshotRepository,
   InMemorySafetySignalCacheRepository,
   InMemorySearchRepository
@@ -20,6 +21,7 @@ describe("live safety integration", () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
   let metrics: MetricsCollector;
   let safetySignalCacheRepository: InMemorySafetySignalCacheRepository;
+  let listingCacheRepository: InMemoryListingCacheRepository;
 
   beforeAll(async () => {
     process.env.SAFETY_PROVIDER_MODE = "hybrid";
@@ -30,7 +32,9 @@ describe("live safety integration", () => {
 
     metrics = new MetricsCollector();
     safetySignalCacheRepository = new InMemorySafetySignalCacheRepository();
+    listingCacheRepository = new InMemoryListingCacheRepository();
     const providers = createProviders({
+      listingCacheRepository,
       safetySignalCacheRepository,
       metrics,
       fetcher: async (input) => {
@@ -65,6 +69,7 @@ describe("live safety integration", () => {
       metrics,
       providers,
       repository: new InMemorySearchRepository(),
+      listingCacheRepository,
       safetySignalCacheRepository
     });
   });
