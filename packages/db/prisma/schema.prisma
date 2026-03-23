@@ -51,21 +51,39 @@ model SearchRequest {
 }
 
 model ScoreSnapshot {
-  id              String        @id @default(cuid())
-  searchRequestId String
-  propertyId      String
-  formulaVersion  String
-  explanation     String
-  priceScore      Int
-  sizeScore       Int
-  safetyScore     Int
-  nhaloScore      Int
-  safetyConfidence String
-  scoreInputs     Json
-  createdAt       DateTime      @default(now())
-  property        Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  searchRequest   SearchRequest  @relation(fields: [searchRequestId], references: [id], onDelete: Cascade)
+  id                    String        @id @default(cuid())
+  searchRequestId       String
+  propertyId            String
+  formulaVersion        String
+  explanation           String
+  priceScore            Int
+  sizeScore             Int
+  safetyScore           Int
+  nhaloScore            Int
+  safetyConfidence      String
+  overallConfidence     String
+  pricePerSqft          Float
+  medianPricePerSqft    Float
+  crimeIndex            Float?
+  schoolRating          Float?
+  neighborhoodStability Float?
+  dataCompleteness      Float
+  scoreInputs           Json
+  createdAt             DateTime      @default(now())
+  property              Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  searchRequest         SearchRequest  @relation(fields: [searchRequestId], references: [id], onDelete: Cascade)
 
   @@index([searchRequestId])
   @@index([propertyId])
+}
+
+model MarketSnapshot {
+  id                 String   @id @default(cuid())
+  location           String
+  radiusMiles        Float
+  medianPricePerSqft Float
+  sampleSize         Int
+  createdAt          DateTime @default(now())
+
+  @@index([location, radiusMiles, createdAt])
 }

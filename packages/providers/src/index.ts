@@ -13,6 +13,7 @@ import { MOCK_LISTINGS, MOCK_LOCATIONS, MOCK_SAFETY } from "./mock-data";
 
 const LISTING_FRESHNESS = "daily";
 const SAFETY_FRESHNESS = "weekly";
+const SEEDED_UPDATED_AT = "2026-03-22T20:15:00Z";
 
 function toKey(locationType: LocationType, locationValue: string): string {
   return `${locationType}:${locationValue.trim().toLowerCase()}`;
@@ -47,10 +48,14 @@ export class MockGeocoderProvider implements GeocoderProvider {
 
   async getStatus(): Promise<ProviderStatus> {
     return {
-      name: this.name,
-      healthy: true,
+      provider: "GeocoderProvider",
+      providerName: "GeocoderProvider",
+      status: "healthy",
+      lastUpdatedAt: SEEDED_UPDATED_AT,
+      dataAgeHours: 0,
+      latencyMs: 0,
+      failureCount: 0,
       mode: "mock",
-      freshness: "static snapshot",
       detail: "Mock geocoder covers seeded city and ZIP examples."
     };
   }
@@ -72,10 +77,14 @@ export class MockListingProvider implements ListingProvider {
 
   async getStatus(): Promise<ProviderStatus> {
     return {
-      name: this.name,
-      healthy: true,
+      provider: "ListingProvider",
+      providerName: "ListingProvider",
+      status: "healthy",
+      lastUpdatedAt: SEEDED_UPDATED_AT,
+      dataAgeHours: 0,
+      latencyMs: 0,
+      failureCount: 0,
       mode: "mock",
-      freshness: LISTING_FRESHNESS,
       detail: `Mock listing provider seeded with ${MOCK_LISTINGS.length} listings.`
     };
   }
@@ -93,10 +102,14 @@ export class MockSafetyProvider implements SafetyProvider {
 
   async getStatus(): Promise<ProviderStatus> {
     return {
-      name: this.name,
-      healthy: true,
+      provider: "SafetyProvider",
+      providerName: "SafetyProvider",
+      status: "healthy",
+      lastUpdatedAt: SEEDED_UPDATED_AT,
+      dataAgeHours: 0,
+      latencyMs: 0,
+      failureCount: 0,
       mode: "mock",
-      freshness: SAFETY_FRESHNESS,
       detail: "Mock safety provider includes crime, school, and stability signals."
     };
   }

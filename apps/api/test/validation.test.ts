@@ -1,13 +1,16 @@
-import { InMemorySearchRepository } from "@nhalo/db";
+import { InMemoryMarketSnapshotRepository, InMemorySearchRepository } from "@nhalo/db";
 import { createMockProviders } from "@nhalo/providers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app";
+import { MetricsCollector } from "../src/metrics";
 
 describe("validation errors", () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
 
   beforeAll(async () => {
     app = await buildApp({
+      marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
+      metrics: new MetricsCollector(),
       repository: new InMemorySearchRepository(),
       providers: createMockProviders()
     });

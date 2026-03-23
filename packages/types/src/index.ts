@@ -7,6 +7,7 @@ export type PropertyType =
   | "multi_family";
 
 export type SafetyConfidence = "low" | "medium" | "high" | "none";
+export type ProviderHealthStatus = "healthy" | "degraded" | "failing";
 
 export interface SearchWeights {
   price: number;
@@ -75,6 +76,13 @@ export interface SafetyRecord {
   updatedAt: string;
 }
 
+export interface ProviderFetchResult<T> {
+  data: T;
+  fromCache: boolean;
+  degraded: boolean;
+  error?: string;
+}
+
 export interface ListingSearchContext {
   center: Coordinates;
   radiusMiles: number;
@@ -101,10 +109,14 @@ export interface GeocoderProvider {
 }
 
 export interface ProviderStatus {
-  name: string;
-  healthy: boolean;
+  provider: string;
+  providerName: string;
+  status: ProviderHealthStatus;
+  lastUpdatedAt: string | null;
+  dataAgeHours: number | null;
+  latencyMs: number | null;
+  failureCount: number;
   mode: "mock" | "live";
-  freshness: string;
   detail: string;
 }
 
@@ -125,6 +137,7 @@ export interface ScoreBreakdown {
   safety: number;
   nhalo: number;
   safetyConfidence: SafetyConfidence;
+  overallConfidence: SafetyConfidence;
   formulaVersion: string;
 }
 
@@ -178,6 +191,15 @@ export interface PersistedSearchResult {
   explanation: string;
   scores: ScoreBreakdown;
   scoreInputs: Record<string, unknown>;
+  weights: SearchWeights;
+  computedAt: string;
+  pricePerSqft: number;
+  medianPricePerSqft: number;
+  crimeIndex: number | null;
+  schoolRating: number | null;
+  neighborhoodStability: number | null;
+  dataCompleteness: number;
+  inputs: ScoreAuditInputs;
 }
 
 export interface SearchPersistenceInput {
@@ -186,10 +208,12 @@ export interface SearchPersistenceInput {
   resolvedLocation: ResolvedLocation;
   scoredResults: PersistedSearchResult[];
   listings: ListingRecord[];
+  marketSnapshot: MarketSnapshot;
 }
 
 export interface SearchRepository {
   saveSearch(payload: SearchPersistenceInput): Promise<void>;
+  getScoreAudit(propertyId: string): Promise<ScoreAuditRecord | null>;
 }
 
 export interface RankingContext {
@@ -199,6 +223,11 @@ export interface RankingContext {
   budget?: SearchBudget;
   comparableListings: ListingRecord[];
   safetyByPropertyId: Map<string, SafetyRecord>;
+  marketSnapshot: MarketSnapshot;
+  providerFreshnessHours: {
+    listings: number | null;
+    safety: number | null;
+  };
 }
 
 export interface RankedListing {
@@ -206,4 +235,83 @@ export interface RankedListing {
   explanation: string;
   scoreInputs: Record<string, unknown>;
   scores: ScoreBreakdown;
+}
+
+export interface MarketSnapshot {
+  id: string;
+  location: string;
+  radiusMiles: number;
+  medianPricePerSqft: number;
+  sampleSize: number;
+  createdAt: string;
+}
+
+export interface MarketSnapshotRepository {
+  createSnapshot(snapshot: Omit<MarketSnapshot, "id">): Promise<MarketSnapshot>;
+  getLatestSnapshot(location: string, radiusMiles: number): Promise<MarketSnapshot | null>;
+  isSnapshotFresh(snapshot: MarketSnapshot, maxAgeHours?: number): boolean;
+}
+
+export interface ScoreAuditInputs {
+  price: number;
+  squareFootage: number;
+  bedrooms: number;
+  bathrooms: number;
+  lotSize: number | null;
+  crimeIndex: number | null;
+  schoolRating: number | null;
+  neighborhoodStability: number | null;
+  pricePerSqft: number;
+  medianPricePerSqft: number;
+  dataCompleteness: number;
+}
+
+export interface ScoreAuditRecord {
+  propertyId: string;
+  formulaVersion: string;
+  inputs: ScoreAuditInputs;
+  weights: SearchWeights;
+  subScores: {
+    price: number;
+    size: number;
+    safety: number;
+  };
+  finalScore: number;
+  computedAt: string;
+  safetyConfidence: SafetyConfidence;
+  overallConfidence: SafetyConfidence;
+}
+
+export interface SearchMetrics {
+  searchLatencyMs: {
+    count: number;
+    average: number;
+    last: number | null;
+  };
+  candidatesScanned: {
+    total: number;
+    average: number;
+    last: number | null;
+  };
+  matchesReturned: {
+    total: number;
+    average: number;
+    last: number | null;
+  };
+  providerLatencyMs: Record<string, {
+    count: number;
+    average: number;
+    last: number | null;
+  }>;
+  providerFailureRate: Record<string, {
+    requests: number;
+    failures: number;
+    rate: number;
+  }>;
+  scoreDistribution: {
+    count: number;
+    average: number;
+    min: number | null;
+    max: number | null;
+  };
 }

@@ -4,6 +4,8 @@ import type {
   GeocoderProvider,
   ListingProvider,
   ListingRecord,
+  MarketSnapshot,
+  MarketSnapshotRepository,
   RankedListing,
   SearchRepository,
   SearchResponse,
@@ -12,6 +14,7 @@ import type {
   SafetyProvider
 } from "@nhalo/types";
 import { ApiError } from "./errors";
+import { MetricsCollector } from "./metrics";
 import type { SearchRequestInput } from "./search-schema";
 
 export interface SearchServiceDependencies {
@@ -19,6 +22,12 @@ export interface SearchServiceDependencies {
   listingProvider: ListingProvider;
   safetyProvider: SafetyProvider;
   repository: SearchRepository;
+  marketSnapshotRepository: MarketSnapshotRepository;
+  metrics: MetricsCollector;
+  getProviderFreshnessHours(): Promise<{
+    listings: number | null;
+    safety: number | null;
+  }>;
 }
 
 function applyHardFilters(
@@ -53,6 +62,30 @@ function buildWarnings(totalMatched: number): SearchWarning[] {
       {
         code: "LOW_MATCH_COUNT",
         message: "Only a small number of homes matched the current filters."
+      }
+    ];
+  }
+
+  return [];
+}
+
+function buildReliabilityWarnings(homes: SearchResponse["homes"]): SearchWarning[] {
+  const overallConfidenceValues = new Set(homes.map((home) => home.scores.overallConfidence));
+
+  if (overallConfidenceValues.has("none")) {
+    return [
+      {
+        code: "MISSING_PROVIDER_DATA",
+        message: "Some homes were ranked with missing safety inputs and reduced confidence."
+      }
+    ];
+  }
+
+  if (overallConfidenceValues.has("low")) {
+    return [
+      {
+        code: "STALE_OR_PARTIAL_DATA",
+        message: "Some homes were ranked using stale or partial provider data."
       }
     ];
   }
@@ -109,6 +142,50 @@ function mapRankedHome(ranked: RankedListing) {
   };
 }
 
+function median(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+
+  if (sorted.length % 2 === 0) {
+    return Number((((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2).toFixed(2));
+  }
+
+  return Number((sorted[middle] ?? 0).toFixed(2));
+}
+
+function getLocationSnapshotKey(request: SearchRequestInput): string {
+  return `${request.locationType}:${request.locationValue.trim().toLowerCase()}`;
+}
+
+async function resolveMarketSnapshot(
+  request: SearchRequestInput,
+  candidates: ListingRecord[],
+  repository: MarketSnapshotRepository
+): Promise<MarketSnapshot> {
+  const location = getLocationSnapshotKey(request);
+  const latestSnapshot = await repository.getLatestSnapshot(location, request.radiusMiles);
+
+  if (latestSnapshot && repository.isSnapshotFresh(latestSnapshot)) {
+    return latestSnapshot;
+  }
+
+  const candidatePricePerSqft = candidates
+    .filter((listing) => listing.sqft > 0)
+    .map((listing) => listing.price / listing.sqft);
+
+  return repository.createSnapshot({
+    location,
+    radiusMiles: request.radiusMiles,
+    medianPricePerSqft: median(candidatePricePerSqft),
+    sampleSize: candidates.length,
+    createdAt: new Date().toISOString()
+  });
+}
+
 export async function runSearch(
   request: SearchRequestInput,
   dependencies: SearchServiceDependencies
@@ -129,18 +206,31 @@ export async function runSearch(
     location: resolvedLocation,
     propertyTypes: request.propertyTypes
   });
+  const marketSnapshot = await resolveMarketSnapshot(
+    request,
+    candidates,
+    dependencies.marketSnapshotRepository
+  );
   const safetyByPropertyId = await dependencies.safetyProvider.fetchSafetyData(candidates);
+  const providerFreshnessHours = await dependencies.getProviderFreshnessHours();
   const matchedListings = applyHardFilters(candidates, request);
   const rankedListings = rankListings(matchedListings, {
     budget: request.budget,
     comparableListings: candidates,
+    marketSnapshot,
     minBedrooms: request.minBedrooms,
     minSqft: request.minSqft,
+    providerFreshnessHours,
     safetyByPropertyId,
     weights: request.weights
   }).slice(0, DEFAULT_RESULT_LIMIT);
+  const homes = rankedListings.map(mapRankedHome);
+  const warnings = [
+    ...buildWarnings(matchedListings.length),
+    ...buildReliabilityWarnings(homes)
+  ];
   const response: SearchResponse = {
-    homes: rankedListings.map(mapRankedHome),
+    homes,
     appliedFilters: {
       locationType: request.locationType,
       locationValue: request.locationValue,
@@ -157,22 +247,51 @@ export async function runSearch(
       totalMatched: matchedListings.length,
       returnedCount: rankedListings.length,
       durationMs: Date.now() - startedAt,
-      warnings: buildWarnings(matchedListings.length),
+      warnings,
       suggestions: buildSuggestions(request, matchedListings.length)
     }
   };
+
+  dependencies.metrics.recordSearch({
+    durationMs: response.metadata.durationMs,
+    candidatesScanned: response.metadata.totalCandidatesScanned,
+    matchesReturned: response.metadata.returnedCount,
+    scores: response.homes.map((home) => home.scores.nhalo)
+  });
 
   await dependencies.repository.saveSearch({
     request,
     response,
     resolvedLocation,
     listings: candidates,
+    marketSnapshot,
     scoredResults: rankedListings.map((ranked) => ({
       propertyId: ranked.listing.id,
       formulaVersion: ranked.scores.formulaVersion,
       explanation: ranked.explanation,
       scores: ranked.scores,
-      scoreInputs: ranked.scoreInputs
+      scoreInputs: ranked.scoreInputs,
+      weights: request.weights,
+      computedAt: new Date().toISOString(),
+      pricePerSqft: Number(ranked.scoreInputs.pricePerSqft ?? 0),
+      medianPricePerSqft: Number(ranked.scoreInputs.medianPricePerSqft ?? 0),
+      crimeIndex: (ranked.scoreInputs.crimeIndex as number | null) ?? null,
+      schoolRating: (ranked.scoreInputs.schoolRating as number | null) ?? null,
+      neighborhoodStability: (ranked.scoreInputs.neighborhoodStability as number | null) ?? null,
+      dataCompleteness: Number(ranked.scoreInputs.dataCompleteness ?? 0),
+      inputs: {
+        price: Number(ranked.scoreInputs.price ?? ranked.listing.price),
+        squareFootage: Number(ranked.scoreInputs.squareFootage ?? ranked.listing.sqft),
+        bedrooms: Number(ranked.scoreInputs.bedrooms ?? ranked.listing.bedrooms),
+        bathrooms: Number(ranked.scoreInputs.bathrooms ?? ranked.listing.bathrooms),
+        lotSize: (ranked.scoreInputs.lotSize as number | null) ?? ranked.listing.lotSqft ?? null,
+        crimeIndex: (ranked.scoreInputs.crimeIndex as number | null) ?? null,
+        schoolRating: (ranked.scoreInputs.schoolRating as number | null) ?? null,
+        neighborhoodStability: (ranked.scoreInputs.neighborhoodStability as number | null) ?? null,
+        pricePerSqft: Number(ranked.scoreInputs.pricePerSqft ?? 0),
+        medianPricePerSqft: Number(ranked.scoreInputs.medianPricePerSqft ?? 0),
+        dataCompleteness: Number(ranked.scoreInputs.dataCompleteness ?? 0)
+      }
     }))
   });
 

@@ -8,6 +8,7 @@ Nhalo is a family-first home decision engine that ranks homes by price, size, an
 - Internal React test UI for submitting searches and inspecting score breakdowns
 - Mock provider adapters behind stable interfaces
 - PostgreSQL-ready persistence via Prisma
+- Immutable score audits, market baseline snapshots, provider health tracking, and metrics
 - Unit and integration tests for scoring and `/search`
 
 ## Run Locally
@@ -38,3 +39,17 @@ Nhalo is a family-first home decision engine that ranks homes by price, size, an
   }
 }
 ```
+
+## Operational Endpoints
+
+- `GET /health`
+- `GET /providers/status`
+- `GET /scores/audit/:propertyId`
+- `GET /metrics`
+
+## Reliability Features
+
+- Provider runtime tracks latency, failure count, last successful update time, and computed data age.
+- Provider failures fall back to cached data where available and otherwise degrade confidence instead of crashing search.
+- Each scored result is persisted with raw numeric inputs, confidence metadata, and immutable formula version.
+- Market price-per-square-foot baselines are snapshotted per search area and reused for up to 24 hours.

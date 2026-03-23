@@ -1,17 +1,25 @@
 import cors from "@fastify/cors";
 import { getConfig } from "@nhalo/config";
-import { createSearchRepository } from "@nhalo/db";
+import { createPersistenceLayer } from "@nhalo/db";
 import { createMockProviders } from "@nhalo/providers";
-import type { ProviderStatus, SearchRepository } from "@nhalo/types";
+import type {
+  MarketSnapshotRepository,
+  ProviderStatus,
+  SearchRepository
+} from "@nhalo/types";
 import Fastify from "fastify";
 import { ZodError } from "zod";
 import { isApiError } from "./errors";
+import { MetricsCollector } from "./metrics";
+import { instrumentProviders } from "./provider-runtime";
 import { searchRequestSchema } from "./search-schema";
 import { runSearch } from "./search-service";
 
 export interface AppDependencies {
   repository: SearchRepository;
+  marketSnapshotRepository: MarketSnapshotRepository;
   providers: ReturnType<typeof createMockProviders>;
+  metrics: MetricsCollector;
 }
 
 function formatValidationError(error: ZodError) {
@@ -29,9 +37,18 @@ function formatValidationError(error: ZodError) {
 
 export async function buildApp(dependencies?: Partial<AppDependencies>) {
   const config = getConfig();
-  const repository =
-    dependencies?.repository ?? (await createSearchRepository(config.databaseUrl));
-  const providers = dependencies?.providers ?? createMockProviders();
+  const persistence =
+    dependencies?.repository && dependencies?.marketSnapshotRepository
+      ? {
+          searchRepository: dependencies.repository,
+          marketSnapshotRepository: dependencies.marketSnapshotRepository
+        }
+      : await createPersistenceLayer(config.databaseUrl);
+  const metrics = dependencies?.metrics ?? new MetricsCollector();
+  const providers = instrumentProviders(
+    dependencies?.providers ?? createMockProviders(),
+    metrics
+  );
   const app = Fastify({ logger: false });
 
   await app.register(cors, {
@@ -68,24 +85,59 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   }));
 
   app.get("/providers/status", async () => {
-    const statuses: ProviderStatus[] = await Promise.all([
-      providers.geocoder.getStatus(),
-      providers.listings.getStatus(),
-      providers.safety.getStatus()
-    ]);
+    const statuses: ProviderStatus[] = await providers.getStatuses();
 
     return {
       providers: statuses
     };
   });
 
+  app.get("/scores/audit/:propertyId", async (request, reply) => {
+    const params = request.params as { propertyId?: string };
+    const propertyId = params.propertyId?.trim();
+
+    if (!propertyId) {
+      return reply.status(400).send({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid propertyId",
+          details: [
+            {
+              field: "propertyId",
+              message: "propertyId is required"
+            }
+          ]
+        }
+      });
+    }
+
+    const auditRecord = await persistence.searchRepository.getScoreAudit(propertyId);
+
+    if (!auditRecord) {
+      return reply.status(404).send({
+        error: {
+          code: "SCORE_AUDIT_NOT_FOUND",
+          message: "No stored score snapshot was found for this property.",
+          details: []
+        }
+      });
+    }
+
+    return auditRecord;
+  });
+
+  app.get("/metrics", async () => metrics.snapshot());
+
   app.post("/search", async (request) => {
     const payload = searchRequestSchema.parse(request.body);
     return runSearch(payload, {
       geocoder: providers.geocoder,
       listingProvider: providers.listings,
-      repository,
-      safetyProvider: providers.safety
+      marketSnapshotRepository: persistence.marketSnapshotRepository,
+      metrics,
+      repository: persistence.searchRepository,
+      safetyProvider: providers.safety,
+      getProviderFreshnessHours: () => providers.getFreshnessHours()
     });
   });
 

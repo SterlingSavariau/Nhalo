@@ -3,6 +3,7 @@ import type {
   ListingRecord,
   RankedListing,
   RankingContext,
+  ScoreAuditInputs,
   SafetyConfidence,
   SafetyRecord
 } from "@nhalo/types";
@@ -21,6 +22,10 @@ function average(values: number[]): number {
   }
 
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function roundToTwo(value: number): number {
+  return Number(value.toFixed(2));
 }
 
 function normalizeDirect(value: number, values: number[]): number {
@@ -162,16 +167,16 @@ function calculateSizeScore(listing: ListingRecord, context: RankingContext): {
   };
 }
 
-function confidenceFromCoverage(coverage: number): SafetyConfidence {
-  if (coverage === 0) {
+function safetyConfidenceFromSignals(signalCount: number): SafetyConfidence {
+  if (signalCount === 0) {
     return "none";
   }
 
-  if (coverage >= 0.85) {
+  if (signalCount >= 3) {
     return "high";
   }
 
-  if (coverage >= 0.55) {
+  if (signalCount === 2) {
     return "medium";
   }
 
@@ -252,7 +257,7 @@ function calculateSafetyScore(
     totalAvailableWeight === 0
       ? 0
       : entries.reduce((sum, entry) => sum + entry.score * (entry.weight / totalAvailableWeight), 0);
-  const confidence = confidenceFromCoverage(totalAvailableWeight / 100);
+  const confidence = safetyConfidenceFromSignals(entries.length);
   const details: Record<string, number | string> = Object.fromEntries(
     entries.map((entry) => [entry.key, roundScore(entry.score)])
   );
@@ -264,6 +269,59 @@ function calculateSafetyScore(
     score: roundScore(score),
     confidence,
     details
+  };
+}
+
+function calculateDataCompleteness(safetyRecord: SafetyRecord | undefined): number {
+  const safetySignals = [
+    typeof safetyRecord?.crimeIndex === "number",
+    typeof safetyRecord?.schoolRating === "number",
+    typeof safetyRecord?.stabilityIndex === "number"
+  ].filter(Boolean).length;
+
+  return roundToTwo((safetySignals / 3) * 100);
+}
+
+function calculateOverallConfidence(
+  safetyConfidence: SafetyConfidence,
+  dataCompleteness: number,
+  freshnessHours: number | null
+): SafetyConfidence {
+  if (safetyConfidence === "none" || dataCompleteness === 0) {
+    return "none";
+  }
+
+  const providerFresh = freshnessHours === null || freshnessHours <= 24;
+
+  if (safetyConfidence === "high" && providerFresh) {
+    return "high";
+  }
+
+  if (safetyConfidence === "medium" && providerFresh) {
+    return "medium";
+  }
+
+  return "low";
+}
+
+function createAuditInputs(
+  listing: ListingRecord,
+  safetyRecord: SafetyRecord | undefined,
+  medianPricePerSqft: number,
+  dataCompleteness: number
+): ScoreAuditInputs {
+  return {
+    price: listing.price,
+    squareFootage: listing.sqft,
+    bedrooms: listing.bedrooms,
+    bathrooms: listing.bathrooms,
+    lotSize: listing.lotSqft ?? null,
+    crimeIndex: safetyRecord?.crimeIndex ?? null,
+    schoolRating: safetyRecord?.schoolRating ?? null,
+    neighborhoodStability: safetyRecord?.stabilityIndex ?? null,
+    pricePerSqft: roundToTwo(listing.price / Math.max(listing.sqft, 1)),
+    medianPricePerSqft: roundToTwo(medianPricePerSqft),
+    dataCompleteness
   };
 }
 
@@ -298,12 +356,25 @@ function buildExplanation(priceScore: number, sizeScore: number, safetyScore: nu
 export function rankListings(listings: ListingRecord[], context: RankingContext): RankedListing[] {
   return listings
     .map((listing) => {
+      const safetyRecord = context.safetyByPropertyId.get(listing.id);
       const price = calculatePriceScore(listing, context);
       const size = calculateSizeScore(listing, context);
       const safety = calculateSafetyScore(
         listing,
-        context.safetyByPropertyId.get(listing.id),
+        safetyRecord,
         context
+      );
+      const dataCompleteness = calculateDataCompleteness(safetyRecord);
+      const overallConfidence = calculateOverallConfidence(
+        safety.confidence,
+        dataCompleteness,
+        context.providerFreshnessHours.safety
+      );
+      const auditInputs = createAuditInputs(
+        listing,
+        safetyRecord,
+        context.marketSnapshot.medianPricePerSqft,
+        dataCompleteness
       );
       const nhalo =
         price.score * (context.weights.price / 100) +
@@ -315,10 +386,13 @@ export function rankListings(listings: ListingRecord[], context: RankingContext)
         listing,
         explanation,
         scoreInputs: {
+          ...auditInputs,
           comparableListingCount: context.comparableListings.length,
-          price: price.details,
-          size: size.details,
-          safety: safety.details
+          priceBreakdown: price.details,
+          sizeBreakdown: size.details,
+          safetyBreakdown: safety.details,
+          providerFreshnessHours: context.providerFreshnessHours,
+          marketSnapshotId: context.marketSnapshot.id
         },
         scores: {
           price: price.score,
@@ -326,6 +400,7 @@ export function rankListings(listings: ListingRecord[], context: RankingContext)
           safety: safety.score,
           nhalo: roundScore(nhalo),
           safetyConfidence: safety.confidence,
+          overallConfidence,
           formulaVersion: FORMULA_VERSION
         }
       };

@@ -1,15 +1,19 @@
-import { InMemorySearchRepository } from "@nhalo/db";
+import { InMemoryMarketSnapshotRepository, InMemorySearchRepository } from "@nhalo/db";
 import { createMockProviders } from "@nhalo/providers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app";
+import { MetricsCollector } from "../src/metrics";
 
 describe("POST /search", () => {
   const repository = new InMemorySearchRepository();
+  const marketSnapshotRepository = new InMemoryMarketSnapshotRepository();
   const providers = createMockProviders();
   let app: Awaited<ReturnType<typeof buildApp>>;
 
   beforeAll(async () => {
     app = await buildApp({
+      marketSnapshotRepository,
+      metrics: new MetricsCollector(),
       repository,
       providers
     });
@@ -45,6 +49,7 @@ describe("POST /search", () => {
       size: 30,
       safety: 30
     });
+    expect(payload.homes[0].scores.overallConfidence).toBeDefined();
     expect(payload.metadata.totalCandidatesScanned).toBeGreaterThanOrEqual(payload.metadata.totalMatched);
     expect(payload.homes[0].scores.nhalo).toBeGreaterThanOrEqual(payload.homes.at(-1).scores.nhalo);
   });

@@ -2,6 +2,8 @@ import type { PropertyType, SearchWeights } from "@nhalo/types";
 
 export const DEFAULT_RADIUS_MILES = 5;
 export const DEFAULT_RESULT_LIMIT = 25;
+export const PROVIDER_TIMEOUT_MS = 1500;
+export const MARKET_SNAPSHOT_FRESH_HOURS = 24;
 export const DEFAULT_WEIGHTS: SearchWeights = {
   price: 40,
   size: 30,
