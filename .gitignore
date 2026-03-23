@@ -1,0 +1,9 @@
+node_modules
+dist
+.vite
+.DS_Store
+.env
+coverage
+apps/web/dist
+apps/api/dist
+packages/db/prisma/generated
