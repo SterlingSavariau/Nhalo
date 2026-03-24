@@ -106,13 +106,25 @@ describe("search snapshots", () => {
     expect(auditResponse.statusCode).toBe(200);
     expect(auditResponse.json().explainability.headline).toBeTruthy();
 
-    await app.inject({
-      method: "POST",
-      url: "/metrics/events",
-      payload: {
-        eventType: "comparison_view"
-      }
-    });
+    for (const eventType of [
+      "comparison_view",
+      "onboarding_view",
+      "onboarding_dismiss",
+      "empty_state_view",
+      "suggestion_click",
+      "detail_panel_open",
+      "result_compare_add",
+      "snapshot_reopen",
+      "saved_search_restore"
+    ] as const) {
+      await app.inject({
+        method: "POST",
+        url: "/metrics/events",
+        payload: {
+          eventType
+        }
+      });
+    }
 
     const metricsResponse = await app.inject({
       method: "GET",
@@ -125,5 +137,13 @@ describe("search snapshots", () => {
     expect(metrics.snapshotReadCount).toBeGreaterThanOrEqual(1);
     expect(metrics.auditViewCount).toBeGreaterThanOrEqual(1);
     expect(metrics.comparisonViewCount).toBeGreaterThanOrEqual(1);
+    expect(metrics.onboardingViewCount).toBeGreaterThanOrEqual(1);
+    expect(metrics.onboardingDismissCount).toBeGreaterThanOrEqual(1);
+    expect(metrics.emptyStateViewCount).toBeGreaterThanOrEqual(1);
+    expect(metrics.suggestionClickCount).toBeGreaterThanOrEqual(1);
+    expect(metrics.detailPanelOpenCount).toBeGreaterThanOrEqual(1);
+    expect(metrics.resultCompareAddCount).toBeGreaterThanOrEqual(1);
+    expect(metrics.snapshotReopenCount).toBeGreaterThanOrEqual(1);
+    expect(metrics.savedSearchRestoreCount).toBeGreaterThanOrEqual(1);
   });
 });

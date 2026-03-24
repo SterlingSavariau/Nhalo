@@ -846,6 +846,14 @@ export interface SearchMetrics {
   searchRestoreCount: number;
   recentActivityPanelViewCount: number;
   savedSearchPinCount: number;
+  onboardingViewCount: number;
+  onboardingDismissCount: number;
+  emptyStateViewCount: number;
+  suggestionClickCount: number;
+  detailPanelOpenCount: number;
+  resultCompareAddCount: number;
+  snapshotReopenCount: number;
+  savedSearchRestoreCount: number;
   scoreDistribution: {
     count: number;
     average: number;

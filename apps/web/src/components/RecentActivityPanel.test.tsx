@@ -133,6 +133,9 @@ describe("RecentActivityPanel", () => {
     expect(markup).toContain("Saved Searches");
     expect(markup).toContain("Recent Searches");
     expect(markup).toContain("Recent Snapshots");
+    expect(markup).toContain("Saved definition");
+    expect(markup).toContain("Historical run");
+    expect(markup).toContain("Immutable snapshot");
     expect(markup).toContain("Restore");
     expect(markup).toContain("Rerun");
     expect(markup).toContain("Open snapshot");

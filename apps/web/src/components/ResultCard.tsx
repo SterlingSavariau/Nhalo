@@ -1,12 +1,20 @@
 import type { ScoredHome } from "@nhalo/types";
+import {
+  RESULT_COPY,
+  buildDecisionLabels,
+  buildTradeoffSummary,
+  geocodePrecisionExplanation
+} from "../content";
 import { sourceFreshnessLabel } from "../view-model";
 
 interface ResultCardProps {
   home: ScoredHome;
+  homes: ScoredHome[];
   rank: number;
   compared: boolean;
   compareDisabled: boolean;
   onToggleCompare(homeId: string): void;
+  onOpenDetails(homeId: string): void;
   onViewAudit(homeId: string): void;
 }
 
@@ -28,12 +36,17 @@ function confidenceTone(confidence: ScoredHome["scores"]["overallConfidence"]): 
 
 export function ResultCard({
   home,
+  homes,
   rank,
   compared,
   compareDisabled,
   onToggleCompare,
+  onOpenDetails,
   onViewAudit
 }: ResultCardProps) {
+  const decisionLabels = buildDecisionLabels(home, homes);
+  const tradeoffSummary = buildTradeoffSummary(home);
+
   return (
     <article className="result-card">
       <div className="result-header">
@@ -74,13 +87,32 @@ export function ResultCard({
         </span>
       </div>
 
+      {decisionLabels.length > 0 ? (
+        <div className="chip-row">
+          {decisionLabels.map((label) => (
+            <span className="chip active" key={label}>
+              {label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
       <div className="why-home">
-        <p className="section-label">Why this home</p>
+        <p className="section-label">{RESULT_COPY.whyThisHome}</p>
         <h4>{home.explainability?.headline ?? home.explanation}</h4>
         <p className="muted">
           Primary driver {home.explainability?.scoreDrivers.primary ?? "n/a"} · secondary{" "}
           {home.explainability?.scoreDrivers.secondary ?? "n/a"} · weakest{" "}
           {home.explainability?.scoreDrivers.weakest ?? "n/a"}
+        </p>
+      </div>
+
+      <div className="tradeoff-panel">
+        <p className="section-label">{RESULT_COPY.tradeoffs}</p>
+        <h4>{tradeoffSummary}</h4>
+        <p className="muted">
+          {RESULT_COPY.confidence}: {home.scores.overallConfidence} · {RESULT_COPY.originPrecision}:{" "}
+          {geocodePrecisionExplanation(home.provenance?.geocodePrecision ?? "none")}
         </p>
       </div>
 
@@ -109,7 +141,7 @@ export function ResultCard({
           </ul>
         </div>
         <div>
-          <p className="section-label">Risks</p>
+          <p className="section-label">{RESULT_COPY.concerns}</p>
           <ul>
             {(home.risks ?? []).map((item) => (
               <li key={item}>{item}</li>
@@ -172,6 +204,9 @@ export function ResultCard({
           type="button"
         >
           {compared ? "Remove from compare" : "Compare"}
+        </button>
+        <button className="ghost-button" onClick={() => onOpenDetails(home.id)} type="button">
+          View details
         </button>
         <button className="ghost-button" onClick={() => onViewAudit(home.id)} type="button">
           View audit details

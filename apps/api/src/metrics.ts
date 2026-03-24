@@ -113,6 +113,14 @@ export class MetricsCollector {
   private readonly searchRestores = { count: 0 };
   private readonly recentActivityPanelViews = { count: 0 };
   private readonly savedSearchPins = { count: 0 };
+  private readonly onboardingViews = { count: 0 };
+  private readonly onboardingDismisses = { count: 0 };
+  private readonly emptyStateViews = { count: 0 };
+  private readonly suggestionClicks = { count: 0 };
+  private readonly detailPanelOpens = { count: 0 };
+  private readonly resultCompareAdds = { count: 0 };
+  private readonly snapshotReopens = { count: 0 };
+  private readonly savedSearchRestores = { count: 0 };
 
   recordSearch(payload: {
     durationMs: number;
@@ -284,6 +292,38 @@ export class MetricsCollector {
 
   recordSavedSearchPin(): void {
     this.savedSearchPins.count += 1;
+  }
+
+  recordOnboardingView(): void {
+    this.onboardingViews.count += 1;
+  }
+
+  recordOnboardingDismiss(): void {
+    this.onboardingDismisses.count += 1;
+  }
+
+  recordEmptyStateView(): void {
+    this.emptyStateViews.count += 1;
+  }
+
+  recordSuggestionClick(): void {
+    this.suggestionClicks.count += 1;
+  }
+
+  recordDetailPanelOpen(): void {
+    this.detailPanelOpens.count += 1;
+  }
+
+  recordResultCompareAdd(): void {
+    this.resultCompareAdds.count += 1;
+  }
+
+  recordSnapshotReopen(): void {
+    this.snapshotReopens.count += 1;
+  }
+
+  recordSavedSearchRestore(): void {
+    this.savedSearchRestores.count += 1;
   }
 
   recordSafetyResolution(payload: {
@@ -544,6 +584,14 @@ export class MetricsCollector {
       searchRestoreCount: this.searchRestores.count,
       recentActivityPanelViewCount: this.recentActivityPanelViews.count,
       savedSearchPinCount: this.savedSearchPins.count,
+      onboardingViewCount: this.onboardingViews.count,
+      onboardingDismissCount: this.onboardingDismisses.count,
+      emptyStateViewCount: this.emptyStateViews.count,
+      suggestionClickCount: this.suggestionClicks.count,
+      detailPanelOpenCount: this.detailPanelOpens.count,
+      resultCompareAddCount: this.resultCompareAdds.count,
+      snapshotReopenCount: this.snapshotReopens.count,
+      savedSearchRestoreCount: this.savedSearchRestores.count,
       scoreDistribution: {
         count: this.scores.count,
         average: average(this.scores),

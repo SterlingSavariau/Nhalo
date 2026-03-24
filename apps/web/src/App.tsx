@@ -1,12 +1,14 @@
 import type {
   ScoreAuditRecord,
   SearchDefinition,
+  SearchRestorePayload,
   SearchHistoryRecord,
   SearchRequest,
   SearchResponse,
   SearchSnapshotRecord,
   SessionIdentity
 } from "@nhalo/types";
+import { DEFAULT_WEIGHTS } from "@nhalo/config";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createSearchDefinition,
@@ -25,6 +27,9 @@ import {
 } from "./api";
 import { AuditDrawer } from "./components/AuditDrawer";
 import { ComparisonTray } from "./components/ComparisonTray";
+import { EmptyStatePanel } from "./components/EmptyStatePanel";
+import { HomeDetailPanel } from "./components/HomeDetailPanel";
+import { OnboardingModal } from "./components/OnboardingModal";
 import { RecentActivityPanel } from "./components/RecentActivityPanel";
 import { ResultCard } from "./components/ResultCard";
 import { ResultControls } from "./components/ResultControls";
@@ -32,7 +37,9 @@ import { INITIAL_SEARCH_REQUEST, SearchForm } from "./components/SearchForm";
 import { SearchSummaryPanel } from "./components/SearchSummaryPanel";
 import {
   applyPreferencesToRequest,
+  dismissOnboarding,
   getOrCreateSessionIdentity,
+  isOnboardingDismissed,
   loadUiPreferences,
   saveUiPreferences
 } from "./local-state";
@@ -69,6 +76,8 @@ export default function App() {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SearchSnapshotRecord | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [selectedHomeId, setSelectedHomeId] = useState<string | null>(null);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const [definitions, setDefinitions] = useState<SearchDefinition[]>([]);
   const [history, setHistory] = useState<SearchHistoryRecord[]>([]);
@@ -78,6 +87,8 @@ export default function App() {
   const comparedRef = useRef(0);
   const renderedSnapshotRef = useRef<string | null>(null);
   const activityTrackedRef = useRef(false);
+  const onboardingTrackedRef = useRef(false);
+  const emptyStateTrackedRef = useRef<string | null>(null);
 
   async function refreshRecentActivity(sessionId = sessionIdentity.sessionId) {
     if (!sessionId) {
@@ -125,11 +136,13 @@ export default function App() {
           ? response.metadata.rerunResultMetadata.sourceId
           : null)
     );
+    setSelectedHomeId(null);
   }
 
   useEffect(() => {
     const identity = getOrCreateSessionIdentity(localStorageRef);
     setSessionIdentity(identity);
+    setShowOnboarding(!isOnboardingDismissed(localStorageRef));
     void refreshRecentActivity(identity.sessionId);
   }, []);
 
@@ -160,6 +173,7 @@ export default function App() {
           historyRecordId: loadedSnapshot.historyRecordId ?? null,
           searchDefinitionId: loadedSnapshot.searchDefinitionId ?? null
         });
+        void trackUiMetric("snapshot_reopen");
       } catch (snapshotError) {
         setError(snapshotError instanceof Error ? snapshotError.message : "Unable to load snapshot");
       } finally {
@@ -184,16 +198,46 @@ export default function App() {
   }, [results]);
 
   useEffect(() => {
+    if (showOnboarding && !onboardingTrackedRef.current) {
+      onboardingTrackedRef.current = true;
+      void trackUiMetric("onboarding_view");
+    }
+  }, [showOnboarding]);
+
+  useEffect(() => {
     if (comparisonIds.length > 0 && comparedRef.current === 0) {
       void trackUiMetric("comparison_view");
     }
     comparedRef.current = comparisonIds.length;
   }, [comparisonIds]);
 
+  useEffect(() => {
+    if (!results || results.metadata.returnedCount >= 5) {
+      emptyStateTrackedRef.current = null;
+      return;
+    }
+
+    const key = `${results.metadata.returnedCount}:${results.metadata.totalMatched}:${results.metadata.durationMs}`;
+    if (emptyStateTrackedRef.current === key) {
+      return;
+    }
+
+    emptyStateTrackedRef.current = key;
+    void trackUiMetric("empty_state_view");
+  }, [results]);
+
   const visibleHomes = useMemo(
     () => (results ? applyResultControls(results.homes, controls) : []),
     [results, controls]
   );
+
+  const selectedHome = useMemo(() => {
+    if (!results || !selectedHomeId) {
+      return null;
+    }
+
+    return results.homes.find((home) => home.id === selectedHomeId) ?? null;
+  }, [results, selectedHomeId]);
 
   const comparedHomes = useMemo(() => {
     if (!results) {
@@ -297,6 +341,7 @@ export default function App() {
         historyRecordId: loadedSnapshot.historyRecordId ?? null,
         searchDefinitionId: loadedSnapshot.searchDefinitionId ?? null
       });
+      void trackUiMetric("snapshot_reopen");
       window.history.replaceState({}, "", `/?snapshot=${snapshotId}`);
     } catch (snapshotError) {
       setError(snapshotError instanceof Error ? snapshotError.message : "Unable to open snapshot");
@@ -305,9 +350,12 @@ export default function App() {
     }
   }
 
-  async function handleRestore(request: SearchRequest) {
-    setFormState(request);
+  async function handleRestore(payload: SearchRestorePayload) {
+    setFormState(payload.request);
     await trackUiMetric("search_restore");
+    if (payload.sourceType === "definition") {
+      await trackUiMetric("saved_search_restore");
+    }
   }
 
   async function handleRerunDefinition(definitionId: string) {
@@ -381,14 +429,48 @@ export default function App() {
     controls.confidence !== "all" ||
     controls.propertyType !== "all";
 
+  async function handleDismissOnboarding() {
+    dismissOnboarding(localStorageRef);
+    setShowOnboarding(false);
+    await trackUiMetric("onboarding_dismiss");
+  }
+
+  async function handleApplySuggestion(patch: Partial<SearchRequest>) {
+    setFormState((current) => ({
+      ...current,
+      ...patch,
+      budget: patch.budget ? { ...current.budget, ...patch.budget } : current.budget,
+      weights: patch.weights ? { ...current.weights, ...patch.weights } : current.weights
+    }));
+    await trackUiMetric("suggestion_click");
+  }
+
+  async function handleOpenDetails(homeId: string) {
+    setSelectedHomeId(homeId);
+    await trackUiMetric("detail_panel_open");
+  }
+
+  async function handleToggleCompare(homeId: string) {
+    setComparisonIds((current) => {
+      const next = toggleComparisonSelection(current, homeId);
+      if (!current.includes(homeId) && next.includes(homeId)) {
+        void trackUiMetric("result_compare_add");
+      }
+      return next;
+    });
+  }
+
   return (
     <main className="page-shell">
+      <OnboardingModal onDismiss={handleDismissOnboarding} open={showOnboarding} />
+
       <section className="hero-panel">
-        <p className="eyebrow">Nhalo Decision Console</p>
-        <h1>Keep family home decisions continuous across searches.</h1>
+        <p className="eyebrow">Nhalo Home Decision Engine</p>
+        <h1>Find homes your family can afford, live in, and feel safe in.</h1>
         <p className="hero-copy">
-          This console now preserves lightweight session continuity with saved searches, recent runs,
-          immutable snapshots, and explicit restore versus rerun actions.
+          Nhalo ranks homes with deterministic price, size, and safety signals. Use this console to
+          run a search, compare tradeoffs, and revisit saved work without losing the reasoning behind
+          each result.
         </p>
       </section>
 
@@ -398,6 +480,12 @@ export default function App() {
             <SearchForm
               busy={busy}
               onChange={setFormState}
+              onResetWeights={() =>
+                setFormState((current) => ({
+                  ...current,
+                  weights: DEFAULT_WEIGHTS
+                }))
+              }
               onSubmit={handleSubmit}
               value={formState}
             />
@@ -435,6 +523,8 @@ export default function App() {
                 snapshot={snapshot}
               />
 
+              <EmptyStatePanel results={results} onApplySuggestion={handleApplySuggestion} />
+
               <ResultControls controls={controls} onChange={setControls} resorted={resorted} />
 
               <ComparisonTray
@@ -449,9 +539,9 @@ export default function App() {
                     compared={comparisonIds.includes(home.id)}
                     compareDisabled={comparisonIds.length >= 3}
                     home={home}
-                    onToggleCompare={(homeId) =>
-                      setComparisonIds((current) => toggleComparisonSelection(current, homeId))
-                    }
+                    homes={results.homes}
+                    onOpenDetails={handleOpenDetails}
+                    onToggleCompare={handleToggleCompare}
                     onViewAudit={handleViewAudit}
                     rank={index + 1}
                   />
@@ -479,6 +569,13 @@ export default function App() {
           setAudit(null);
           setAuditError(null);
         }}
+      />
+
+      <HomeDetailPanel
+        allHomes={results?.homes ?? []}
+        home={selectedHome}
+        onClose={() => setSelectedHomeId(null)}
+        onViewAudit={handleViewAudit}
       />
     </main>
   );

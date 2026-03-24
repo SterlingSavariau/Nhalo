@@ -81,6 +81,10 @@ export function SearchSummaryPanel({
             Price {results.appliedWeights.price} · Size {results.appliedWeights.size} · Safety{" "}
             {results.appliedWeights.safety}
           </p>
+          <p className="muted">
+            Price emphasizes affordability and value. Size emphasizes usable family space. Safety
+            emphasizes neighborhood and school context.
+          </p>
           <p className="muted">Formula remains {results.homes[0]?.scores.formulaVersion ?? "nhalo-v1"}.</p>
         </div>
 
@@ -114,8 +118,12 @@ export function SearchSummaryPanel({
           <h3>Runtime</h3>
           <p>{results.metadata.durationMs} ms</p>
           <p className="muted">
-            {results.metadata.mockFallbackUsed ? "Mock fallback used." : "No mock fallback used."}{" "}
-            {results.metadata.staleDataPresent ? "Some result data is stale." : "No stale result data flagged."}
+            {results.metadata.mockFallbackUsed
+              ? "Mock fallback supported part of this result set."
+              : "No mock fallback was needed."}{" "}
+            {results.metadata.staleDataPresent
+              ? "Some result data is stale, so confidence may be reduced."
+              : "No stale result data was flagged."}
           </p>
         </div>
 

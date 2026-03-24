@@ -229,6 +229,14 @@ export async function trackUiMetric(
     | "explainability_render"
     | "search_restore"
     | "recent_activity_panel_view"
+    | "onboarding_view"
+    | "onboarding_dismiss"
+    | "empty_state_view"
+    | "suggestion_click"
+    | "detail_panel_open"
+    | "result_compare_add"
+    | "snapshot_reopen"
+    | "saved_search_restore"
 ): Promise<void> {
   await fetch(`${API_BASE_URL}/metrics/events`, {
     method: "POST",

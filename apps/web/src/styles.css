@@ -90,7 +90,10 @@ h1 {
 .decision-console,
 .summary-panel,
 .controls-panel,
-.audit-stack {
+.audit-stack,
+.form-intro,
+.empty-guidance-panel,
+.detail-panel {
   display: grid;
   gap: 1rem;
 }
@@ -114,6 +117,11 @@ label {
   gap: 0.35rem;
   color: rgba(245, 241, 232, 0.82);
   font-size: 0.92rem;
+}
+
+.helper-copy {
+  color: rgba(245, 241, 232, 0.58);
+  line-height: 1.35;
 }
 
 input,
@@ -247,6 +255,14 @@ select {
   background: rgba(255, 248, 235, 0.03);
 }
 
+.tradeoff-panel,
+.empty-guidance-panel {
+  border: 1px solid rgba(212, 180, 131, 0.16);
+  border-radius: 1rem;
+  padding: 0.95rem;
+  background: rgba(255, 248, 235, 0.035);
+}
+
 .activity-actions,
 .summary-actions {
   display: flex;
@@ -373,6 +389,32 @@ ul {
   color: #f5f1e8;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(6, 10, 8, 0.62);
+  backdrop-filter: blur(8px);
+}
+
+.modal-panel {
+  width: min(56rem, 100%);
+  border: 1px solid rgba(212, 180, 131, 0.2);
+  border-radius: 1.5rem;
+  background: rgba(17, 23, 20, 0.96);
+  padding: 1.25rem;
+  box-shadow: 0 24px 60px rgba(4, 8, 6, 0.32);
+}
+
+.onboarding-grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .provenance-grid p,
 .provenance-grid strong {
   display: block;
@@ -412,6 +454,22 @@ ul {
   border: 1px solid rgba(212, 180, 131, 0.18);
 }
 
+.detail-panel {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  bottom: 1rem;
+  width: min(34rem, calc(100vw - 2rem));
+  z-index: 20;
+  overflow: auto;
+  border: 1px solid rgba(212, 180, 131, 0.18);
+  border-radius: 1.3rem;
+  background: rgba(13, 19, 16, 0.96);
+  backdrop-filter: blur(18px);
+  padding: 1rem;
+  box-shadow: 0 24px 60px rgba(4, 8, 6, 0.28);
+}
+
 a {
   color: #f0d29a;
 }
@@ -427,7 +485,8 @@ a {
   .summary-grid,
   .provenance-grid,
   .two-column-list,
-  .comparison-grid {
+  .comparison-grid,
+  .onboarding-grid {
     grid-template-columns: 1fr;
   }
 
@@ -440,5 +499,13 @@ a {
 
   .headline-score {
     text-align: left;
+  }
+
+  .detail-panel {
+    top: auto;
+    right: 1rem;
+    left: 1rem;
+    width: auto;
+    max-height: 70vh;
   }
 }

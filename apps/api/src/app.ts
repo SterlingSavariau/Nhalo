@@ -40,7 +40,15 @@ const metricsEventSchema = z.object({
     "comparison_view",
     "explainability_render",
     "search_restore",
-    "recent_activity_panel_view"
+    "recent_activity_panel_view",
+    "onboarding_view",
+    "onboarding_dismiss",
+    "empty_state_view",
+    "suggestion_click",
+    "detail_panel_open",
+    "result_compare_add",
+    "snapshot_reopen",
+    "saved_search_restore"
   ])
 });
 
@@ -243,6 +251,38 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
 
     if (payload.eventType === "recent_activity_panel_view") {
       metrics.recordRecentActivityPanelView();
+    }
+
+    if (payload.eventType === "onboarding_view") {
+      metrics.recordOnboardingView();
+    }
+
+    if (payload.eventType === "onboarding_dismiss") {
+      metrics.recordOnboardingDismiss();
+    }
+
+    if (payload.eventType === "empty_state_view") {
+      metrics.recordEmptyStateView();
+    }
+
+    if (payload.eventType === "suggestion_click") {
+      metrics.recordSuggestionClick();
+    }
+
+    if (payload.eventType === "detail_panel_open") {
+      metrics.recordDetailPanelOpen();
+    }
+
+    if (payload.eventType === "result_compare_add") {
+      metrics.recordResultCompareAdd();
+    }
+
+    if (payload.eventType === "snapshot_reopen") {
+      metrics.recordSnapshotReopen();
+    }
+
+    if (payload.eventType === "saved_search_restore") {
+      metrics.recordSavedSearchRestore();
     }
 
     return reply.status(202).send({ status: "accepted" });

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   applyPreferencesToRequest,
+  dismissOnboarding,
   getOrCreateSessionIdentity,
+  isOnboardingDismissed,
   loadUiPreferences,
   saveUiPreferences
 } from "./local-state";
@@ -62,5 +64,15 @@ describe("local-state", () => {
     });
     expect(request.propertyTypes).toEqual(["condo"]);
     expect(INITIAL_SEARCH_REQUEST.propertyTypes).not.toEqual(["condo"]);
+  });
+
+  it("persists onboarding dismissal safely in local storage", () => {
+    const storage = createMemoryStorage();
+
+    expect(isOnboardingDismissed(storage)).toBe(false);
+
+    dismissOnboarding(storage);
+
+    expect(isOnboardingDismissed(storage)).toBe(true);
   });
 });

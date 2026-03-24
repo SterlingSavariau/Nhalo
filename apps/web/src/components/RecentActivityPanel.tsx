@@ -2,6 +2,7 @@ import type {
   SearchDefinition,
   SearchHistoryRecord,
   SearchRequest,
+  SearchRestorePayload,
   SearchSnapshotRecord
 } from "@nhalo/types";
 
@@ -14,7 +15,7 @@ interface RecentActivityPanelProps {
   savingDefinition: boolean;
   onSaveLabelChange(value: string): void;
   onSaveDefinition(): void;
-  onRestore(request: SearchRequest): void;
+  onRestore(payload: SearchRestorePayload): void;
   onRerunDefinition(id: string): void;
   onRerunHistory(id: string): void;
   onOpenSnapshot(id: string): void;
@@ -81,13 +82,25 @@ export function RecentActivityPanel({
           {definitions.map((definition) => (
             <article className="activity-card" key={definition.id}>
               <div>
+                <p className="section-label">Saved definition {definition.pinned ? "· pinned" : ""}</p>
                 <strong>{definition.label}</strong>
                 <p className="muted">
                   {definition.request.locationValue} · {formatWhen(definition.lastRunAt)}
                 </p>
               </div>
               <div className="activity-actions">
-                <button className="chip" onClick={() => onRestore(definition.request)} type="button">
+                <button
+                  className="chip"
+                  onClick={() =>
+                    onRestore({
+                      sourceType: "definition",
+                      sourceId: definition.id,
+                      label: definition.label,
+                      request: definition.request
+                    })
+                  }
+                  type="button"
+                >
                   Restore
                 </button>
                 <button className="chip" onClick={() => onRerunDefinition(definition.id)} type="button">
@@ -115,13 +128,25 @@ export function RecentActivityPanel({
           {history.map((record) => (
             <article className="activity-card" key={record.id}>
               <div>
+                <p className="section-label">Historical run</p>
                 <strong>{record.request.locationValue}</strong>
                 <p className="muted">
                   {record.summaryMetadata.returnedCount} results · {formatWhen(record.createdAt)}
                 </p>
               </div>
               <div className="activity-actions">
-                <button className="chip" onClick={() => onRestore(record.request)} type="button">
+                <button
+                  className="chip"
+                  onClick={() =>
+                    onRestore({
+                      sourceType: "history",
+                      sourceId: record.id,
+                      label: `${record.request.locationValue} run`,
+                      request: record.request
+                    })
+                  }
+                  type="button"
+                >
                   Restore
                 </button>
                 <button className="chip" onClick={() => onRerunHistory(record.id)} type="button">
@@ -148,13 +173,25 @@ export function RecentActivityPanel({
           {snapshots.map((snapshot) => (
             <article className="activity-card" key={snapshot.id}>
               <div>
+                <p className="section-label">Immutable snapshot</p>
                 <strong>{snapshot.request.locationValue}</strong>
                 <p className="muted">
                   {snapshot.response.metadata.returnedCount} results · {formatWhen(snapshot.createdAt)}
                 </p>
               </div>
               <div className="activity-actions">
-                <button className="chip" onClick={() => onRestore(snapshot.request)} type="button">
+                <button
+                  className="chip"
+                  onClick={() =>
+                    onRestore({
+                      sourceType: "snapshot",
+                      sourceId: snapshot.id,
+                      label: `${snapshot.request.locationValue} snapshot`,
+                      request: snapshot.request
+                    })
+                  }
+                  type="button"
+                >
                   Restore
                 </button>
                 <button className="chip" onClick={() => onOpenSnapshot(snapshot.id)} type="button">

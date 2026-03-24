@@ -9,6 +9,7 @@ import type { ResultControlsState } from "./view-model";
 
 const SESSION_KEY = "nhalo.session.identity";
 const PREFERENCES_KEY = "nhalo.ui.preferences";
+const ONBOARDING_KEY = "nhalo.ui.onboarding.dismissed";
 
 export interface UiPreferences {
   preferredSortMode: ResultControlsState["sortMode"];
@@ -103,4 +104,20 @@ export function applyPreferencesToRequest(
     propertyTypes: preferences.lastPropertyTypes,
     weights: preferences.lastWeights
   };
+}
+
+export function isOnboardingDismissed(storage: Pick<Storage, "getItem"> | null): boolean {
+  if (!storage) {
+    return false;
+  }
+
+  return storage.getItem(ONBOARDING_KEY) === "true";
+}
+
+export function dismissOnboarding(storage: Pick<Storage, "setItem"> | null): void {
+  if (!storage) {
+    return;
+  }
+
+  storage.setItem(ONBOARDING_KEY, "true");
 }
