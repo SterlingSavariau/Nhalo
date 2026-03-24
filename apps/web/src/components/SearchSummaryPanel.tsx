@@ -48,6 +48,13 @@ export function SearchSummaryPanel({
         </div>
       ) : null}
 
+      {results.metadata.rerunResultMetadata ? (
+        <div className="callout suggestion">
+          Fresh rerun from {results.metadata.rerunResultMetadata.sourceType}{" "}
+          {results.metadata.rerunResultMetadata.sourceId}. This result set is a new live search event.
+        </div>
+      ) : null}
+
       <div className="summary-grid">
         <div className="summary-block">
           <h3>Resolved origin</h3>
@@ -110,6 +117,12 @@ export function SearchSummaryPanel({
             {results.metadata.mockFallbackUsed ? "Mock fallback used." : "No mock fallback used."}{" "}
             {results.metadata.staleDataPresent ? "Some result data is stale." : "No stale result data flagged."}
           </p>
+        </div>
+
+        <div className="summary-block">
+          <h3>Continuity</h3>
+          <p>Session {results.metadata.sessionId ?? "none"}</p>
+          <p className="muted">History record {results.metadata.historyRecordId ?? "not recorded"}.</p>
         </div>
       </div>
 

@@ -70,6 +70,12 @@ h1 {
   margin: 0 auto;
 }
 
+.sidebar-stack {
+  display: grid;
+  gap: 1.5rem;
+  align-items: start;
+}
+
 .panel {
   border: 1px solid rgba(212, 180, 131, 0.22);
   border-radius: 1.5rem;
@@ -216,11 +222,36 @@ select {
 
 .summary-panel,
 .controls-panel,
-.comparison-panel {
+.comparison-panel,
+.activity-panel {
   border: 1px solid rgba(212, 180, 131, 0.16);
   border-radius: 1.2rem;
   padding: 1rem;
   background: rgba(255, 248, 235, 0.04);
+}
+
+.activity-panel,
+.activity-section,
+.activity-list,
+.activity-save {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.activity-card {
+  display: grid;
+  gap: 0.65rem;
+  border: 1px solid rgba(212, 180, 131, 0.12);
+  border-radius: 1rem;
+  padding: 0.9rem;
+  background: rgba(255, 248, 235, 0.03);
+}
+
+.activity-actions,
+.summary-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
 }
 
 .summary-grid,

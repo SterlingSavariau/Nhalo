@@ -46,6 +46,13 @@ export interface SearchServiceDependencies {
   }>;
 }
 
+export interface SearchExecutionContext {
+  sessionId?: string | null;
+  searchDefinitionId?: string | null;
+  rerunSourceType?: "definition" | "history" | null;
+  rerunSourceId?: string | null;
+}
+
 function buildSearchOriginMetadata(resolvedLocation: {
   locationType: SearchOriginMetadata["locationType"];
   locationValue: string;
@@ -255,7 +262,8 @@ async function resolveMarketSnapshot(
 
 export async function runSearch(
   request: SearchRequestInput,
-  dependencies: SearchServiceDependencies
+  dependencies: SearchServiceDependencies,
+  executionContext: SearchExecutionContext = {}
 ): Promise<SearchResponse> {
   const searchQualityConfig = getSearchQualityConfig();
   const startedAt = Date.now();
@@ -468,7 +476,8 @@ export async function runSearch(
         (home) =>
           (home.qualityFlags ?? []).includes("staleListingData") ||
           (home.qualityFlags ?? []).includes("staleSafetyData")
-      )
+      ),
+      sessionId: executionContext.sessionId ?? null
     }
   };
 
@@ -498,12 +507,16 @@ export async function runSearch(
     eligible: qualityGate.listings.length
   });
 
-  await dependencies.repository.saveSearch({
+  const saveResult = await dependencies.repository.saveSearch({
     request,
     response,
     resolvedLocation,
     listings: radiusCandidates,
     marketSnapshot,
+    sessionId: executionContext.sessionId ?? null,
+    searchDefinitionId: executionContext.searchDefinitionId ?? null,
+    rerunSourceType: executionContext.rerunSourceType ?? null,
+    rerunSourceId: executionContext.rerunSourceId ?? null,
     scoredResults: rankedListings.map((ranked) => ({
       propertyId: ranked.listing.id,
       formulaVersion: ranked.scores.formulaVersion,
@@ -577,6 +590,18 @@ export async function runSearch(
       }
     }))
   });
+
+  response.metadata.historyRecordId = saveResult.historyRecordId;
+  if (executionContext.rerunSourceType && executionContext.rerunSourceId) {
+    response.metadata.rerunResultMetadata = {
+      sourceType: executionContext.rerunSourceType,
+      sourceId: executionContext.rerunSourceId,
+      executedAt: new Date().toISOString(),
+      historyRecordId: saveResult.historyRecordId,
+      snapshotId: null,
+      freshResult: true
+    };
+  }
 
   return response;
 }

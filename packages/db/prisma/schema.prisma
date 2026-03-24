@@ -31,6 +31,10 @@ model Property {
 
 model SearchRequest {
   id                    String          @id @default(cuid())
+  sessionId             String?
+  searchDefinitionId    String?
+  rerunSourceType       String?
+  rerunSourceId         String?
   locationType          String
   locationValue         String
   resolvedCity          String?
@@ -57,16 +61,36 @@ model SearchRequest {
   suggestions           Json?
   createdAt             DateTime        @default(now())
   scoreSnapshots        ScoreSnapshot[]
+
+  @@index([sessionId, createdAt])
 }
 
 model SearchSnapshot {
   id             String   @id @default(cuid())
   formulaVersion String?
+  sessionId      String?
+  searchDefinitionId String?
+  historyRecordId String?
   requestPayload Json
   responsePayload Json
   createdAt      DateTime @default(now())
 
   @@index([createdAt])
+  @@index([sessionId, createdAt])
+  @@index([historyRecordId, createdAt])
+}
+
+model SearchDefinition {
+  id           String   @id @default(cuid())
+  sessionId    String?
+  label        String
+  requestPayload Json
+  pinned       Boolean  @default(false)
+  lastRunAt    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([sessionId, updatedAt])
 }
 
 model ScoreSnapshot {

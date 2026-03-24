@@ -1,6 +1,6 @@
 import { DEFAULT_PROPERTY_TYPES, DEFAULT_RADIUS_MILES, DEFAULT_WEIGHTS } from "@nhalo/config";
 import type { PropertyType, SearchRequest } from "@nhalo/types";
-import { FormEvent, useState } from "react";
+import { FormEvent } from "react";
 
 const PROPERTY_TYPE_OPTIONS: Array<{ label: string; value: PropertyType }> = [
   { label: "Single-family", value: "single_family" },
@@ -8,7 +8,7 @@ const PROPERTY_TYPE_OPTIONS: Array<{ label: string; value: PropertyType }> = [
   { label: "Townhome", value: "townhome" }
 ];
 
-const INITIAL_STATE: SearchRequest = {
+export const INITIAL_SEARCH_REQUEST: SearchRequest = {
   locationType: "city",
   locationValue: "Southfield, MI",
   radiusMiles: DEFAULT_RADIUS_MILES,
@@ -24,11 +24,13 @@ const INITIAL_STATE: SearchRequest = {
 
 interface SearchFormProps {
   busy: boolean;
+  value: SearchRequest;
+  onChange(payload: SearchRequest): void;
   onSubmit(payload: SearchRequest): void;
 }
 
-export function SearchForm({ busy, onSubmit }: SearchFormProps) {
-  const [formState, setFormState] = useState<SearchRequest>(INITIAL_STATE);
+export function SearchForm({ busy, value, onChange, onSubmit }: SearchFormProps) {
+  const formState = value;
 
   function togglePropertyType(value: PropertyType) {
     const current = formState.propertyTypes ?? DEFAULT_PROPERTY_TYPES;
@@ -36,10 +38,10 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
       ? current.filter((item) => item !== value)
       : [...current, value];
 
-    setFormState((previous) => ({
-      ...previous,
+    onChange({
+      ...formState,
       propertyTypes: next
-    }));
+    });
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -55,10 +57,10 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
           <select
             value={formState.locationType}
             onChange={(event) =>
-              setFormState((previous) => ({
-                ...previous,
+              onChange({
+                ...formState,
                 locationType: event.target.value as SearchRequest["locationType"]
-              }))
+              })
             }
           >
             <option value="city">City</option>
@@ -71,10 +73,10 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
           <input
             value={formState.locationValue}
             onChange={(event) =>
-              setFormState((previous) => ({
-                ...previous,
+              onChange({
+                ...formState,
                 locationValue: event.target.value
-              }))
+              })
             }
           />
         </label>
@@ -86,10 +88,10 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
             max="50"
             value={formState.radiusMiles ?? DEFAULT_RADIUS_MILES}
             onChange={(event) =>
-              setFormState((previous) => ({
-                ...previous,
+              onChange({
+                ...formState,
                 radiusMiles: Number(event.target.value)
-              }))
+              })
             }
           />
         </label>
@@ -100,13 +102,13 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
             min="50000"
             value={formState.budget?.max ?? ""}
             onChange={(event) =>
-              setFormState((previous) => ({
-                ...previous,
+              onChange({
+                ...formState,
                 budget: {
-                  ...previous.budget,
+                  ...formState.budget,
                   max: Number(event.target.value)
                 }
-              }))
+              })
             }
           />
         </label>
@@ -117,10 +119,10 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
             min="500"
             value={formState.minSqft ?? ""}
             onChange={(event) =>
-              setFormState((previous) => ({
-                ...previous,
+              onChange({
+                ...formState,
                 minSqft: Number(event.target.value)
-              }))
+              })
             }
           />
         </label>
@@ -131,10 +133,10 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
             min="1"
             value={formState.minBedrooms ?? ""}
             onChange={(event) =>
-              setFormState((previous) => ({
-                ...previous,
+              onChange({
+                ...formState,
                 minBedrooms: Number(event.target.value)
-              }))
+              })
             }
           />
         </label>
@@ -175,13 +177,13 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
                 max="100"
                 value={formState.weights?.price ?? 0}
                 onChange={(event) =>
-                  setFormState((previous) => ({
-                    ...previous,
+                  onChange({
+                    ...formState,
                     weights: {
-                      ...previous.weights!,
+                      ...formState.weights!,
                       price: Number(event.target.value)
                     }
-                  }))
+                  })
                 }
               />
             </label>
@@ -193,13 +195,13 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
                 max="100"
                 value={formState.weights?.size ?? 0}
                 onChange={(event) =>
-                  setFormState((previous) => ({
-                    ...previous,
+                  onChange({
+                    ...formState,
                     weights: {
-                      ...previous.weights!,
+                      ...formState.weights!,
                       size: Number(event.target.value)
                     }
-                  }))
+                  })
                 }
               />
             </label>
@@ -211,13 +213,13 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
                 max="100"
                 value={formState.weights?.safety ?? 0}
                 onChange={(event) =>
-                  setFormState((previous) => ({
-                    ...previous,
+                  onChange({
+                    ...formState,
                     weights: {
-                      ...previous.weights!,
+                      ...formState.weights!,
                       safety: Number(event.target.value)
                     }
-                  }))
+                  })
                 }
               />
             </label>

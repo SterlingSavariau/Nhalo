@@ -1,0 +1,66 @@
+import { describe, expect, it } from "vitest";
+import {
+  applyPreferencesToRequest,
+  getOrCreateSessionIdentity,
+  loadUiPreferences,
+  saveUiPreferences
+} from "./local-state";
+import { INITIAL_SEARCH_REQUEST } from "./components/SearchForm";
+
+function createMemoryStorage() {
+  const store = new Map<string, string>();
+
+  return {
+    getItem(key: string) {
+      return store.get(key) ?? null;
+    },
+    setItem(key: string, value: string) {
+      store.set(key, value);
+    }
+  };
+}
+
+describe("local-state", () => {
+  it("creates a stable anonymous session identity in local storage", () => {
+    const storage = createMemoryStorage();
+    const first = getOrCreateSessionIdentity(storage);
+    const second = getOrCreateSessionIdentity(storage);
+
+    expect(first.sessionId).toBeTruthy();
+    expect(second.sessionId).toBe(first.sessionId);
+  });
+
+  it("handles corrupted local preferences safely", () => {
+    const storage = createMemoryStorage();
+    storage.setItem("nhalo.ui.preferences", "{bad json");
+
+    const preferences = loadUiPreferences(storage);
+
+    expect(preferences.preferredSortMode).toBe("server");
+    expect(preferences.lastPropertyTypes.length).toBeGreaterThan(0);
+  });
+
+  it("applies stored weight and property preferences without mutating the base request", () => {
+    const storage = createMemoryStorage();
+    saveUiPreferences(storage, {
+      preferredSortMode: "highest_safety",
+      lastWeights: {
+        price: 20,
+        size: 20,
+        safety: 60
+      },
+      lastPropertyTypes: ["condo"],
+      comparisonIds: ["a", "b"]
+    });
+
+    const request = applyPreferencesToRequest(INITIAL_SEARCH_REQUEST, loadUiPreferences(storage));
+
+    expect(request.weights).toEqual({
+      price: 20,
+      size: 20,
+      safety: 60
+    });
+    expect(request.propertyTypes).toEqual(["condo"]);
+    expect(INITIAL_SEARCH_REQUEST.propertyTypes).not.toEqual(["condo"]);
+  });
+});

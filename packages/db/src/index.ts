@@ -17,6 +17,8 @@ import type {
   MarketSnapshotRepository,
   SafetySignalCacheRecord,
   SafetySignalCacheRepository,
+  SearchDefinition,
+  SearchHistoryRecord,
   ScoreAuditRecord,
   SearchSnapshotRecord,
   SearchPersistenceInput,
@@ -54,6 +56,12 @@ type StoredSnapshot = {
   listingProvenance: NonNullable<ScoreAuditRecord["listingProvenance"]>;
   searchOrigin?: ScoreAuditRecord["searchOrigin"];
   spatialContext?: ScoreAuditRecord["spatialContext"];
+};
+
+type StoredSearch = {
+  id: string;
+  payload: SearchPersistenceInput;
+  createdAt: string;
 };
 
 function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
@@ -108,13 +116,54 @@ function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
   };
 }
 
+function buildHistoryRecord(
+  id: string,
+  payload: SearchPersistenceInput,
+  createdAt: string,
+  snapshotId: string | null
+): SearchHistoryRecord {
+  return {
+    id,
+    sessionId: payload.sessionId ?? null,
+    request: clone(payload.request),
+    resolvedOriginSummary: {
+      resolvedFormattedAddress: payload.response.metadata.searchOrigin?.resolvedFormattedAddress ?? null,
+      latitude: payload.response.metadata.searchOrigin?.latitude ?? null,
+      longitude: payload.response.metadata.searchOrigin?.longitude ?? null,
+      precision: payload.response.metadata.searchOrigin?.precision ?? "none"
+    },
+    summaryMetadata: {
+      returnedCount: payload.response.metadata.returnedCount,
+      totalMatched: payload.response.metadata.totalMatched,
+      durationMs: payload.response.metadata.durationMs,
+      warnings: clone(payload.response.metadata.warnings),
+      suggestions: clone(payload.response.metadata.suggestions)
+    },
+    snapshotId,
+    searchDefinitionId: payload.searchDefinitionId ?? null,
+    rerunSourceType: payload.rerunSourceType ?? null,
+    rerunSourceId: payload.rerunSourceId ?? null,
+    createdAt
+  };
+}
+
+function mapStoredDefinition(definition: SearchDefinition): SearchDefinition {
+  return clone(definition);
+}
+
 export class InMemorySearchRepository implements SearchRepository {
-  public readonly searches: SearchPersistenceInput[] = [];
+  public readonly searches: StoredSearch[] = [];
   public readonly scoreSnapshots: StoredSnapshot[] = [];
   public readonly searchSnapshots: SearchSnapshotRecord[] = [];
+  public readonly searchDefinitions: SearchDefinition[] = [];
 
-  async saveSearch(payload: SearchPersistenceInput): Promise<void> {
-    this.searches.push(payload);
+  async saveSearch(payload: SearchPersistenceInput): Promise<{ historyRecordId: string | null }> {
+    const historyRecordId = createId("history");
+    this.searches.push({
+      id: historyRecordId,
+      payload: clone(payload),
+      createdAt: new Date().toISOString()
+    });
 
     for (const result of payload.scoredResults) {
       this.scoreSnapshots.push({
@@ -163,6 +212,8 @@ export class InMemorySearchRepository implements SearchRepository {
         }
       });
     }
+
+    return { historyRecordId };
   }
 
   async getScoreAudit(propertyId: string): Promise<ScoreAuditRecord | null> {
@@ -176,12 +227,18 @@ export class InMemorySearchRepository implements SearchRepository {
   async createSearchSnapshot(payload: {
     request: SearchPersistenceInput["request"];
     response: SearchPersistenceInput["response"];
+    sessionId?: string | null;
+    searchDefinitionId?: string | null;
+    historyRecordId?: string | null;
   }): Promise<SearchSnapshotRecord> {
     const snapshot: SearchSnapshotRecord = {
       id: createId("snapshot"),
       formulaVersion: payload.response.homes[0]?.scores.formulaVersion ?? null,
       request: clone(payload.request),
       response: clone(payload.response),
+      sessionId: payload.sessionId ?? null,
+      searchDefinitionId: payload.searchDefinitionId ?? null,
+      historyRecordId: payload.historyRecordId ?? null,
       createdAt: new Date().toISOString()
     };
 
@@ -194,6 +251,138 @@ export class InMemorySearchRepository implements SearchRepository {
     const snapshot = this.searchSnapshots.find((entry) => entry.id === id) ?? null;
 
     return snapshot ? clone(snapshot) : null;
+  }
+
+  async listSearchSnapshots(sessionId?: string | null, limit = 10): Promise<SearchSnapshotRecord[]> {
+    if (!sessionId) {
+      return [];
+    }
+
+    return this.searchSnapshots
+      .filter((snapshot) => snapshot.sessionId === sessionId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit)
+      .map((snapshot) => clone(snapshot));
+  }
+
+  async createSearchDefinition(payload: {
+    sessionId?: string | null;
+    label: string;
+    request: SearchPersistenceInput["request"];
+    pinned?: boolean;
+  }): Promise<SearchDefinition> {
+    const now = new Date().toISOString();
+    const definition: SearchDefinition = {
+      id: createId("definition"),
+      sessionId: payload.sessionId ?? null,
+      label: payload.label,
+      request: clone(payload.request),
+      pinned: payload.pinned ?? false,
+      createdAt: now,
+      updatedAt: now,
+      lastRunAt: null
+    };
+
+    this.searchDefinitions.push(definition);
+
+    return mapStoredDefinition(definition);
+  }
+
+  async listSearchDefinitions(sessionId?: string | null): Promise<SearchDefinition[]> {
+    if (!sessionId) {
+      return [];
+    }
+
+    return this.searchDefinitions
+      .filter((definition) => definition.sessionId === sessionId)
+      .sort((left, right) => {
+        if (left.pinned !== right.pinned) {
+          return Number(right.pinned) - Number(left.pinned);
+        }
+        return right.updatedAt.localeCompare(left.updatedAt);
+      })
+      .map((definition) => mapStoredDefinition(definition));
+  }
+
+  async getSearchDefinition(id: string): Promise<SearchDefinition | null> {
+    const definition = this.searchDefinitions.find((entry) => entry.id === id) ?? null;
+
+    return definition ? mapStoredDefinition(definition) : null;
+  }
+
+  async updateSearchDefinition(
+    id: string,
+    patch: {
+      label?: string;
+      pinned?: boolean;
+      lastRunAt?: string | null;
+    }
+  ): Promise<SearchDefinition | null> {
+    const definition = this.searchDefinitions.find((entry) => entry.id === id);
+
+    if (!definition) {
+      return null;
+    }
+
+    if (typeof patch.label === "string") {
+      definition.label = patch.label;
+    }
+    if (typeof patch.pinned === "boolean") {
+      definition.pinned = patch.pinned;
+    }
+    if (patch.lastRunAt !== undefined) {
+      definition.lastRunAt = patch.lastRunAt;
+    }
+    definition.updatedAt = new Date().toISOString();
+
+    return mapStoredDefinition(definition);
+  }
+
+  async deleteSearchDefinition(id: string): Promise<boolean> {
+    const index = this.searchDefinitions.findIndex((entry) => entry.id === id);
+
+    if (index === -1) {
+      return false;
+    }
+
+    this.searchDefinitions.splice(index, 1);
+    return true;
+  }
+
+  async listSearchHistory(sessionId?: string | null, limit = 10): Promise<SearchHistoryRecord[]> {
+    if (!sessionId) {
+      return [];
+    }
+
+    return this.searches
+      .filter((entry) => entry.payload.sessionId === sessionId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit)
+      .map((entry) =>
+        buildHistoryRecord(
+          entry.id,
+          entry.payload,
+          entry.createdAt,
+          this.searchSnapshots
+            .filter((snapshot) => snapshot.historyRecordId === entry.id)
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.id ?? null
+        )
+      );
+  }
+
+  async getSearchHistory(id: string): Promise<SearchHistoryRecord | null> {
+    const entry = this.searches.find((search) => search.id === id);
+
+    if (!entry) {
+      return null;
+    }
+
+    const snapshotId =
+      this.searchSnapshots
+        .filter((snapshot) => snapshot.historyRecordId === entry.id)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.id ?? null;
+
+    return buildHistoryRecord(entry.id, entry.payload, entry.createdAt, snapshotId);
   }
 }
 
@@ -339,6 +528,8 @@ type PrismaClientLike = {
   };
   searchRequest: {
     create(args: Record<string, unknown>): Promise<{ id: string }>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   };
   scoreSnapshot: {
     createMany(args: Record<string, unknown>): Promise<unknown>;
@@ -347,6 +538,15 @@ type PrismaClientLike = {
   searchSnapshot: {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+  };
+  searchDefinition: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    delete(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   };
   marketSnapshot: {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -365,6 +565,81 @@ type PrismaClientLike = {
     findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   };
 };
+
+function mapPrismaSearchDefinition(record: Record<string, unknown>): SearchDefinition {
+  return {
+    id: record.id as string,
+    sessionId: (record.sessionId as string | null) ?? null,
+    label: record.label as string,
+    request: clone(record.requestPayload as SearchDefinition["request"]),
+    pinned: Boolean(record.pinned),
+    createdAt: (record.createdAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString(),
+    lastRunAt: record.lastRunAt ? (record.lastRunAt as Date).toISOString() : null
+  };
+}
+
+function mapPrismaSearchSnapshot(record: Record<string, unknown>): SearchSnapshotRecord {
+  return {
+    id: record.id as string,
+    formulaVersion: (record.formulaVersion as string | null) ?? null,
+    request: clone(record.requestPayload as SearchSnapshotRecord["request"]),
+    response: clone(record.responsePayload as SearchSnapshotRecord["response"]),
+    sessionId: (record.sessionId as string | null) ?? null,
+    searchDefinitionId: (record.searchDefinitionId as string | null) ?? null,
+    historyRecordId: (record.historyRecordId as string | null) ?? null,
+    createdAt: (record.createdAt as Date).toISOString()
+  };
+}
+
+function mapPrismaSearchHistoryRecord(
+  record: Record<string, unknown>,
+  snapshotId: string | null
+): SearchHistoryRecord {
+  const filters = (record.filters as Record<string, unknown> | undefined) ?? {};
+  const weights =
+    (record.weights as SearchHistoryRecord["request"]["weights"] | undefined) ?? {
+      price: 40,
+      size: 30,
+      safety: 30
+    };
+
+  return {
+    id: record.id as string,
+    sessionId: (record.sessionId as string | null) ?? null,
+    request: {
+      locationType: record.locationType as SearchHistoryRecord["request"]["locationType"],
+      locationValue: record.locationValue as string,
+      radiusMiles: Number(record.radiusMiles ?? 0),
+      budget: (record.budget as SearchHistoryRecord["request"]["budget"]) ?? undefined,
+      minSqft: (filters.minSqft as number | undefined) ?? undefined,
+      minBedrooms: (filters.minBedrooms as number | undefined) ?? undefined,
+      propertyTypes:
+        (filters.propertyTypes as SearchHistoryRecord["request"]["propertyTypes"]) ?? [],
+      preferences: (filters.preferences as string[] | undefined) ?? [],
+      weights
+    },
+    resolvedOriginSummary: {
+      resolvedFormattedAddress: (record.resolvedFormattedAddress as string | null) ?? null,
+      latitude: (record.originLatitude as number | null) ?? null,
+      longitude: (record.originLongitude as number | null) ?? null,
+      precision: (record.originPrecision as SearchHistoryRecord["resolvedOriginSummary"]["precision"] | null) ?? "none"
+    },
+    summaryMetadata: {
+      returnedCount: Number(record.returnedCount ?? 0),
+      totalMatched: Number(record.totalMatched ?? 0),
+      durationMs: Number(record.durationMs ?? 0),
+      warnings: clone((record.warnings as SearchHistoryRecord["summaryMetadata"]["warnings"]) ?? []),
+      suggestions: clone((record.suggestions as SearchHistoryRecord["summaryMetadata"]["suggestions"]) ?? [])
+    },
+    snapshotId,
+    searchDefinitionId: (record.searchDefinitionId as string | null) ?? null,
+    rerunSourceType:
+      (record.rerunSourceType as SearchHistoryRecord["rerunSourceType"] | null) ?? null,
+    rerunSourceId: (record.rerunSourceId as string | null) ?? null,
+    createdAt: (record.createdAt as Date).toISOString()
+  };
+}
 
 function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord {
   const searchRequest = (record.searchRequest as Record<string, unknown> | undefined) ?? {};
@@ -487,11 +762,15 @@ function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord
 export class PrismaSearchRepository implements SearchRepository {
   constructor(private readonly client: PrismaClientLike) {}
 
-  async saveSearch(payload: SearchPersistenceInput): Promise<void> {
+  async saveSearch(payload: SearchPersistenceInput): Promise<{ historyRecordId: string | null }> {
     await Promise.all(payload.listings.map((listing) => this.upsertProperty(listing)));
 
     const createdSearch = await this.client.searchRequest.create({
       data: {
+        sessionId: payload.sessionId ?? null,
+        searchDefinitionId: payload.searchDefinitionId ?? null,
+        rerunSourceType: payload.rerunSourceType ?? null,
+        rerunSourceId: payload.rerunSourceId ?? null,
         locationType: payload.request.locationType,
         locationValue: payload.request.locationValue,
         resolvedCity: payload.resolvedLocation.city,
@@ -568,6 +847,10 @@ export class PrismaSearchRepository implements SearchRepository {
         }))
       });
     }
+
+    return {
+      historyRecordId: createdSearch.id
+    };
   }
 
   async getScoreAudit(propertyId: string): Promise<ScoreAuditRecord | null> {
@@ -605,22 +888,22 @@ export class PrismaSearchRepository implements SearchRepository {
   async createSearchSnapshot(payload: {
     request: SearchPersistenceInput["request"];
     response: SearchPersistenceInput["response"];
+    sessionId?: string | null;
+    searchDefinitionId?: string | null;
+    historyRecordId?: string | null;
   }): Promise<SearchSnapshotRecord> {
     const record = await this.client.searchSnapshot.create({
       data: {
         formulaVersion: payload.response.homes[0]?.scores.formulaVersion ?? null,
+        sessionId: payload.sessionId ?? null,
+        searchDefinitionId: payload.searchDefinitionId ?? null,
+        historyRecordId: payload.historyRecordId ?? null,
         requestPayload: payload.request,
         responsePayload: payload.response
       }
     });
 
-    return {
-      id: record.id as string,
-      formulaVersion: (record.formulaVersion as string | null) ?? null,
-      request: record.requestPayload as SearchSnapshotRecord["request"],
-      response: record.responsePayload as SearchSnapshotRecord["response"],
-      createdAt: (record.createdAt as Date).toISOString()
-    };
+    return mapPrismaSearchSnapshot(record);
   }
 
   async getSearchSnapshot(id: string): Promise<SearchSnapshotRecord | null> {
@@ -634,13 +917,174 @@ export class PrismaSearchRepository implements SearchRepository {
       return null;
     }
 
-    return {
-      id: record.id as string,
-      formulaVersion: (record.formulaVersion as string | null) ?? null,
-      request: record.requestPayload as SearchSnapshotRecord["request"],
-      response: record.responsePayload as SearchSnapshotRecord["response"],
-      createdAt: (record.createdAt as Date).toISOString()
-    };
+    return mapPrismaSearchSnapshot(record);
+  }
+
+  async listSearchSnapshots(sessionId?: string | null, limit = 10): Promise<SearchSnapshotRecord[]> {
+    if (!sessionId) {
+      return [];
+    }
+
+    const records = await this.client.searchSnapshot.findMany({
+      where: {
+        sessionId
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      take: limit
+    });
+
+    return records.map((record) => mapPrismaSearchSnapshot(record));
+  }
+
+  async createSearchDefinition(payload: {
+    sessionId?: string | null;
+    label: string;
+    request: SearchPersistenceInput["request"];
+    pinned?: boolean;
+  }): Promise<SearchDefinition> {
+    const record = await this.client.searchDefinition.create({
+      data: {
+        sessionId: payload.sessionId ?? null,
+        label: payload.label,
+        requestPayload: payload.request,
+        pinned: payload.pinned ?? false
+      }
+    });
+
+    return mapPrismaSearchDefinition(record);
+  }
+
+  async listSearchDefinitions(sessionId?: string | null): Promise<SearchDefinition[]> {
+    if (!sessionId) {
+      return [];
+    }
+
+    const records = await this.client.searchDefinition.findMany({
+      where: {
+        sessionId
+      },
+      orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }]
+    });
+
+    return records.map((record) => mapPrismaSearchDefinition(record));
+  }
+
+  async getSearchDefinition(id: string): Promise<SearchDefinition | null> {
+    const record = await this.client.searchDefinition.findUnique({
+      where: {
+        id
+      }
+    });
+
+    return record ? mapPrismaSearchDefinition(record) : null;
+  }
+
+  async updateSearchDefinition(
+    id: string,
+    patch: {
+      label?: string;
+      pinned?: boolean;
+      lastRunAt?: string | null;
+    }
+  ): Promise<SearchDefinition | null> {
+    const existing = await this.getSearchDefinition(id);
+    if (!existing) {
+      return null;
+    }
+
+    const record = await this.client.searchDefinition.update({
+      where: {
+        id
+      },
+      data: {
+        ...(patch.label !== undefined ? { label: patch.label } : {}),
+        ...(patch.pinned !== undefined ? { pinned: patch.pinned } : {}),
+        ...(patch.lastRunAt !== undefined
+          ? { lastRunAt: patch.lastRunAt ? new Date(patch.lastRunAt) : null }
+          : {})
+      }
+    });
+
+    return mapPrismaSearchDefinition(record);
+  }
+
+  async deleteSearchDefinition(id: string): Promise<boolean> {
+    const existing = await this.getSearchDefinition(id);
+    if (!existing) {
+      return false;
+    }
+
+    await this.client.searchDefinition.delete({
+      where: {
+        id
+      }
+    });
+
+    return true;
+  }
+
+  async listSearchHistory(sessionId?: string | null, limit = 10): Promise<SearchHistoryRecord[]> {
+    if (!sessionId) {
+      return [];
+    }
+
+    const records = await this.client.searchRequest.findMany({
+      where: {
+        sessionId
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      take: limit
+    });
+
+    const snapshots = await this.client.searchSnapshot.findMany({
+      where: {
+        sessionId,
+        historyRecordId: {
+          in: records.map((record) => record.id)
+        }
+      },
+      orderBy: {
+        createdAt: "desc"
+      }
+    });
+    const snapshotByHistoryId = new Map<string, string>();
+    for (const snapshot of snapshots) {
+      const historyRecordId = snapshot.historyRecordId as string | null;
+      if (historyRecordId && !snapshotByHistoryId.has(historyRecordId)) {
+        snapshotByHistoryId.set(historyRecordId, snapshot.id as string);
+      }
+    }
+
+    return records.map((record) =>
+      mapPrismaSearchHistoryRecord(record, snapshotByHistoryId.get(record.id as string) ?? null)
+    );
+  }
+
+  async getSearchHistory(id: string): Promise<SearchHistoryRecord | null> {
+    const record = await this.client.searchRequest.findUnique({
+      where: {
+        id
+      }
+    });
+
+    if (!record) {
+      return null;
+    }
+
+    const snapshot = await this.client.searchSnapshot.findFirst({
+      where: {
+        historyRecordId: id
+      },
+      orderBy: {
+        createdAt: "desc"
+      }
+    });
+
+    return mapPrismaSearchHistoryRecord(record, (snapshot?.id as string | undefined) ?? null);
   }
 
   private async upsertProperty(listing: ListingRecord): Promise<void> {

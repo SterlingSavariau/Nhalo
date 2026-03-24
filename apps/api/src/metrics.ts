@@ -106,6 +106,13 @@ export class MetricsCollector {
   private readonly comparisonViews = { count: 0 };
   private readonly auditViews = { count: 0 };
   private readonly explainabilityRenders = { count: 0 };
+  private readonly searchDefinitionCreates = { count: 0 };
+  private readonly searchDefinitionDeletes = { count: 0 };
+  private readonly searchHistoryReads = { count: 0 };
+  private readonly searchReruns = { count: 0 };
+  private readonly searchRestores = { count: 0 };
+  private readonly recentActivityPanelViews = { count: 0 };
+  private readonly savedSearchPins = { count: 0 };
 
   recordSearch(payload: {
     durationMs: number;
@@ -249,6 +256,34 @@ export class MetricsCollector {
 
   recordExplainabilityRender(count = 1): void {
     this.explainabilityRenders.count += count;
+  }
+
+  recordSearchDefinitionCreate(): void {
+    this.searchDefinitionCreates.count += 1;
+  }
+
+  recordSearchDefinitionDelete(): void {
+    this.searchDefinitionDeletes.count += 1;
+  }
+
+  recordSearchHistoryRead(): void {
+    this.searchHistoryReads.count += 1;
+  }
+
+  recordSearchRerun(): void {
+    this.searchReruns.count += 1;
+  }
+
+  recordSearchRestore(): void {
+    this.searchRestores.count += 1;
+  }
+
+  recordRecentActivityPanelView(): void {
+    this.recentActivityPanelViews.count += 1;
+  }
+
+  recordSavedSearchPin(): void {
+    this.savedSearchPins.count += 1;
   }
 
   recordSafetyResolution(payload: {
@@ -502,6 +537,13 @@ export class MetricsCollector {
       comparisonViewCount: this.comparisonViews.count,
       auditViewCount: this.auditViews.count,
       explainabilityRenderCount: this.explainabilityRenders.count,
+      searchDefinitionCreateCount: this.searchDefinitionCreates.count,
+      searchDefinitionDeleteCount: this.searchDefinitionDeletes.count,
+      searchHistoryReadCount: this.searchHistoryReads.count,
+      searchRerunCount: this.searchReruns.count,
+      searchRestoreCount: this.searchRestores.count,
+      recentActivityPanelViewCount: this.recentActivityPanelViews.count,
+      savedSearchPinCount: this.savedSearchPins.count,
       scoreDistribution: {
         count: this.scores.count,
         average: average(this.scores),

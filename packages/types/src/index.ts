@@ -68,6 +68,11 @@ export interface SearchRequest {
   weights?: SearchWeights;
 }
 
+export interface SessionIdentity {
+  sessionId: string | null;
+  source: "local_storage" | "header" | "query" | "body" | "none";
+}
+
 export interface Coordinates {
   lat: number;
   lng: number;
@@ -401,6 +406,9 @@ export interface SearchMetadata {
   searchOrigin?: SearchOriginMetadata;
   mockFallbackUsed?: boolean;
   staleDataPresent?: boolean;
+  historyRecordId?: string | null;
+  sessionId?: string | null;
+  rerunResultMetadata?: RerunResultMetadata | null;
 }
 
 export interface SearchResponse {
@@ -415,7 +423,61 @@ export interface SearchSnapshotRecord {
   formulaVersion: string | null;
   request: SearchRequest;
   response: SearchResponse;
+  sessionId?: string | null;
+  searchDefinitionId?: string | null;
+  historyRecordId?: string | null;
   createdAt: string;
+}
+
+export interface SearchDefinition {
+  id: string;
+  sessionId: string | null;
+  label: string;
+  request: SearchRequest;
+  pinned: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt: string | null;
+}
+
+export interface SearchHistoryRecord {
+  id: string;
+  sessionId: string | null;
+  request: SearchRequest;
+  resolvedOriginSummary: {
+    resolvedFormattedAddress: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    precision: GeocodePrecision;
+  };
+  summaryMetadata: {
+    returnedCount: number;
+    totalMatched: number;
+    durationMs: number;
+    warnings: SearchWarning[];
+    suggestions: SearchSuggestion[];
+  };
+  snapshotId: string | null;
+  searchDefinitionId: string | null;
+  rerunSourceType: "definition" | "history" | null;
+  rerunSourceId: string | null;
+  createdAt: string;
+}
+
+export interface SearchRestorePayload {
+  sourceType: "definition" | "history" | "snapshot";
+  sourceId: string;
+  label: string;
+  request: SearchRequest;
+}
+
+export interface RerunResultMetadata {
+  sourceType: "definition" | "history";
+  sourceId: string;
+  executedAt: string;
+  historyRecordId: string | null;
+  snapshotId: string | null;
+  freshResult: true;
 }
 
 export interface PersistedSearchResult {
@@ -468,16 +530,43 @@ export interface SearchPersistenceInput {
   scoredResults: PersistedSearchResult[];
   listings: ListingRecord[];
   marketSnapshot: MarketSnapshot;
+  sessionId?: string | null;
+  searchDefinitionId?: string | null;
+  rerunSourceType?: "definition" | "history" | null;
+  rerunSourceId?: string | null;
 }
 
 export interface SearchRepository {
-  saveSearch(payload: SearchPersistenceInput): Promise<void>;
+  saveSearch(payload: SearchPersistenceInput): Promise<{ historyRecordId: string | null }>;
   getScoreAudit(propertyId: string): Promise<ScoreAuditRecord | null>;
   createSearchSnapshot(payload: {
     request: SearchRequest;
     response: SearchResponse;
+    sessionId?: string | null;
+    searchDefinitionId?: string | null;
+    historyRecordId?: string | null;
   }): Promise<SearchSnapshotRecord>;
   getSearchSnapshot(id: string): Promise<SearchSnapshotRecord | null>;
+  listSearchSnapshots(sessionId?: string | null, limit?: number): Promise<SearchSnapshotRecord[]>;
+  createSearchDefinition(payload: {
+    sessionId?: string | null;
+    label: string;
+    request: SearchRequest;
+    pinned?: boolean;
+  }): Promise<SearchDefinition>;
+  listSearchDefinitions(sessionId?: string | null): Promise<SearchDefinition[]>;
+  getSearchDefinition(id: string): Promise<SearchDefinition | null>;
+  updateSearchDefinition(
+    id: string,
+    patch: {
+      label?: string;
+      pinned?: boolean;
+      lastRunAt?: string | null;
+    }
+  ): Promise<SearchDefinition | null>;
+  deleteSearchDefinition(id: string): Promise<boolean>;
+  listSearchHistory(sessionId?: string | null, limit?: number): Promise<SearchHistoryRecord[]>;
+  getSearchHistory(id: string): Promise<SearchHistoryRecord | null>;
 }
 
 export interface RankingContext {
@@ -750,6 +839,13 @@ export interface SearchMetrics {
   comparisonViewCount: number;
   auditViewCount: number;
   explainabilityRenderCount: number;
+  searchDefinitionCreateCount: number;
+  searchDefinitionDeleteCount: number;
+  searchHistoryReadCount: number;
+  searchRerunCount: number;
+  searchRestoreCount: number;
+  recentActivityPanelViewCount: number;
+  savedSearchPinCount: number;
   scoreDistribution: {
     count: number;
     average: number;
