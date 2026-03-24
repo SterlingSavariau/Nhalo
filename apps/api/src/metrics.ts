@@ -103,6 +103,7 @@ export class MetricsCollector {
   };
   private readonly snapshotCreates = { count: 0 };
   private readonly snapshotReads = { count: 0 };
+  private readonly snapshotReadLatency = createSeries();
   private readonly comparisonViews = { count: 0 };
   private readonly auditViews = { count: 0 };
   private readonly explainabilityRenders = { count: 0 };
@@ -111,6 +112,26 @@ export class MetricsCollector {
   private readonly searchHistoryReads = { count: 0 };
   private readonly searchReruns = { count: 0 };
   private readonly searchRestores = { count: 0 };
+  private readonly shortlistCreates = { count: 0 };
+  private readonly shortlistDeletes = { count: 0 };
+  private readonly shortlistItemAdds = { count: 0 };
+  private readonly shortlistItemRemoves = { count: 0 };
+  private readonly shortlistViews = { count: 0 };
+  private readonly shortlistShareCreates = { count: 0 };
+  private readonly shortlistShareOpens = { count: 0 };
+  private readonly shortlistShareRevokes = { count: 0 };
+  private readonly sharedCommentCreates = { count: 0 };
+  private readonly sharedCommentUpdates = { count: 0 };
+  private readonly sharedCommentDeletes = { count: 0 };
+  private readonly reviewerDecisionCreates = { count: 0 };
+  private readonly reviewerDecisionUpdates = { count: 0 };
+  private readonly collaborationActivityReads = { count: 0 };
+  private readonly expiredShareOpens = { count: 0 };
+  private readonly noteCreates = { count: 0 };
+  private readonly noteUpdates = { count: 0 };
+  private readonly noteDeletes = { count: 0 };
+  private readonly reviewStateChanges = { count: 0 };
+  private readonly historicalCompareViews = { count: 0 };
   private readonly recentActivityPanelViews = { count: 0 };
   private readonly savedSearchPins = { count: 0 };
   private readonly onboardingViews = { count: 0 };
@@ -121,6 +142,36 @@ export class MetricsCollector {
   private readonly resultCompareAdds = { count: 0 };
   private readonly snapshotReopens = { count: 0 };
   private readonly savedSearchRestores = { count: 0 };
+  private readonly sharedSnapshotCreates = { count: 0 };
+  private readonly sharedSnapshotOpens = { count: 0 };
+  private readonly feedbackSubmits = {
+    count: 0,
+    useful: 0
+  };
+  private readonly demoScenarioStarts = { count: 0 };
+  private readonly walkthroughViews = { count: 0 };
+  private readonly walkthroughDismisses = { count: 0 };
+  private readonly exportUsage = { count: 0 };
+  private readonly ctaClicks = { count: 0 };
+  private readonly validationPromptViews = { count: 0 };
+  private readonly validationPromptResponses = { count: 0 };
+  private readonly sharedSnapshotExpired = { count: 0 };
+  private readonly validationSummaryReads = { count: 0 };
+  private readonly searchOutcomes = {
+    successes: 0,
+    failures: 0
+  };
+  private readonly providerTimeouts = {
+    requests: 0,
+    timeouts: 0
+  };
+  private readonly errorCounts = {
+    VALIDATION_ERROR: 0,
+    PROVIDER_ERROR: 0,
+    DATABASE_ERROR: 0,
+    CONFIG_ERROR: 0,
+    INTERNAL_ERROR: 0
+  };
 
   recordSearch(payload: {
     durationMs: number;
@@ -137,7 +188,12 @@ export class MetricsCollector {
     }
   }
 
-  recordProviderRequest(providerName: string, latencyMs: number, failed: boolean): void {
+  recordProviderRequest(
+    providerName: string,
+    latencyMs: number,
+    failed: boolean,
+    timedOut = false
+  ): void {
     const entry = this.providers.get(providerName) ?? {
       latency: createSeries(),
       requests: 0,
@@ -147,6 +203,10 @@ export class MetricsCollector {
     entry.requests += 1;
     if (failed) {
       entry.failures += 1;
+    }
+    this.providerTimeouts.requests += 1;
+    if (timedOut) {
+      this.providerTimeouts.timeouts += 1;
     }
     recordSeries(entry.latency, latencyMs);
     this.providers.set(providerName, entry);
@@ -254,6 +314,10 @@ export class MetricsCollector {
     this.snapshotReads.count += 1;
   }
 
+  recordSnapshotReadLatency(durationMs: number): void {
+    recordSeries(this.snapshotReadLatency, durationMs);
+  }
+
   recordComparisonView(): void {
     this.comparisonViews.count += 1;
   }
@@ -284,6 +348,86 @@ export class MetricsCollector {
 
   recordSearchRestore(): void {
     this.searchRestores.count += 1;
+  }
+
+  recordShortlistCreate(): void {
+    this.shortlistCreates.count += 1;
+  }
+
+  recordShortlistDelete(): void {
+    this.shortlistDeletes.count += 1;
+  }
+
+  recordShortlistItemAdd(): void {
+    this.shortlistItemAdds.count += 1;
+  }
+
+  recordShortlistItemRemove(): void {
+    this.shortlistItemRemoves.count += 1;
+  }
+
+  recordShortlistView(): void {
+    this.shortlistViews.count += 1;
+  }
+
+  recordShortlistShareCreate(): void {
+    this.shortlistShareCreates.count += 1;
+  }
+
+  recordShortlistShareOpen(): void {
+    this.shortlistShareOpens.count += 1;
+  }
+
+  recordShortlistShareRevoke(): void {
+    this.shortlistShareRevokes.count += 1;
+  }
+
+  recordSharedCommentCreate(): void {
+    this.sharedCommentCreates.count += 1;
+  }
+
+  recordSharedCommentUpdate(): void {
+    this.sharedCommentUpdates.count += 1;
+  }
+
+  recordSharedCommentDelete(): void {
+    this.sharedCommentDeletes.count += 1;
+  }
+
+  recordReviewerDecisionCreate(): void {
+    this.reviewerDecisionCreates.count += 1;
+  }
+
+  recordReviewerDecisionUpdate(): void {
+    this.reviewerDecisionUpdates.count += 1;
+  }
+
+  recordCollaborationActivityRead(): void {
+    this.collaborationActivityReads.count += 1;
+  }
+
+  recordExpiredShareOpen(): void {
+    this.expiredShareOpens.count += 1;
+  }
+
+  recordNoteCreate(): void {
+    this.noteCreates.count += 1;
+  }
+
+  recordNoteUpdate(): void {
+    this.noteUpdates.count += 1;
+  }
+
+  recordNoteDelete(): void {
+    this.noteDeletes.count += 1;
+  }
+
+  recordReviewStateChange(): void {
+    this.reviewStateChanges.count += 1;
+  }
+
+  recordHistoricalCompareView(): void {
+    this.historicalCompareViews.count += 1;
   }
 
   recordRecentActivityPanelView(): void {
@@ -324,6 +468,69 @@ export class MetricsCollector {
 
   recordSavedSearchRestore(): void {
     this.savedSearchRestores.count += 1;
+  }
+
+  recordSharedSnapshotCreate(): void {
+    this.sharedSnapshotCreates.count += 1;
+  }
+
+  recordSharedSnapshotOpen(): void {
+    this.sharedSnapshotOpens.count += 1;
+  }
+
+  recordFeedbackSubmit(useful = false): void {
+    this.feedbackSubmits.count += 1;
+    if (useful) {
+      this.feedbackSubmits.useful += 1;
+    }
+  }
+
+  recordDemoScenarioStart(): void {
+    this.demoScenarioStarts.count += 1;
+  }
+
+  recordWalkthroughView(): void {
+    this.walkthroughViews.count += 1;
+  }
+
+  recordWalkthroughDismiss(): void {
+    this.walkthroughDismisses.count += 1;
+  }
+
+  recordExportUse(): void {
+    this.exportUsage.count += 1;
+  }
+
+  recordCtaClick(): void {
+    this.ctaClicks.count += 1;
+  }
+
+  recordValidationPromptView(): void {
+    this.validationPromptViews.count += 1;
+  }
+
+  recordValidationPromptResponse(): void {
+    this.validationPromptResponses.count += 1;
+  }
+
+  recordSharedSnapshotExpired(): void {
+    this.sharedSnapshotExpired.count += 1;
+  }
+
+  recordValidationSummaryRead(): void {
+    this.validationSummaryReads.count += 1;
+  }
+
+  recordSearchOutcome(success: boolean): void {
+    if (success) {
+      this.searchOutcomes.successes += 1;
+    } else {
+      this.searchOutcomes.failures += 1;
+    }
+  }
+
+  recordError(category: keyof MetricsCollector["errorCounts"]): void {
+    this.errorCounts[category] += 1;
   }
 
   recordSafetyResolution(payload: {
@@ -574,6 +781,94 @@ export class MetricsCollector {
       },
       snapshotCreateCount: this.snapshotCreates.count,
       snapshotReadCount: this.snapshotReads.count,
+      searchSuccessRate: {
+        successes: this.searchOutcomes.successes,
+        failures: this.searchOutcomes.failures,
+        rate:
+          this.searchOutcomes.successes + this.searchOutcomes.failures === 0
+            ? 0
+            : Number(
+                (
+                  this.searchOutcomes.successes /
+                  (this.searchOutcomes.successes + this.searchOutcomes.failures)
+                ).toFixed(4)
+              )
+      },
+      searchFailureRate: {
+        successes: this.searchOutcomes.successes,
+        failures: this.searchOutcomes.failures,
+        rate:
+          this.searchOutcomes.successes + this.searchOutcomes.failures === 0
+            ? 0
+            : Number(
+                (
+                  this.searchOutcomes.failures /
+                  (this.searchOutcomes.successes + this.searchOutcomes.failures)
+                ).toFixed(4)
+              )
+      },
+      providerTimeoutRate: {
+        requests: this.providerTimeouts.requests,
+        timeouts: this.providerTimeouts.timeouts,
+        rate:
+          this.providerTimeouts.requests === 0
+            ? 0
+            : Number((this.providerTimeouts.timeouts / this.providerTimeouts.requests).toFixed(4))
+      },
+      cacheHitRate: {
+        hits:
+          this.safetyResolution.cacheHits +
+          this.listingResolution.cacheHits +
+          this.geocodeResolution.cacheHits,
+        misses:
+          this.safetyResolution.cacheMisses +
+          this.listingResolution.cacheMisses +
+          this.geocodeResolution.cacheMisses,
+        rate:
+          this.safetyResolution.cacheHits +
+            this.listingResolution.cacheHits +
+            this.geocodeResolution.cacheHits +
+            this.safetyResolution.cacheMisses +
+            this.listingResolution.cacheMisses +
+            this.geocodeResolution.cacheMisses ===
+          0
+            ? 0
+            : Number(
+                (
+                  (this.safetyResolution.cacheHits +
+                    this.listingResolution.cacheHits +
+                    this.geocodeResolution.cacheHits) /
+                  (this.safetyResolution.cacheHits +
+                    this.listingResolution.cacheHits +
+                    this.geocodeResolution.cacheHits +
+                    this.safetyResolution.cacheMisses +
+                    this.listingResolution.cacheMisses +
+                    this.geocodeResolution.cacheMisses)
+                ).toFixed(4)
+              )
+      },
+      snapshotCreationRate: {
+        created: this.snapshotCreates.count,
+        windowCount: this.snapshotCreates.count + this.snapshotReads.count,
+        rate:
+          this.snapshotCreates.count + this.snapshotReads.count === 0
+            ? 0
+            : Number(
+                (this.snapshotCreates.count / (this.snapshotCreates.count + this.snapshotReads.count)).toFixed(4)
+              )
+      },
+      snapshotRetrievalLatency: {
+        count: this.snapshotReadLatency.count,
+        average: average(this.snapshotReadLatency),
+        last: this.snapshotReadLatency.last
+      },
+      errorRateByCategory: {
+        VALIDATION_ERROR: { count: this.errorCounts.VALIDATION_ERROR },
+        PROVIDER_ERROR: { count: this.errorCounts.PROVIDER_ERROR },
+        DATABASE_ERROR: { count: this.errorCounts.DATABASE_ERROR },
+        CONFIG_ERROR: { count: this.errorCounts.CONFIG_ERROR },
+        INTERNAL_ERROR: { count: this.errorCounts.INTERNAL_ERROR }
+      },
       comparisonViewCount: this.comparisonViews.count,
       auditViewCount: this.auditViews.count,
       explainabilityRenderCount: this.explainabilityRenders.count,
@@ -582,6 +877,26 @@ export class MetricsCollector {
       searchHistoryReadCount: this.searchHistoryReads.count,
       searchRerunCount: this.searchReruns.count,
       searchRestoreCount: this.searchRestores.count,
+      shortlistCreateCount: this.shortlistCreates.count,
+      shortlistDeleteCount: this.shortlistDeletes.count,
+      shortlistItemAddCount: this.shortlistItemAdds.count,
+      shortlistItemRemoveCount: this.shortlistItemRemoves.count,
+      shortlistViewCount: this.shortlistViews.count,
+      shortlistShareCreateCount: this.shortlistShareCreates.count,
+      shortlistShareOpenCount: this.shortlistShareOpens.count,
+      shortlistShareRevokeCount: this.shortlistShareRevokes.count,
+      sharedCommentCreateCount: this.sharedCommentCreates.count,
+      sharedCommentUpdateCount: this.sharedCommentUpdates.count,
+      sharedCommentDeleteCount: this.sharedCommentDeletes.count,
+      reviewerDecisionCreateCount: this.reviewerDecisionCreates.count,
+      reviewerDecisionUpdateCount: this.reviewerDecisionUpdates.count,
+      collaborationActivityReadCount: this.collaborationActivityReads.count,
+      expiredShareOpenCount: this.expiredShareOpens.count,
+      noteCreateCount: this.noteCreates.count,
+      noteUpdateCount: this.noteUpdates.count,
+      noteDeleteCount: this.noteDeletes.count,
+      reviewStateChangeCount: this.reviewStateChanges.count,
+      historicalCompareViewCount: this.historicalCompareViews.count,
       recentActivityPanelViewCount: this.recentActivityPanelViews.count,
       savedSearchPinCount: this.savedSearchPins.count,
       onboardingViewCount: this.onboardingViews.count,
@@ -592,6 +907,26 @@ export class MetricsCollector {
       resultCompareAddCount: this.resultCompareAdds.count,
       snapshotReopenCount: this.snapshotReopens.count,
       savedSearchRestoreCount: this.savedSearchRestores.count,
+      sharedSnapshotCreateCount: this.sharedSnapshotCreates.count,
+      sharedSnapshotOpenCount: this.sharedSnapshotOpens.count,
+      feedbackSubmitCount: this.feedbackSubmits.count,
+      feedbackUsefulRate: {
+        useful: this.feedbackSubmits.useful,
+        total: this.feedbackSubmits.count,
+        rate:
+          this.feedbackSubmits.count === 0
+            ? 0
+            : Number((this.feedbackSubmits.useful / this.feedbackSubmits.count).toFixed(4))
+      },
+      demoScenarioStartCount: this.demoScenarioStarts.count,
+      walkthroughViewCount: this.walkthroughViews.count,
+      walkthroughDismissCount: this.walkthroughDismisses.count,
+      exportUsageCount: this.exportUsage.count,
+      ctaClickCount: this.ctaClicks.count,
+      validationPromptViewCount: this.validationPromptViews.count,
+      validationPromptResponseCount: this.validationPromptResponses.count,
+      sharedSnapshotExpiredCount: this.sharedSnapshotExpired.count,
+      validationSummaryReadCount: this.validationSummaryReads.count,
       scoreDistribution: {
         count: this.scores.count,
         average: average(this.scores),

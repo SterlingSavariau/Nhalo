@@ -93,7 +93,15 @@ h1 {
 .audit-stack,
 .form-intro,
 .empty-guidance-panel,
-.detail-panel {
+.detail-panel,
+.feedback-prompt,
+.demo-panel,
+.shared-banner,
+.executive-summary,
+.export-panel,
+.pilot-cta-panel,
+.walkthrough-panel,
+.notes-panel {
   display: grid;
   gap: 1rem;
 }
@@ -125,13 +133,18 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   border: 1px solid rgba(212, 180, 131, 0.18);
   border-radius: 0.9rem;
   background: rgba(255, 248, 235, 0.07);
   color: #f5f1e8;
   padding: 0.75rem 0.9rem;
+}
+
+textarea {
+  resize: vertical;
 }
 
 .weight-panel {
@@ -231,11 +244,36 @@ select {
 .summary-panel,
 .controls-panel,
 .comparison-panel,
-.activity-panel {
+.activity-panel,
+.feedback-prompt,
+.demo-panel,
+.shared-banner,
+.executive-summary,
+.export-panel,
+.pilot-cta-panel,
+.walkthrough-panel,
+.notes-panel {
   border: 1px solid rgba(212, 180, 131, 0.16);
   border-radius: 1.2rem;
   padding: 1rem;
   background: rgba(255, 248, 235, 0.04);
+}
+
+.shared-banner {
+  background: rgba(212, 180, 131, 0.08);
+}
+
+.shared-title {
+  font-size: clamp(1.8rem, 4vw, 3rem);
+  line-height: 1.05;
+  max-width: 16ch;
+}
+
+.cta-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
 }
 
 .activity-panel,
@@ -255,6 +293,22 @@ select {
   background: rgba(255, 248, 235, 0.03);
 }
 
+.activity-card.active-card {
+  border-color: rgba(240, 210, 154, 0.34);
+}
+
+.workflow-controls,
+.note-editor {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.note-editor textarea,
+.activity-save textarea {
+  min-height: 5.5rem;
+  resize: vertical;
+}
+
 .tradeoff-panel,
 .empty-guidance-panel {
   border: 1px solid rgba(212, 180, 131, 0.16);
@@ -268,6 +322,20 @@ select {
   display: flex;
   gap: 0.6rem;
   flex-wrap: wrap;
+}
+
+.status-chip-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.status-pill {
+  border: 1px solid rgba(212, 180, 131, 0.18);
+  border-radius: 999px;
+  padding: 0.28rem 0.65rem;
+  background: rgba(255, 248, 235, 0.05);
+  font-size: 0.82rem;
 }
 
 .summary-grid,

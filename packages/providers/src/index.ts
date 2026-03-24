@@ -115,4 +115,4 @@ export {
   MockSafetyProvider
 };
 
-export { MOCK_LISTINGS, MOCK_LOCATIONS, MOCK_SAFETY } from "./mock-data";
+export { DEMO_SEARCH_SCENARIOS, MOCK_LISTINGS, MOCK_LOCATIONS, MOCK_SAFETY } from "./mock-data";

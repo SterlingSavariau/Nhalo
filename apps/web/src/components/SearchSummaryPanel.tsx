@@ -4,7 +4,11 @@ interface SearchSummaryPanelProps {
   results: SearchResponse;
   savingSnapshot: boolean;
   snapshot: SearchSnapshotRecord | null;
+  sharingSnapshot: boolean;
+  sharedLink: string | null;
+  readOnly?: boolean;
   onSaveSnapshot(): void;
+  onShareSnapshot(): void;
 }
 
 function formatBudget(results: SearchResponse): string {
@@ -19,7 +23,11 @@ export function SearchSummaryPanel({
   results,
   savingSnapshot,
   snapshot,
-  onSaveSnapshot
+  sharingSnapshot,
+  sharedLink,
+  readOnly = false,
+  onSaveSnapshot,
+  onShareSnapshot
 }: SearchSummaryPanelProps) {
   const origin = results.metadata.searchOrigin;
 
@@ -33,11 +41,21 @@ export function SearchSummaryPanel({
             {results.appliedFilters.locationValue} within {results.appliedFilters.radiusMiles} miles.
           </p>
         </div>
-        <div className="summary-actions">
-          <button className="ghost-button" onClick={onSaveSnapshot} type="button" disabled={savingSnapshot}>
-            {savingSnapshot ? "Saving snapshot..." : "Save snapshot"}
-          </button>
-        </div>
+        {readOnly ? null : (
+          <div className="summary-actions">
+            <button className="ghost-button" onClick={onSaveSnapshot} type="button" disabled={savingSnapshot}>
+              {savingSnapshot ? "Saving snapshot..." : "Save snapshot"}
+            </button>
+            <button
+              className="ghost-button"
+              disabled={!snapshot || sharingSnapshot}
+              onClick={onShareSnapshot}
+              type="button"
+            >
+              {sharingSnapshot ? "Creating link..." : "Share snapshot"}
+            </button>
+          </div>
+        )}
       </div>
 
       {snapshot ? (
@@ -45,6 +63,13 @@ export function SearchSummaryPanel({
           Snapshot saved:{" "}
           <a href={`/?snapshot=${snapshot.id}`}>{snapshot.id}</a>
           <span className="muted"> preserves this exact result set.</span>
+        </div>
+      ) : null}
+
+      {sharedLink ? (
+        <div className="callout suggestion">
+          Shared snapshot link: <a href={sharedLink}>{sharedLink}</a>
+          <span className="muted"> opens the stored result set in read-only mode.</span>
         </div>
       ) : null}
 

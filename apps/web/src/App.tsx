@@ -1,41 +1,102 @@
 import type {
+  CollaborationActivityRecord,
+  DemoScenario,
+  FeedbackRecord,
+  HistoricalComparisonPayload,
+  ReviewerDecision,
+  ResultNote,
   ScoreAuditRecord,
+  SharedComment,
+  SharedShortlist,
+  SharedShortlistView,
+  Shortlist,
+  ShortlistItem,
   SearchDefinition,
   SearchRestorePayload,
   SearchHistoryRecord,
   SearchRequest,
   SearchResponse,
   SearchSnapshotRecord,
+  SharedSnapshotView,
+  WorkflowActivityRecord,
   SessionIdentity
 } from "@nhalo/types";
 import { DEFAULT_WEIGHTS } from "@nhalo/config";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  addShortlistItem,
+  createReviewerDecision,
+  createSharedComment,
+  createSharedShortlist,
+  createResultNote,
+  createShortlist,
+  createSharedSnapshot,
   createSearchDefinition,
   createSearchSnapshot,
+  deleteResultNote,
+  deleteSharedComment,
+  deleteShortlist,
+  deleteShortlistItem,
   deleteSearchDefinition,
+  fetchCollaborationActivity,
+  fetchDemoScenarios,
+  fetchReviewerDecisions,
+  fetchSharedComments,
+  fetchSharedShortlist,
+  fetchSharedShortlists,
   fetchRecentSnapshots,
+  fetchResultNotes,
   fetchScoreAudit,
   fetchSearchDefinitions,
   fetchSearchHistory,
   fetchSearchSnapshot,
+  fetchShortlistItems,
+  fetchShortlists,
+  fetchSharedSnapshot,
+  fetchWorkflowActivity,
+  recordValidationEvent,
   rerunSearchDefinition,
   rerunSearchHistory,
   searchHomes,
+  submitFeedback,
   trackUiMetric,
+  revokeSharedShortlist,
+  updateResultNote,
+  updateReviewerDecision,
+  updateSharedComment,
+  updateShortlist,
+  updateShortlistItem,
   updateSearchDefinition
 } from "./api";
 import { AuditDrawer } from "./components/AuditDrawer";
 import { ComparisonTray } from "./components/ComparisonTray";
+import { DemoScenarioPanel } from "./components/DemoScenarioPanel";
 import { EmptyStatePanel } from "./components/EmptyStatePanel";
+import { ExportPanel } from "./components/ExportPanel";
+import { FeedbackPrompt } from "./components/FeedbackPrompt";
+import { HistoricalComparePanel } from "./components/HistoricalComparePanel";
 import { HomeDetailPanel } from "./components/HomeDetailPanel";
 import { OnboardingModal } from "./components/OnboardingModal";
+import { PilotContactPanel } from "./components/PilotContactPanel";
 import { RecentActivityPanel } from "./components/RecentActivityPanel";
 import { ResultCard } from "./components/ResultCard";
 import { ResultControls } from "./components/ResultControls";
 import { INITIAL_SEARCH_REQUEST, SearchForm } from "./components/SearchForm";
 import { SearchSummaryPanel } from "./components/SearchSummaryPanel";
+import { SharedSnapshotBanner } from "./components/SharedSnapshotBanner";
+import { SharedShortlistViewPanel } from "./components/SharedShortlistView";
+import { SnapshotExecutiveSummary } from "./components/SnapshotExecutiveSummary";
+import { ShortlistPanel } from "./components/ShortlistPanel";
+import { StakeholderNotesPanel } from "./components/StakeholderNotesPanel";
+import { WalkthroughPanel } from "./components/WalkthroughPanel";
+import { applyPageMetadata, buildSharedSnapshotMetadata, getBrandingConfig } from "./branding";
 import {
+  dismissWalkthrough,
+  isWalkthroughDismissed,
+  loadStakeholderNote,
+  saveStakeholderNote,
+  markValidationPromptSeen,
+  shouldShowValidationPrompt,
   applyPreferencesToRequest,
   dismissOnboarding,
   getOrCreateSessionIdentity,
@@ -44,6 +105,13 @@ import {
   saveUiPreferences
 } from "./local-state";
 import {
+  DEMO_WALKTHROUGH_STEPS,
+  FEEDBACK_PROMPTS,
+  buildHistoricalComparison,
+  buildShareSnapshotUrl,
+  buildSnapshotExportText
+} from "./content";
+import {
   applyResultControls,
   DEFAULT_RESULT_CONTROLS,
   toggleComparisonSelection,
@@ -51,6 +119,7 @@ import {
 } from "./view-model";
 
 export default function App() {
+  const branding = useMemo(() => getBrandingConfig(), []);
   const localStorageRef =
     typeof window !== "undefined" ? window.localStorage : null;
   const initialPreferences = loadUiPreferences(localStorageRef);
@@ -76,12 +145,31 @@ export default function App() {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SearchSnapshotRecord | null>(null);
+  const [sharedSnapshotView, setSharedSnapshotView] = useState<SharedSnapshotView | null>(null);
+  const [sharedShortlistView, setSharedShortlistView] = useState<SharedShortlistView | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [selectedHomeId, setSelectedHomeId] = useState<string | null>(null);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
+  const [sharingSnapshotId, setSharingSnapshotId] = useState<string | null>(null);
+  const [sharedLink, setSharedLink] = useState<string | null>(null);
   const [definitions, setDefinitions] = useState<SearchDefinition[]>([]);
   const [history, setHistory] = useState<SearchHistoryRecord[]>([]);
   const [snapshots, setSnapshots] = useState<SearchSnapshotRecord[]>([]);
+  const [shortlists, setShortlists] = useState<Shortlist[]>([]);
+  const [sharedShortlists, setSharedShortlists] = useState<SharedShortlist[]>([]);
+  const [selectedShortlistId, setSelectedShortlistId] = useState<string | null>(null);
+  const [shortlistItems, setShortlistItems] = useState<ShortlistItem[]>([]);
+  const [resultNotes, setResultNotes] = useState<ResultNote[]>([]);
+  const [workflowActivity, setWorkflowActivity] = useState<WorkflowActivityRecord[]>([]);
+  const [sharedComments, setSharedComments] = useState<SharedComment[]>([]);
+  const [reviewerDecisions, setReviewerDecisions] = useState<ReviewerDecision[]>([]);
+  const [collaborationActivity, setCollaborationActivity] = useState<CollaborationActivityRecord[]>([]);
+  const [historicalComparison, setHistoricalComparison] = useState<HistoricalComparisonPayload | null>(null);
+  const [demoScenarios, setDemoScenarios] = useState<DemoScenario[]>([]);
+  const [activeDemoScenarioId, setActiveDemoScenarioId] = useState<string | null>(null);
+  const [activeFeedbackPrompt, setActiveFeedbackPrompt] = useState<"results" | "comparison" | "empty" | null>(null);
+  const [stakeholderNote, setStakeholderNote] = useState("");
+  const [walkthroughVisible, setWalkthroughVisible] = useState(false);
   const [saveLabel, setSaveLabel] = useState("Family shortlist");
   const [savingDefinition, setSavingDefinition] = useState(false);
   const comparedRef = useRef(0);
@@ -89,6 +177,18 @@ export default function App() {
   const activityTrackedRef = useRef(false);
   const onboardingTrackedRef = useRef(false);
   const emptyStateTrackedRef = useRef<string | null>(null);
+  const noteContextKey = useMemo(() => {
+    if (sharedSnapshotView) {
+      return `shared:${sharedSnapshotView.share.shareId}`;
+    }
+    if (snapshot) {
+      return `snapshot:${snapshot.id}`;
+    }
+    if (activeDemoScenarioId) {
+      return `demo:${activeDemoScenarioId}`;
+    }
+    return `search:${formState.locationType}:${formState.locationValue}`;
+  }, [activeDemoScenarioId, formState.locationType, formState.locationValue, sharedSnapshotView, snapshot]);
 
   async function refreshRecentActivity(sessionId = sessionIdentity.sessionId) {
     if (!sessionId) {
@@ -114,6 +214,70 @@ export default function App() {
     }
   }
 
+  async function refreshWorkflowState(
+    sessionId = sessionIdentity.sessionId,
+    preferredShortlistId: string | null = selectedShortlistId
+  ) {
+    if (!sessionId || (!branding.enableShortlists && !branding.enableResultNotes)) {
+      setShortlists([]);
+      setSharedShortlists([]);
+      setShortlistItems([]);
+      setResultNotes([]);
+      setWorkflowActivity([]);
+      setSelectedShortlistId(null);
+      return;
+    }
+
+    const [nextShortlists, nextNotes, nextActivity] = await Promise.all([
+      branding.enableShortlists ? fetchShortlists(sessionId) : Promise.resolve([]),
+      branding.enableResultNotes ? fetchResultNotes({ sessionId }) : Promise.resolve([]),
+      branding.enableShortlists ? fetchWorkflowActivity(sessionId, 12) : Promise.resolve([])
+    ]);
+
+    setShortlists(nextShortlists);
+    setResultNotes(nextNotes);
+    setWorkflowActivity(nextActivity);
+
+    const nextSelected =
+      preferredShortlistId && nextShortlists.some((entry) => entry.id === preferredShortlistId)
+        ? preferredShortlistId
+        : nextShortlists[0]?.id ?? null;
+
+    setSelectedShortlistId(nextSelected);
+
+    if (!nextSelected) {
+      setSharedShortlists([]);
+      setShortlistItems([]);
+      return;
+    }
+
+    const shortlistPayload = await fetchShortlistItems(nextSelected);
+    setShortlistItems(shortlistPayload.items);
+    if (branding.enableSharedShortlists) {
+      const shares = await fetchSharedShortlists(nextSelected);
+      setSharedShortlists(shares);
+    }
+  }
+
+  async function refreshSharedShortlistState(shareId: string) {
+    const [shared, comments, decisions, activity] = await Promise.all([
+      fetchSharedShortlist(shareId),
+      fetchSharedComments({ shareId }),
+      fetchReviewerDecisions({ shareId }),
+      fetchCollaborationActivity({ shareId, limit: 20 })
+    ]);
+
+    setSharedShortlistView({
+      ...shared,
+      comments,
+      reviewerDecisions: decisions,
+      collaborationActivity: activity
+    });
+    setSharedComments(comments);
+    setReviewerDecisions(decisions);
+    setCollaborationActivity(activity);
+  }
+
   function applyResultSet(
     response: SearchResponse,
     request: SearchRequest,
@@ -121,12 +285,16 @@ export default function App() {
       snapshot?: SearchSnapshotRecord | null;
       historyRecordId?: string | null;
       searchDefinitionId?: string | null;
+      sharedSnapshotView?: SharedSnapshotView | null;
+      sharedShortlistView?: SharedShortlistView | null;
     }
   ) {
     setResults(response);
     setLastRequest(request);
     setFormState(request);
     setSnapshot(options?.snapshot ?? null);
+    setSharedSnapshotView(options?.sharedSnapshotView ?? null);
+    setSharedShortlistView(options?.sharedShortlistView ?? null);
     setCurrentHistoryRecordId(
       options?.historyRecordId ?? response.metadata.historyRecordId ?? null
     );
@@ -144,7 +312,36 @@ export default function App() {
     setSessionIdentity(identity);
     setShowOnboarding(!isOnboardingDismissed(localStorageRef));
     void refreshRecentActivity(identity.sessionId);
+    void refreshWorkflowState(identity.sessionId, null);
+    if (branding.enableDemoMode) {
+      void fetchDemoScenarios()
+        .then(setDemoScenarios)
+        .catch(() => setDemoScenarios([]));
+    }
   }, []);
+
+  useEffect(() => {
+    setStakeholderNote(loadStakeholderNote(localStorageRef, noteContextKey));
+  }, [localStorageRef, noteContextKey]);
+
+  useEffect(() => {
+    saveStakeholderNote(localStorageRef, noteContextKey, stakeholderNote);
+  }, [localStorageRef, noteContextKey, stakeholderNote]);
+
+  useEffect(() => {
+    if (sharedSnapshotView) {
+      applyPageMetadata(buildSharedSnapshotMetadata(sharedSnapshotView.snapshot, branding));
+      return;
+    }
+
+    applyPageMetadata({
+      title: `${branding.appName} | ${branding.tagline}`,
+      description: branding.tagline,
+      openGraphTitle: branding.appName,
+      openGraphDescription: branding.tagline,
+      noIndex: false
+    });
+  }, [branding, sharedSnapshotView]);
 
   useEffect(() => {
     saveUiPreferences(localStorageRef, {
@@ -157,7 +354,62 @@ export default function App() {
 
   useEffect(() => {
     async function loadSnapshotFromUrl() {
-      const snapshotId = new URLSearchParams(window.location.search).get("snapshot");
+      const params = new URLSearchParams(window.location.search);
+      const sharedSnapshotId = params.get("sharedSnapshot");
+      const sharedShortlistId = params.get("sharedShortlist");
+      const snapshotId = params.get("snapshot");
+
+      if (sharedSnapshotId) {
+        setBusy(true);
+        setError(null);
+
+        try {
+          const shared = await fetchSharedSnapshot(sharedSnapshotId);
+          setSharedSnapshotView({
+            share: shared.share,
+            snapshot: shared.snapshot
+          });
+          applyResultSet(shared.snapshot.response, shared.snapshot.request, {
+            snapshot: shared.snapshot,
+            historyRecordId: shared.snapshot.historyRecordId ?? null,
+            searchDefinitionId: shared.snapshot.searchDefinitionId ?? null,
+            sharedSnapshotView: {
+              share: shared.share,
+              snapshot: shared.snapshot
+            }
+          });
+        } catch (snapshotError) {
+          setError(snapshotError instanceof Error ? snapshotError.message : "Unable to load shared snapshot");
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
+
+      if (sharedShortlistId) {
+        setBusy(true);
+        setError(null);
+
+        try {
+          const shared = await fetchSharedShortlist(sharedShortlistId);
+          setSharedShortlistView(shared);
+          setSharedComments(shared.comments);
+          setReviewerDecisions(shared.reviewerDecisions);
+          setCollaborationActivity(shared.collaborationActivity);
+          setResults(null);
+          setSnapshot(null);
+          setSharedSnapshotView(null);
+        } catch (sharedShortlistError) {
+          setError(
+            sharedShortlistError instanceof Error
+              ? sharedShortlistError.message
+              : "Unable to load shared shortlist"
+          );
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
 
       if (!snapshotId) {
         return;
@@ -224,7 +476,53 @@ export default function App() {
 
     emptyStateTrackedRef.current = key;
     void trackUiMetric("empty_state_view");
+    void recordValidationEvent({
+      eventName: "empty_state_encountered",
+      sessionId: sessionIdentity.sessionId,
+      historyRecordId: currentHistoryRecordId,
+      snapshotId: snapshot?.id ?? null,
+      payload: {
+        returnedCount: results.metadata.returnedCount
+      }
+    }).catch(() => undefined);
   }, [results]);
+
+  useEffect(() => {
+    if (!results || activeFeedbackPrompt) {
+      return;
+    }
+
+    if (
+      results.metadata.returnedCount < 5 &&
+      shouldShowValidationPrompt(localStorageRef, "empty")
+    ) {
+      setActiveFeedbackPrompt("empty");
+      markValidationPromptSeen(localStorageRef, "empty");
+      void trackUiMetric("validation_prompt_view");
+      return;
+    }
+
+    if (
+      results.metadata.returnedCount > 0 &&
+      shouldShowValidationPrompt(localStorageRef, "results")
+    ) {
+      setActiveFeedbackPrompt("results");
+      markValidationPromptSeen(localStorageRef, "results");
+      void trackUiMetric("validation_prompt_view");
+    }
+  }, [activeFeedbackPrompt, localStorageRef, results]);
+
+  useEffect(() => {
+    if (
+      comparisonIds.length >= 2 &&
+      !activeFeedbackPrompt &&
+      shouldShowValidationPrompt(localStorageRef, "comparison")
+    ) {
+      setActiveFeedbackPrompt("comparison");
+      markValidationPromptSeen(localStorageRef, "comparison");
+      void trackUiMetric("validation_prompt_view");
+    }
+  }, [activeFeedbackPrompt, comparisonIds.length, localStorageRef]);
 
   const visibleHomes = useMemo(
     () => (results ? applyResultControls(results.homes, controls) : []),
@@ -249,6 +547,55 @@ export default function App() {
       .filter((home): home is NonNullable<typeof home> => Boolean(home));
   }, [comparisonIds, results]);
 
+  const activeShortlist = useMemo(
+    () => shortlists.find((entry) => entry.id === selectedShortlistId) ?? null,
+    [selectedShortlistId, shortlists]
+  );
+
+  const shortlistItemsByCanonicalId = useMemo(() => {
+    const map = new Map<string, ShortlistItem>();
+    for (const item of shortlistItems) {
+      map.set(item.canonicalPropertyId, item);
+    }
+    return map;
+  }, [shortlistItems]);
+
+  const selectedHomeNoteContext = useMemo(() => {
+    if (!selectedHome) {
+      return null;
+    }
+
+    if (sharedSnapshotView) {
+      return {
+        entityType: "shared_snapshot_result" as const,
+        entityId: `${sharedSnapshotView.share.shareId}:${selectedHome.canonicalPropertyId ?? selectedHome.id}`
+      };
+    }
+
+    if (snapshot) {
+      return {
+        entityType: "snapshot_result" as const,
+        entityId: `${snapshot.id}:${selectedHome.canonicalPropertyId ?? selectedHome.id}`
+      };
+    }
+
+    return null;
+  }, [selectedHome, sharedSnapshotView, snapshot]);
+
+  const selectedHomeNote = useMemo(() => {
+    if (!selectedHomeNoteContext) {
+      return null;
+    }
+
+    return (
+      resultNotes.find(
+        (entry) =>
+          entry.entityType === selectedHomeNoteContext.entityType &&
+          entry.entityId === selectedHomeNoteContext.entityId
+      ) ?? null
+    );
+  }, [resultNotes, selectedHomeNoteContext]);
+
   async function handleSubmit(payload: SearchRequest) {
     setBusy(true);
     setError(null);
@@ -260,8 +607,10 @@ export default function App() {
       applyResultSet(response, payload, {
         historyRecordId: response.metadata.historyRecordId ?? null
       });
+      setSharedLink(null);
       window.history.replaceState({}, "", window.location.pathname);
       await refreshRecentActivity();
+      await refreshWorkflowState();
     } catch (searchError) {
       setError(searchError instanceof Error ? searchError.message : "Unable to complete search");
     } finally {
@@ -285,13 +634,77 @@ export default function App() {
         historyRecordId: currentHistoryRecordId
       });
       setSnapshot(created);
+      setSharedLink(null);
       window.history.replaceState({}, "", `/?snapshot=${created.id}`);
       await refreshRecentActivity();
+      await refreshWorkflowState();
     } catch (snapshotError) {
       setError(snapshotError instanceof Error ? snapshotError.message : "Unable to save snapshot");
     } finally {
       setSavingSnapshot(false);
     }
+  }
+
+  async function handleShareSnapshot(snapshotId?: string) {
+    const targetSnapshotId = snapshotId ?? snapshot?.id;
+    if (!targetSnapshotId) {
+      return;
+    }
+
+    setSharingSnapshotId(targetSnapshotId);
+
+    try {
+      const shared = await createSharedSnapshot({
+        snapshotId: targetSnapshotId,
+        sessionId: sessionIdentity.sessionId
+      });
+      const nextLink = buildShareSnapshotUrl(shared.share.shareId);
+      setSharedLink(nextLink);
+      await refreshRecentActivity();
+      await refreshWorkflowState();
+    } catch (shareError) {
+      setError(shareError instanceof Error ? shareError.message : "Unable to share snapshot");
+    } finally {
+      setSharingSnapshotId(null);
+    }
+  }
+
+  async function handleCopySummary() {
+    const targetSnapshot = sharedSnapshotView?.snapshot ?? snapshot;
+    if (!targetSnapshot) {
+      return;
+    }
+
+    const text = buildSnapshotExportText(targetSnapshot, branding.appName);
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    }
+    await trackUiMetric("export_use");
+  }
+
+  async function handleDownloadJson() {
+    const targetSnapshot = sharedSnapshotView?.snapshot ?? snapshot;
+    if (!targetSnapshot || typeof document === "undefined") {
+      return;
+    }
+
+    const blob = new Blob([JSON.stringify(targetSnapshot, null, 2)], {
+      type: "application/json"
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${targetSnapshot.id}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    await trackUiMetric("export_use");
+  }
+
+  async function handlePrintView() {
+    if (typeof window !== "undefined") {
+      window.print();
+    }
+    await trackUiMetric("export_use");
   }
 
   async function handleViewAudit(propertyId: string) {
@@ -320,6 +733,7 @@ export default function App() {
         request: formState
       });
       await refreshRecentActivity();
+      await refreshWorkflowState();
       setSaveLabel(`${formState.locationValue} follow-up`);
     } catch (definitionError) {
       setError(
@@ -336,6 +750,7 @@ export default function App() {
 
     try {
       const loadedSnapshot = await fetchSearchSnapshot(snapshotId);
+      setSharedSnapshotView(null);
       applyResultSet(loadedSnapshot.response, loadedSnapshot.request, {
         snapshot: loadedSnapshot,
         historyRecordId: loadedSnapshot.historyRecordId ?? null,
@@ -353,9 +768,41 @@ export default function App() {
   async function handleRestore(payload: SearchRestorePayload) {
     setFormState(payload.request);
     await trackUiMetric("search_restore");
+    await recordValidationEvent({
+      eventName: "restore_used",
+      sessionId: sessionIdentity.sessionId,
+      snapshotId: payload.sourceType === "snapshot" ? payload.sourceId : null,
+      historyRecordId: payload.sourceType === "history" ? payload.sourceId : null,
+      searchDefinitionId: payload.sourceType === "definition" ? payload.sourceId : null
+    }).catch(() => undefined);
     if (payload.sourceType === "definition") {
       await trackUiMetric("saved_search_restore");
     }
+  }
+
+  async function handleLoadScenario(scenario: DemoScenario) {
+    setFormState(scenario.request);
+    setActiveDemoScenarioId(scenario.id);
+    setSaveLabel(scenario.label);
+    const showWalkthrough = !isWalkthroughDismissed(localStorageRef, scenario.id);
+    setWalkthroughVisible(showWalkthrough);
+    await trackUiMetric("demo_scenario_start");
+    if (showWalkthrough) {
+      await trackUiMetric("walkthrough_view");
+    }
+    await recordValidationEvent({
+      eventName: "demo_scenario_started",
+      sessionId: sessionIdentity.sessionId,
+      demoScenarioId: scenario.id
+    }).catch(() => undefined);
+  }
+
+  async function handleDismissWalkthrough() {
+    if (activeDemoScenarioId) {
+      dismissWalkthrough(localStorageRef, activeDemoScenarioId);
+    }
+    setWalkthroughVisible(false);
+    await trackUiMetric("walkthrough_dismiss");
   }
 
   async function handleRerunDefinition(definitionId: string) {
@@ -370,7 +817,9 @@ export default function App() {
         searchDefinitionId: definitionId
       });
       window.history.replaceState({}, "", window.location.pathname);
+      setSharedSnapshotView(null);
       await refreshRecentActivity();
+      await refreshWorkflowState();
     } catch (rerunError) {
       setError(rerunError instanceof Error ? rerunError.message : "Unable to rerun saved search");
     } finally {
@@ -392,7 +841,9 @@ export default function App() {
           : record?.searchDefinitionId ?? null
       });
       window.history.replaceState({}, "", window.location.pathname);
+      setSharedSnapshotView(null);
       await refreshRecentActivity();
+      await refreshWorkflowState();
     } catch (rerunError) {
       setError(rerunError instanceof Error ? rerunError.message : "Unable to rerun search history");
     } finally {
@@ -406,6 +857,7 @@ export default function App() {
         pinned: !definition.pinned
       });
       await refreshRecentActivity();
+      await refreshWorkflowState();
     } catch (definitionError) {
       setError(
         definitionError instanceof Error ? definitionError.message : "Unable to update saved search"
@@ -417,6 +869,7 @@ export default function App() {
     try {
       await deleteSearchDefinition(definitionId);
       await refreshRecentActivity();
+      await refreshWorkflowState();
     } catch (definitionError) {
       setError(
         definitionError instanceof Error ? definitionError.message : "Unable to delete saved search"
@@ -435,7 +888,7 @@ export default function App() {
     await trackUiMetric("onboarding_dismiss");
   }
 
-  async function handleApplySuggestion(patch: Partial<SearchRequest>) {
+  async function handleApplySuggestion(patch: Partial<SearchRequest>, code?: string) {
     setFormState((current) => ({
       ...current,
       ...patch,
@@ -443,11 +896,30 @@ export default function App() {
       weights: patch.weights ? { ...current.weights, ...patch.weights } : current.weights
     }));
     await trackUiMetric("suggestion_click");
+    await recordValidationEvent({
+      eventName: "suggestion_used",
+      sessionId: sessionIdentity.sessionId,
+      historyRecordId: currentHistoryRecordId,
+      snapshotId: snapshot?.id ?? null,
+      payload: {
+        code: code ?? null,
+        patch
+      }
+    }).catch(() => undefined);
   }
 
   async function handleOpenDetails(homeId: string) {
     setSelectedHomeId(homeId);
     await trackUiMetric("detail_panel_open");
+    await recordValidationEvent({
+      eventName: "result_opened",
+      sessionId: sessionIdentity.sessionId,
+      snapshotId: snapshot?.id ?? null,
+      historyRecordId: currentHistoryRecordId,
+      payload: {
+        homeId
+      }
+    }).catch(() => undefined);
   }
 
   async function handleToggleCompare(homeId: string) {
@@ -455,9 +927,354 @@ export default function App() {
       const next = toggleComparisonSelection(current, homeId);
       if (!current.includes(homeId) && next.includes(homeId)) {
         void trackUiMetric("result_compare_add");
+        if (next.length === 2) {
+          void recordValidationEvent({
+            eventName: "comparison_started",
+            sessionId: sessionIdentity.sessionId,
+            snapshotId: snapshot?.id ?? null,
+            historyRecordId: currentHistoryRecordId,
+            payload: {
+              homeIds: next
+            }
+          }).catch(() => undefined);
+        }
       }
       return next;
     });
+  }
+
+  async function handleFeedbackSubmit(payload: {
+    category: FeedbackRecord["category"];
+    value: FeedbackRecord["value"];
+    comment?: string | null;
+  }) {
+    try {
+      await submitFeedback({
+        sessionId: sessionIdentity.sessionId,
+        snapshotId: snapshot?.id ?? undefined,
+        historyRecordId: currentHistoryRecordId ?? undefined,
+        searchDefinitionId: currentSearchDefinitionId ?? undefined,
+        ...payload
+      });
+      await trackUiMetric("validation_prompt_response");
+      await refreshRecentActivity();
+      await refreshWorkflowState();
+    } catch (feedbackError) {
+      setError(feedbackError instanceof Error ? feedbackError.message : "Unable to submit feedback");
+    } finally {
+      setActiveFeedbackPrompt(null);
+    }
+  }
+
+  async function handleCreateShortlist(payload: { title: string; description?: string | null }) {
+    try {
+      const shortlist = await createShortlist({
+        sessionId: sessionIdentity.sessionId,
+        title: payload.title,
+        description: payload.description ?? null,
+        sourceSnapshotId: snapshot?.id ?? null
+      });
+      await refreshWorkflowState(sessionIdentity.sessionId, shortlist.id);
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to create shortlist");
+    }
+  }
+
+  async function handleSelectShortlist(shortlistId: string) {
+    setSelectedShortlistId(shortlistId);
+    try {
+      const payload = await fetchShortlistItems(shortlistId);
+      setShortlistItems(payload.items);
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to load shortlist");
+    }
+  }
+
+  async function handleToggleShortlist(home: SearchResponse["homes"][number]) {
+    try {
+      let shortlistId = selectedShortlistId;
+      if (!shortlistId) {
+        const created = await createShortlist({
+          sessionId: sessionIdentity.sessionId,
+          title: `${formState.locationValue} shortlist`,
+          sourceSnapshotId: snapshot?.id ?? null
+        });
+        shortlistId = created.id;
+      }
+
+      const canonicalPropertyId = home.canonicalPropertyId ?? home.id;
+      const existing = shortlistItemsByCanonicalId.get(canonicalPropertyId);
+      if (existing && existing.shortlistId === shortlistId) {
+        await deleteShortlistItem(shortlistId, existing.id);
+      } else {
+        await addShortlistItem(shortlistId, {
+          canonicalPropertyId,
+          sourceSnapshotId: snapshot?.id ?? null,
+          sourceHistoryId: currentHistoryRecordId,
+          sourceSearchDefinitionId: currentSearchDefinitionId,
+          capturedHome: home,
+          reviewState: "undecided"
+        });
+      }
+
+      await refreshWorkflowState(sessionIdentity.sessionId, shortlistId);
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to update shortlist");
+    }
+  }
+
+  async function handleToggleShortlistPinned(shortlist: Shortlist) {
+    try {
+      await updateShortlist(shortlist.id, {
+        pinned: !shortlist.pinned
+      });
+      await refreshWorkflowState(sessionIdentity.sessionId, shortlist.id);
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to update shortlist");
+    }
+  }
+
+  async function handleDeleteShortlist(shortlistId: string) {
+    try {
+      await deleteShortlist(shortlistId);
+      await refreshWorkflowState(
+        sessionIdentity.sessionId,
+        shortlistId === selectedShortlistId ? null : selectedShortlistId
+      );
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to delete shortlist");
+    }
+  }
+
+  async function handleReviewStateChange(
+    shortlistId: string,
+    itemId: string,
+    reviewState: ShortlistItem["reviewState"]
+  ) {
+    try {
+      await updateShortlistItem(shortlistId, itemId, { reviewState });
+      await refreshWorkflowState(sessionIdentity.sessionId, shortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to update review state"
+      );
+    }
+  }
+
+  async function handleRemoveShortlistItem(shortlistId: string, itemId: string) {
+    try {
+      await deleteShortlistItem(shortlistId, itemId);
+      await refreshWorkflowState(sessionIdentity.sessionId, shortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to remove shortlisted home"
+      );
+    }
+  }
+
+  async function handleSaveResultNote(entityId: string, noteId: string | null, body: string) {
+    try {
+      if (noteId) {
+        await updateResultNote(noteId, body);
+      } else {
+        await createResultNote({
+          sessionId: sessionIdentity.sessionId,
+          entityType: "shortlist_item",
+          entityId,
+          body
+        });
+      }
+      await refreshWorkflowState(sessionIdentity.sessionId, selectedShortlistId);
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to save note");
+    }
+  }
+
+  async function handleDeleteResultNote(noteId: string) {
+    try {
+      await deleteResultNote(noteId);
+      await refreshWorkflowState(sessionIdentity.sessionId, selectedShortlistId);
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to delete note");
+    }
+  }
+
+  async function handleSaveSelectedHomeNote(body: string) {
+    if (!selectedHomeNoteContext) {
+      return;
+    }
+
+    try {
+      if (selectedHomeNote) {
+        await updateResultNote(selectedHomeNote.id, body);
+      } else {
+        await createResultNote({
+          sessionId: sessionIdentity.sessionId,
+          entityType: selectedHomeNoteContext.entityType,
+          entityId: selectedHomeNoteContext.entityId,
+          body
+        });
+      }
+      await refreshWorkflowState(sessionIdentity.sessionId, selectedShortlistId);
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to save result note");
+    }
+  }
+
+  async function handleDeleteSelectedHomeNote() {
+    if (!selectedHomeNote) {
+      return;
+    }
+
+    try {
+      await deleteResultNote(selectedHomeNote.id);
+      await refreshWorkflowState(sessionIdentity.sessionId, selectedShortlistId);
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to delete result note");
+    }
+  }
+
+  async function handleOpenHistoricalCompare(itemId: string) {
+    const item = shortlistItems.find((entry) => entry.id === itemId);
+    if (!item) {
+      return;
+    }
+
+    const currentHome =
+      results?.homes.find(
+        (home) => (home.canonicalPropertyId ?? home.id) === item.canonicalPropertyId
+      ) ?? null;
+
+    setHistoricalComparison(buildHistoricalComparison(item, currentHome));
+    await trackUiMetric("historical_compare_view");
+  }
+
+  async function handlePilotCtaClick() {
+    await trackUiMetric("cta_click");
+  }
+
+  async function handleCreateShortlistShare(
+    shortlistId: string,
+    shareMode: SharedShortlist["shareMode"]
+  ) {
+    try {
+      const created = await createSharedShortlist({
+        shortlistId,
+        sessionId: sessionIdentity.sessionId,
+        shareMode
+      });
+      setSharedLink(created.shareUrl);
+      if (selectedShortlistId) {
+        const shares = await fetchSharedShortlists(selectedShortlistId);
+        setSharedShortlists(shares);
+      }
+    } catch (shareError) {
+      setError(shareError instanceof Error ? shareError.message : "Unable to share shortlist");
+    }
+  }
+
+  async function handleCopyShortlistShare(share: SharedShortlist) {
+    const shareUrl = `${window.location.origin}/?sharedShortlist=${share.shareId}`;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setSharedLink(shareUrl);
+    } catch {
+      setSharedLink(shareUrl);
+    }
+  }
+
+  async function handleRevokeShortlistShare(shareId: string) {
+    try {
+      await revokeSharedShortlist(shareId);
+      if (selectedShortlistId) {
+        const shares = await fetchSharedShortlists(selectedShortlistId);
+        setSharedShortlists(shares);
+      }
+    } catch (shareError) {
+      setError(shareError instanceof Error ? shareError.message : "Unable to revoke shortlist share");
+    }
+  }
+
+  async function handleSaveSharedComment(
+    itemId: string,
+    comment: SharedComment | null,
+    body: string,
+    authorLabel?: string | null
+  ) {
+    if (!sharedShortlistView) {
+      return;
+    }
+
+    try {
+      if (comment) {
+        await updateSharedComment(comment.id, {
+          body,
+          authorLabel
+        });
+      } else {
+        await createSharedComment({
+          shareId: sharedShortlistView.share.shareId,
+          entityType: "shared_shortlist_item",
+          entityId: itemId,
+          authorLabel,
+          body
+        });
+      }
+      await refreshSharedShortlistState(sharedShortlistView.share.shareId);
+    } catch (collaborationError) {
+      setError(
+        collaborationError instanceof Error ? collaborationError.message : "Unable to save comment"
+      );
+    }
+  }
+
+  async function handleDeleteSharedComment(commentId: string) {
+    if (!sharedShortlistView) {
+      return;
+    }
+
+    try {
+      await deleteSharedComment(commentId);
+      await refreshSharedShortlistState(sharedShortlistView.share.shareId);
+    } catch (collaborationError) {
+      setError(
+        collaborationError instanceof Error ? collaborationError.message : "Unable to delete comment"
+      );
+    }
+  }
+
+  async function handleSaveReviewerDecision(
+    itemId: string,
+    existing: ReviewerDecision | null,
+    decision: ReviewerDecision["decision"],
+    note?: string | null
+  ) {
+    if (!sharedShortlistView) {
+      return;
+    }
+
+    try {
+      if (existing) {
+        await updateReviewerDecision(existing.id, {
+          decision,
+          note
+        });
+      } else {
+        await createReviewerDecision({
+          shareId: sharedShortlistView.share.shareId,
+          shortlistItemId: itemId,
+          decision,
+          note
+        });
+      }
+      await refreshSharedShortlistState(sharedShortlistView.share.shareId);
+    } catch (collaborationError) {
+      setError(
+        collaborationError instanceof Error
+          ? collaborationError.message
+          : "Unable to save reviewer decision"
+      );
+    }
   }
 
   return (
@@ -465,8 +1282,8 @@ export default function App() {
       <OnboardingModal onDismiss={handleDismissOnboarding} open={showOnboarding} />
 
       <section className="hero-panel">
-        <p className="eyebrow">Nhalo Home Decision Engine</p>
-        <h1>Find homes your family can afford, live in, and feel safe in.</h1>
+        <p className="eyebrow">{branding.appName}</p>
+        <h1>{branding.tagline}</h1>
         <p className="hero-copy">
           Nhalo ranks homes with deterministic price, size, and safety signals. Use this console to
           run a search, compare tradeoffs, and revisit saved work without losing the reasoning behind
@@ -475,55 +1292,151 @@ export default function App() {
       </section>
 
       <section className="content-grid">
-        <div className="sidebar-stack">
-          <div className="panel">
-            <SearchForm
-              busy={busy}
-              onChange={setFormState}
-              onResetWeights={() =>
-                setFormState((current) => ({
-                  ...current,
-                  weights: DEFAULT_WEIGHTS
-                }))
-              }
-              onSubmit={handleSubmit}
-              value={formState}
-            />
-          </div>
+        {sharedSnapshotView || sharedShortlistView ? null : (
+          <div className="sidebar-stack">
+            <div className="panel">
+              <SearchForm
+                busy={busy}
+                onChange={setFormState}
+                onResetWeights={() =>
+                  setFormState((current) => ({
+                    ...current,
+                    weights: DEFAULT_WEIGHTS
+                  }))
+                }
+                onSubmit={handleSubmit}
+                value={formState}
+              />
+            </div>
 
-          <div className="panel">
-            <RecentActivityPanel
-              currentRequest={formState}
-              definitions={definitions}
-              history={history}
-              onDeleteDefinition={handleDeleteDefinition}
-              onOpenSnapshot={handleOpenSnapshot}
-              onRestore={handleRestore}
-              onRerunDefinition={handleRerunDefinition}
-              onRerunHistory={handleRerunHistory}
-              onSaveDefinition={handleSaveDefinition}
-              onSaveLabelChange={setSaveLabel}
-              onTogglePinned={handleTogglePinned}
-              saveLabel={saveLabel}
-              savingDefinition={savingDefinition}
-              snapshots={snapshots}
-            />
+            <div className="panel">
+              <DemoScenarioPanel onLoadScenario={handleLoadScenario} scenarios={demoScenarios} />
+            </div>
+
+            <div className="panel">
+              <RecentActivityPanel
+                currentRequest={formState}
+                definitions={definitions}
+                history={history}
+                onDeleteDefinition={handleDeleteDefinition}
+                onOpenSnapshot={handleOpenSnapshot}
+                onRestore={handleRestore}
+                onRerunDefinition={handleRerunDefinition}
+                onRerunHistory={handleRerunHistory}
+                onSaveDefinition={handleSaveDefinition}
+                onSaveLabelChange={setSaveLabel}
+                onShareSnapshot={handleShareSnapshot}
+                onTogglePinned={handleTogglePinned}
+                saveLabel={saveLabel}
+                savingDefinition={savingDefinition}
+                sharingSnapshotId={sharingSnapshotId}
+                snapshots={snapshots}
+              />
+            </div>
+
+            {branding.enableShortlists ? (
+              <div className="panel">
+                <ShortlistPanel
+                  historicalCompareEnabled={branding.enableHistoricalCompare}
+                  items={shortlistItems}
+                  notes={resultNotes.filter((entry) => entry.entityType === "shortlist_item")}
+                  onCopyShareLink={handleCopyShortlistShare}
+                  onCreateShare={branding.enableSharedShortlists ? handleCreateShortlistShare : undefined}
+                  onCreate={handleCreateShortlist}
+                  onDelete={handleDeleteShortlist}
+                  onDeleteNote={handleDeleteResultNote}
+                  onOpenHistoricalCompare={handleOpenHistoricalCompare}
+                  onRevokeShare={handleRevokeShortlistShare}
+                  onRemoveItem={handleRemoveShortlistItem}
+                  onReviewStateChange={handleReviewStateChange}
+                  onSaveNote={handleSaveResultNote}
+                  onSelect={handleSelectShortlist}
+                  onTogglePinned={handleToggleShortlistPinned}
+                  selectedShortlistId={selectedShortlistId}
+                  sharedShortlists={sharedShortlists}
+                  shortlists={shortlists}
+                  workflowActivity={workflowActivity}
+                />
+              </div>
+            ) : null}
+
+            <div className="panel">
+              <StakeholderNotesPanel note={stakeholderNote} onChange={setStakeholderNote} />
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="panel results-panel">
           {error ? <div className="error-banner">{error}</div> : null}
 
-          {results ? (
+          {sharedShortlistView ? (
             <div className="decision-console">
+              <SharedShortlistViewPanel
+                collaborationActivity={collaborationActivity}
+                comments={sharedComments}
+                onDeleteComment={branding.enableSharedComments ? handleDeleteSharedComment : undefined}
+                onSaveComment={branding.enableSharedComments ? handleSaveSharedComment : undefined}
+                onSaveDecision={
+                  branding.enableReviewerDecisions ? handleSaveReviewerDecision : undefined
+                }
+                reviewerDecisions={reviewerDecisions}
+                sharedView={sharedShortlistView}
+              />
+            </div>
+          ) : results ? (
+            <div className="decision-console">
+              {sharedSnapshotView ? (
+                <SharedSnapshotBanner
+                  appName={branding.appName}
+                  sharedView={sharedSnapshotView}
+                  tagline={branding.tagline}
+                />
+              ) : null}
+              {activeDemoScenarioId && walkthroughVisible ? (
+                <WalkthroughPanel
+                  onDismiss={handleDismissWalkthrough}
+                  steps={DEMO_WALKTHROUGH_STEPS}
+                />
+              ) : null}
+              <SnapshotExecutiveSummary results={results} />
               <SearchSummaryPanel
                 onSaveSnapshot={handleSaveSnapshot}
+                onShareSnapshot={() => handleShareSnapshot()}
                 results={results}
                 savingSnapshot={savingSnapshot}
+                sharingSnapshot={Boolean(sharingSnapshotId && sharingSnapshotId === snapshot?.id)}
+                sharedLink={sharedLink}
                 snapshot={snapshot}
+                readOnly={Boolean(sharedSnapshotView)}
+              />
+
+              <ExportPanel
+                exportDisabled={!branding.enableSharedExports}
+                onCopySummary={handleCopySummary}
+                onDownloadJson={handleDownloadJson}
+                onPrintView={handlePrintView}
+                snapshot={sharedSnapshotView?.snapshot ?? snapshot}
+              />
+
+              <PilotContactPanel
+                ctaLabel={branding.pilotCtaLabel}
+                ctaUrl={branding.enablePilotCta ? branding.pilotCtaUrl : null}
+                onClick={handlePilotCtaClick}
               />
 
               <EmptyStatePanel results={results} onApplySuggestion={handleApplySuggestion} />
+
+              {activeFeedbackPrompt ? (
+                <FeedbackPrompt
+                  category={FEEDBACK_PROMPTS[activeFeedbackPrompt].category}
+                  onDismiss={() => setActiveFeedbackPrompt(null)}
+                  onSubmit={handleFeedbackSubmit}
+                  open
+                  options={FEEDBACK_PROMPTS[activeFeedbackPrompt].options}
+                  question={FEEDBACK_PROMPTS[activeFeedbackPrompt].question}
+                  title={FEEDBACK_PROMPTS[activeFeedbackPrompt].title}
+                />
+              ) : null}
 
               <ResultControls controls={controls} onChange={setControls} resorted={resorted} />
 
@@ -540,10 +1453,17 @@ export default function App() {
                     compareDisabled={comparisonIds.length >= 3}
                     home={home}
                     homes={results.homes}
+                    onToggleShortlist={branding.enableShortlists ? handleToggleShortlist : undefined}
                     onOpenDetails={handleOpenDetails}
                     onToggleCompare={handleToggleCompare}
                     onViewAudit={handleViewAudit}
                     rank={index + 1}
+                    reviewState={
+                      shortlistItemsByCanonicalId.get(home.canonicalPropertyId ?? home.id)?.reviewState ?? null
+                    }
+                    shortlistDisabled={!branding.enableShortlists}
+                    shortlistLabel={activeShortlist?.title ?? null}
+                    shortlisted={shortlistItemsByCanonicalId.has(home.canonicalPropertyId ?? home.id)}
                   />
                 ))}
               </div>
@@ -556,6 +1476,9 @@ export default function App() {
                 Save the search definition, rerun it later, or reopen an immutable snapshot without
                 changing the ranking engine.
               </p>
+              {activeDemoScenarioId ? (
+                <p className="muted">Demo loaded: {activeDemoScenarioId}. Review the form, then run the search.</p>
+              ) : null}
             </div>
           )}
         </div>
@@ -574,8 +1497,17 @@ export default function App() {
       <HomeDetailPanel
         allHomes={results?.homes ?? []}
         home={selectedHome}
+        note={selectedHomeNote}
+        noteEnabled={branding.enableResultNotes && Boolean(selectedHomeNoteContext)}
         onClose={() => setSelectedHomeId(null)}
+        onDeleteNote={handleDeleteSelectedHomeNote}
+        onSaveNote={handleSaveSelectedHomeNote}
         onViewAudit={handleViewAudit}
+      />
+
+      <HistoricalComparePanel
+        comparison={historicalComparison}
+        onClose={() => setHistoricalComparison(null)}
       />
     </main>
   );

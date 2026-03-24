@@ -32,6 +32,8 @@ describe("live safety integration", () => {
     process.env.SCHOOL_PROVIDER_BASE_URL = "https://school.example/api";
     process.env.SCHOOL_PROVIDER_API_KEY = "school-key";
 
+    const recentFetchedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
     metrics = new MetricsCollector();
     safetySignalCacheRepository = new InMemorySafetySignalCacheRepository();
     listingCacheRepository = new InMemoryListingCacheRepository();
@@ -50,7 +52,7 @@ describe("live safety integration", () => {
               riskScore: 22,
               maxRiskScore: 100,
               provider: "crime-live",
-              fetchedAt: "2026-03-23T20:15:00Z"
+              fetchedAt: recentFetchedAt
             }),
             { status: 200, headers: { "content-type": "application/json" } }
           );
@@ -61,7 +63,7 @@ describe("live safety integration", () => {
               rating: 8.7,
               maxRating: 10,
               provider: "school-live",
-              fetchedAt: "2026-03-23T20:15:00Z"
+              fetchedAt: recentFetchedAt
             }),
           { status: 200, headers: { "content-type": "application/json" } }
         );

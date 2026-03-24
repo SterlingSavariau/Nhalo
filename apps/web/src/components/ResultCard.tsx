@@ -1,6 +1,7 @@
-import type { ScoredHome } from "@nhalo/types";
+import type { ReviewState, ScoredHome } from "@nhalo/types";
 import {
   RESULT_COPY,
+  SHORTLIST_COPY,
   buildDecisionLabels,
   buildTradeoffSummary,
   geocodePrecisionExplanation
@@ -13,7 +14,12 @@ interface ResultCardProps {
   rank: number;
   compared: boolean;
   compareDisabled: boolean;
+  shortlisted: boolean;
+  shortlistDisabled?: boolean;
+  shortlistLabel?: string | null;
+  reviewState?: ReviewState | null;
   onToggleCompare(homeId: string): void;
+  onToggleShortlist?(home: ScoredHome): void;
   onOpenDetails(homeId: string): void;
   onViewAudit(homeId: string): void;
 }
@@ -40,7 +46,12 @@ export function ResultCard({
   rank,
   compared,
   compareDisabled,
+  shortlisted,
+  shortlistDisabled,
+  shortlistLabel,
+  reviewState,
   onToggleCompare,
+  onToggleShortlist,
   onOpenDetails,
   onViewAudit
 }: ResultCardProps) {
@@ -94,6 +105,11 @@ export function ResultCard({
               {label}
             </span>
           ))}
+          {shortlisted ? (
+            <span className="chip active">
+              Shortlisted{reviewState ? ` · ${reviewState.replace("_", " ")}` : ""}
+            </span>
+          ) : null}
         </div>
       ) : null}
 
@@ -197,6 +213,18 @@ export function ResultCard({
       </details>
 
       <div className="card-actions">
+        {onToggleShortlist ? (
+          <button
+            className={shortlisted ? "ghost-button active" : "ghost-button"}
+            disabled={shortlistDisabled}
+            onClick={() => onToggleShortlist(home)}
+            type="button"
+          >
+            {shortlisted
+              ? SHORTLIST_COPY.removeAction
+              : `${SHORTLIST_COPY.addAction}${shortlistLabel ? ` · ${shortlistLabel}` : ""}`}
+          </button>
+        ) : null}
         <button
           className={compared ? "ghost-button active" : "ghost-button"}
           disabled={compareDisabled && !compared}

@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ScoredHome, SearchResponse } from "@nhalo/types";
 import {
+  DEMO_SCENARIO_COPY,
+  buildHistoricalComparison,
+  buildExecutiveSnapshotSummary,
   buildDecisionLabels,
   buildEmptyStateSuggestions,
+  buildShareSnapshotUrl,
+  buildSnapshotExportText,
   buildTradeoffSummary,
   geocodePrecisionExplanation
 } from "./content";
@@ -182,5 +187,88 @@ describe("content helpers", () => {
 
   it("explains geocode precision in plain language", () => {
     expect(geocodePrecisionExplanation("centroid")).toBe("Center point of the city or ZIP.");
+  });
+
+  it("provides deterministic demo scenarios and shared snapshot links", () => {
+    expect(DEMO_SCENARIO_COPY.length).toBeGreaterThanOrEqual(3);
+    expect(DEMO_SCENARIO_COPY[0].request.locationValue).toBeTruthy();
+    expect(buildShareSnapshotUrl("public_123")).toBe("/?sharedSnapshot=public_123");
+  });
+
+  it("builds executive summaries and export text from stored snapshot data only", () => {
+    const response: SearchResponse = {
+      homes,
+      appliedFilters: {
+        locationType: "city",
+        locationValue: "Southfield, MI",
+        radiusMiles: 5,
+        budget: { max: 425000 },
+        minSqft: 1800,
+        minBedrooms: 3,
+        propertyTypes: ["single_family", "condo", "townhome"],
+        preferences: []
+      },
+      appliedWeights: { price: 40, size: 30, safety: 30 },
+      metadata: {
+        totalCandidatesScanned: 25,
+        totalMatched: 7,
+        returnedCount: 2,
+        durationMs: 51,
+        warnings: [],
+        suggestions: [],
+        staleDataPresent: true
+      }
+    };
+
+    const summary = buildExecutiveSnapshotSummary(response);
+    const exportText = buildSnapshotExportText(
+      {
+        id: "snapshot-1",
+        formulaVersion: "nhalo-v1",
+        request: {
+          locationType: "city",
+          locationValue: "Southfield, MI",
+          radiusMiles: 5,
+          budget: { max: 425000 },
+          minSqft: 1800,
+          minBedrooms: 3,
+          propertyTypes: ["single_family", "condo", "townhome"],
+          preferences: [],
+          weights: { price: 40, size: 30, safety: 30 }
+        },
+        response,
+        createdAt: "2026-03-23T12:00:00.000Z"
+      },
+      "Nhalo"
+    );
+
+    expect(summary.headline).toContain("2 homes ranked");
+    expect(summary.topHomeSummary).toContain("123 Main St");
+    expect(summary.notableCaveats.join(" ")).toContain("stale");
+    expect(exportText).toContain("Nhalo snapshot summary");
+    expect(exportText).toContain("Formula: nhalo-v1");
+    expect(exportText).toContain("123 Main St");
+  });
+
+  it("builds deterministic historical comparison payloads", () => {
+    const comparison = buildHistoricalComparison(
+      {
+        id: "item-1",
+        shortlistId: "shortlist-1",
+        canonicalPropertyId: homes[0].canonicalPropertyId!,
+        sourceSnapshotId: "snapshot-1",
+        sourceHistoryId: null,
+        sourceSearchDefinitionId: null,
+        capturedHome: homes[0],
+        reviewState: "undecided",
+        addedAt: "2026-03-24T12:00:00.000Z",
+        updatedAt: "2026-03-24T12:00:00.000Z"
+      },
+      homes[1]
+    );
+
+    expect(comparison.current?.label).toBe("Current result");
+    expect(comparison.changes.some((entry) => entry.field === "nhaloScore")).toBe(true);
+    expect(comparison.changes.some((entry) => entry.field === "listingSource")).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-import { PROVIDER_TIMEOUT_MS } from "@nhalo/config";
+import { getConfig } from "@nhalo/config";
 import type {
   GeocoderProvider,
   ListingProvider,
@@ -27,22 +27,46 @@ type ProviderState = {
   detail: string;
 };
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs = PROVIDER_TIMEOUT_MS): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`Provider timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("timed out");
+}
 
-    promise
-      .then((value) => {
-        clearTimeout(timer);
-        resolve(value);
-      })
-      .catch((error) => {
-        clearTimeout(timer);
-        reject(error);
+async function withTimeout<T>(operation: () => Promise<T>): Promise<T> {
+  const config = getConfig();
+  let attempts = 0;
+  let lastError: unknown;
+
+  while (attempts <= config.providerRetryCount) {
+    attempts += 1;
+
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error(`Provider timed out after ${config.providerTimeoutMs}ms`));
+        }, config.providerTimeoutMs);
+
+        operation()
+          .then((value) => {
+            clearTimeout(timer);
+            resolve(value);
+          })
+          .catch((error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
       });
-  });
+    } catch (error) {
+      lastError = error;
+      if (attempts > config.providerRetryCount) {
+        break;
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, config.providerRetryBackoffMs * attempts)
+      );
+    }
+  }
+
+  throw lastError;
 }
 
 function dataAgeHours(lastUpdatedAt: string | null): number | null {
@@ -110,7 +134,12 @@ abstract class MonitoredProvider {
     }
   }
 
-  protected completeRequest(latencyMs: number, failed: boolean, updatedAt: string | null, error?: unknown): void {
+  protected completeRequest(
+    latencyMs: number,
+    failed: boolean,
+    updatedAt: string | null,
+    error?: unknown
+  ): void {
     this.state.latencyMs = latencyMs;
     if (updatedAt) {
       this.state.lastUpdatedAt = updatedAt;
@@ -121,7 +150,7 @@ abstract class MonitoredProvider {
     } else {
       this.state.lastError = null;
     }
-    this.metrics.recordProviderRequest(this.provider.name, latencyMs, failed);
+    this.metrics.recordProviderRequest(this.provider.name, latencyMs, failed, isTimeoutError(error));
   }
 
   async getStatus(): Promise<ProviderStatus> {
@@ -171,7 +200,7 @@ class MonitoredGeocoderProvider extends MonitoredProvider implements GeocoderPro
 
     try {
       const resolvedLocation = await withTimeout(
-        (this.provider as GeocoderProvider).geocode(locationType, locationValue)
+        () => (this.provider as GeocoderProvider).geocode(locationType, locationValue)
       );
 
       if (resolvedLocation) {
@@ -212,7 +241,9 @@ class MonitoredListingProvider extends MonitoredProvider implements ListingProvi
     const startedAt = Date.now();
 
     try {
-      const listings = await withTimeout((this.provider as ListingProvider).fetchListings(context));
+      const listings = await withTimeout(() =>
+        (this.provider as ListingProvider).fetchListings(context)
+      );
       const updatedAt =
         listings
           .map((listing) => listing.updatedAt)
@@ -255,7 +286,9 @@ class MonitoredSafetyProvider extends MonitoredProvider implements SafetyProvide
     const startedAt = Date.now();
 
     try {
-      const safetyData = await withTimeout((this.provider as SafetyProvider).fetchSafetyData(listings));
+      const safetyData = await withTimeout(() =>
+        (this.provider as SafetyProvider).fetchSafetyData(listings)
+      );
       const updatedAt =
         [...safetyData.values()]
           .map((entry) => entry.updatedAt)

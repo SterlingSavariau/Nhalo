@@ -1,15 +1,35 @@
-import type { ScoredHome } from "@nhalo/types";
+import type { ResultNote, ScoredHome } from "@nhalo/types";
 import { RESULT_COPY, buildDecisionLabels, buildTradeoffSummary, geocodePrecisionExplanation } from "../content";
 import { sourceFreshnessLabel } from "../view-model";
+import { useEffect, useState } from "react";
 
 interface HomeDetailPanelProps {
   home: ScoredHome | null;
   allHomes: ScoredHome[];
+  note?: ResultNote | null;
+  noteEnabled?: boolean;
   onClose(): void;
+  onSaveNote?(body: string): void;
+  onDeleteNote?(): void;
   onViewAudit(homeId: string): void;
 }
 
-export function HomeDetailPanel({ home, allHomes, onClose, onViewAudit }: HomeDetailPanelProps) {
+export function HomeDetailPanel({
+  home,
+  allHomes,
+  note,
+  noteEnabled,
+  onClose,
+  onSaveNote,
+  onDeleteNote,
+  onViewAudit
+}: HomeDetailPanelProps) {
+  const [draftNote, setDraftNote] = useState("");
+
+  useEffect(() => {
+    setDraftNote(note?.body ?? "");
+  }, [note?.body, home?.id]);
+
   if (!home) {
     return null;
   }
@@ -140,6 +160,31 @@ export function HomeDetailPanel({ home, allHomes, onClose, onViewAudit }: HomeDe
       ) : null}
 
       <div className="card-actions">
+        {noteEnabled && onSaveNote ? (
+          <>
+            <label className="note-editor">
+              <span>{RESULT_COPY.resultNotesTitle}</span>
+              <textarea
+                placeholder="Example: Keep this one in the partner shortlist because safety is strong."
+                value={draftNote}
+                onChange={(event) => setDraftNote(event.target.value)}
+              />
+            </label>
+            <button
+              className="ghost-button"
+              disabled={!draftNote.trim()}
+              onClick={() => onSaveNote(draftNote.trim())}
+              type="button"
+            >
+              {note ? "Update note" : "Save note"}
+            </button>
+            {note && onDeleteNote ? (
+              <button className="ghost-button" onClick={onDeleteNote} type="button">
+                Delete note
+              </button>
+            ) : null}
+          </>
+        ) : null}
         <button className="ghost-button" onClick={() => onViewAudit(home.id)} type="button">
           View audit details
         </button>

@@ -1,10 +1,26 @@
 import type {
+  CollaborationActivityRecord,
+  DemoScenario,
+  FeedbackCategory,
+  FeedbackRecord,
+  ReviewerDecision,
+  ReviewerDecisionValue,
+  ResultNote,
   ScoreAuditRecord,
+  SharedComment,
+  SharedShortlist,
+  SharedShortlistView,
+  Shortlist,
+  ShortlistItem,
   SearchDefinition,
   SearchHistoryRecord,
   SearchRequest,
   SearchResponse,
-  SearchSnapshotRecord
+  SearchSnapshotRecord,
+  ValidationEventRecord,
+  ValidationSummary,
+  WorkflowActivityRecord,
+  ReviewState
 } from "@nhalo/types";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
@@ -77,6 +93,51 @@ export async function fetchSearchSnapshot(id: string): Promise<SearchSnapshotRec
   return response.json();
 }
 
+export async function createSharedSnapshot(payload: {
+  snapshotId: string;
+  sessionId?: string | null;
+  expiresInDays?: number;
+}): Promise<{
+  share: SharedSnapshotView["share"];
+  shareUrl: string;
+  readOnly: true;
+}> {
+  const response = await fetch(`${API_BASE_URL}/search/snapshots/${payload.snapshotId}/share`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify({
+      sessionId: payload.sessionId,
+      expiresInDays: payload.expiresInDays
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shared snapshot creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchSharedSnapshot(shareId: string): Promise<{
+  readOnly: true;
+  shared: true;
+  share: SharedSnapshotView["share"];
+  snapshot: SearchSnapshotRecord;
+}> {
+  const response = await fetch(`${API_BASE_URL}/shared/snapshots/${shareId}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shared snapshot fetch failed");
+  }
+
+  return response.json();
+}
+
 export async function fetchRecentSnapshots(
   sessionId?: string | null,
   limit = 10
@@ -92,6 +153,18 @@ export async function fetchRecentSnapshots(
 
   const payload = await response.json();
   return payload.snapshots;
+}
+
+export async function fetchDemoScenarios(): Promise<DemoScenario[]> {
+  const response = await fetch(`${API_BASE_URL}/validation/demo-scenarios`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Demo scenarios fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.scenarios;
 }
 
 export async function createSearchDefinition(payload: {
@@ -179,6 +252,559 @@ export async function fetchSearchHistory(
   return payload.history;
 }
 
+export async function createShortlist(payload: {
+  sessionId?: string | null;
+  title: string;
+  description?: string | null;
+  sourceSnapshotId?: string | null;
+  pinned?: boolean;
+}): Promise<Shortlist> {
+  const response = await fetch(`${API_BASE_URL}/shortlists`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shortlist creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchShortlists(sessionId?: string | null): Promise<Shortlist[]> {
+  const response = await fetch(`${API_BASE_URL}/shortlists`, {
+    headers: buildSessionHeaders(sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shortlist fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.shortlists;
+}
+
+export async function updateShortlist(
+  id: string,
+  patch: { title?: string; description?: string | null; pinned?: boolean }
+): Promise<Shortlist> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shortlist update failed");
+  }
+
+  return response.json();
+}
+
+export async function deleteShortlist(id: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${id}`, {
+    method: "DELETE"
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shortlist delete failed");
+  }
+}
+
+export async function createSharedShortlist(payload: {
+  shortlistId: string;
+  sessionId?: string | null;
+  shareMode: SharedShortlist["shareMode"];
+  expiresInDays?: number;
+}): Promise<{
+  share: SharedShortlist;
+  shareUrl: string;
+  readOnly: boolean;
+}> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${payload.shortlistId}/share`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify({
+      sessionId: payload.sessionId,
+      shareMode: payload.shareMode,
+      expiresInDays: payload.expiresInDays
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shared shortlist creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchSharedShortlists(shortlistId: string): Promise<SharedShortlist[]> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${shortlistId}/shares`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shared shortlist fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.shares;
+}
+
+export async function revokeSharedShortlist(shareId: string): Promise<SharedShortlist> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/shares/${shareId}/revoke`, {
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shared shortlist revoke failed");
+  }
+
+  const payload = await response.json();
+  return payload.share;
+}
+
+export async function fetchSharedShortlist(shareId: string): Promise<SharedShortlistView> {
+  const response = await fetch(`${API_BASE_URL}/shared/shortlists/${shareId}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shared shortlist fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchShortlistItems(id: string): Promise<{
+  shortlist: Shortlist;
+  items: ShortlistItem[];
+}> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${id}/items`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shortlist items fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function addShortlistItem(
+  shortlistId: string,
+  payload: {
+    canonicalPropertyId: string;
+    sourceSnapshotId?: string | null;
+    sourceHistoryId?: string | null;
+    sourceSearchDefinitionId?: string | null;
+    capturedHome: ShortlistItem["capturedHome"];
+    reviewState?: ReviewState;
+  }
+): Promise<ShortlistItem> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${shortlistId}/items`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shortlist item add failed");
+  }
+
+  return response.json();
+}
+
+export async function updateShortlistItem(
+  shortlistId: string,
+  itemId: string,
+  patch: {
+    reviewState: ReviewState;
+  }
+): Promise<ShortlistItem> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${shortlistId}/items/${itemId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shortlist item update failed");
+  }
+
+  return response.json();
+}
+
+export async function deleteShortlistItem(shortlistId: string, itemId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${shortlistId}/items/${itemId}`, {
+    method: "DELETE"
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shortlist item delete failed");
+  }
+}
+
+export async function createResultNote(payload: {
+  sessionId?: string | null;
+  entityType: ResultNote["entityType"];
+  entityId: string;
+  body: string;
+}): Promise<ResultNote> {
+  const response = await fetch(`${API_BASE_URL}/notes`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Note creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchResultNotes(filters?: {
+  sessionId?: string | null;
+  entityType?: ResultNote["entityType"];
+  entityId?: string;
+}): Promise<ResultNote[]> {
+  const params = new URLSearchParams();
+  if (filters?.entityType) {
+    params.set("entityType", filters.entityType);
+  }
+  if (filters?.entityId) {
+    params.set("entityId", filters.entityId);
+  }
+  const response = await fetch(`${API_BASE_URL}/notes${params.toString() ? `?${params}` : ""}`, {
+    headers: buildSessionHeaders(filters?.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Notes fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.notes;
+}
+
+export async function updateResultNote(id: string, body: string): Promise<ResultNote> {
+  const response = await fetch(`${API_BASE_URL}/notes/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ body })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Note update failed");
+  }
+
+  return response.json();
+}
+
+export async function deleteResultNote(id: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/notes/${id}`, {
+    method: "DELETE"
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Note delete failed");
+  }
+}
+
+export async function createSharedComment(payload: {
+  shareId: string;
+  entityType: SharedComment["entityType"];
+  entityId: string;
+  authorLabel?: string | null;
+  body: string;
+}): Promise<SharedComment> {
+  const response = await fetch(`${API_BASE_URL}/comments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shared comment creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchSharedComments(filters: {
+  shareId: string;
+  entityType?: SharedComment["entityType"];
+  entityId?: string;
+}): Promise<SharedComment[]> {
+  const params = new URLSearchParams();
+  params.set("shareId", filters.shareId);
+  if (filters.entityType) {
+    params.set("entityType", filters.entityType);
+  }
+  if (filters.entityId) {
+    params.set("entityId", filters.entityId);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/comments?${params.toString()}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shared comments fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.comments;
+}
+
+export async function updateSharedComment(
+  id: string,
+  payload: {
+    authorLabel?: string | null;
+    body: string;
+  }
+): Promise<SharedComment> {
+  const response = await fetch(`${API_BASE_URL}/comments/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shared comment update failed");
+  }
+
+  return response.json();
+}
+
+export async function deleteSharedComment(id: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/comments/${id}`, {
+    method: "DELETE"
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shared comment delete failed");
+  }
+}
+
+export async function createReviewerDecision(payload: {
+  shareId: string;
+  shortlistItemId: string;
+  decision: ReviewerDecisionValue;
+  note?: string | null;
+}): Promise<ReviewerDecision> {
+  const response = await fetch(`${API_BASE_URL}/reviewer-decisions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Reviewer decision save failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchReviewerDecisions(filters: {
+  shareId: string;
+  shortlistItemId?: string;
+}): Promise<ReviewerDecision[]> {
+  const params = new URLSearchParams();
+  params.set("shareId", filters.shareId);
+  if (filters.shortlistItemId) {
+    params.set("shortlistItemId", filters.shortlistItemId);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/reviewer-decisions?${params.toString()}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Reviewer decisions fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.decisions;
+}
+
+export async function updateReviewerDecision(
+  id: string,
+  patch: {
+    decision?: ReviewerDecisionValue;
+    note?: string | null;
+  }
+): Promise<ReviewerDecision> {
+  const response = await fetch(`${API_BASE_URL}/reviewer-decisions/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Reviewer decision update failed");
+  }
+
+  return response.json();
+}
+
+export async function deleteReviewerDecision(id: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/reviewer-decisions/${id}`, {
+    method: "DELETE"
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Reviewer decision delete failed");
+  }
+}
+
+export async function fetchCollaborationActivity(filters: {
+  shareId?: string;
+  shortlistId?: string;
+  limit?: number;
+}): Promise<CollaborationActivityRecord[]> {
+  const params = new URLSearchParams();
+  if (filters.shareId) {
+    params.set("shareId", filters.shareId);
+  }
+  if (filters.shortlistId) {
+    params.set("shortlistId", filters.shortlistId);
+  }
+  if (typeof filters.limit === "number") {
+    params.set("limit", String(filters.limit));
+  }
+
+  const response = await fetch(`${API_BASE_URL}/collaboration/activity?${params.toString()}`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Collaboration activity fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.activity;
+}
+
+export async function fetchWorkflowActivity(
+  sessionId?: string | null,
+  limit = 12
+): Promise<WorkflowActivityRecord[]> {
+  const response = await fetch(`${API_BASE_URL}/workflow/activity?limit=${limit}`, {
+    headers: buildSessionHeaders(sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Workflow activity fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.activity;
+}
+
+export async function submitFeedback(payload: {
+  sessionId?: string | null;
+  snapshotId?: string | null;
+  historyRecordId?: string | null;
+  searchDefinitionId?: string | null;
+  category: FeedbackCategory;
+  value: FeedbackRecord["value"];
+  comment?: string | null;
+}): Promise<FeedbackRecord> {
+  const response = await fetch(`${API_BASE_URL}/feedback`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Feedback submission failed");
+  }
+
+  return response.json();
+}
+
+export async function recordValidationEvent(payload: {
+  eventName: ValidationEventRecord["eventName"];
+  sessionId?: string | null;
+  snapshotId?: string | null;
+  historyRecordId?: string | null;
+  searchDefinitionId?: string | null;
+  demoScenarioId?: string | null;
+  payload?: Record<string, unknown> | null;
+}): Promise<ValidationEventRecord> {
+  const response = await fetch(`${API_BASE_URL}/validation/events`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Validation event record failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchValidationSummary(): Promise<ValidationSummary> {
+  const response = await fetch(`${API_BASE_URL}/validation/summary`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Validation summary fetch failed");
+  }
+
+  return response.json();
+}
+
 export async function rerunSearchDefinition(
   id: string,
   sessionId?: string | null,
@@ -237,6 +863,14 @@ export async function trackUiMetric(
     | "result_compare_add"
     | "snapshot_reopen"
     | "saved_search_restore"
+    | "validation_prompt_view"
+    | "validation_prompt_response"
+    | "demo_scenario_start"
+    | "walkthrough_view"
+    | "walkthrough_dismiss"
+    | "export_use"
+    | "cta_click"
+    | "historical_compare_view"
 ): Promise<void> {
   await fetch(`${API_BASE_URL}/metrics/events`, {
     method: "POST",

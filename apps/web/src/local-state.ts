@@ -10,6 +10,9 @@ import type { ResultControlsState } from "./view-model";
 const SESSION_KEY = "nhalo.session.identity";
 const PREFERENCES_KEY = "nhalo.ui.preferences";
 const ONBOARDING_KEY = "nhalo.ui.onboarding.dismissed";
+const VALIDATION_PROMPT_KEY = "nhalo.ui.validation.prompts";
+const STAKEHOLDER_NOTES_KEY = "nhalo.ui.stakeholder.notes";
+const WALKTHROUGH_DISMISS_KEY = "nhalo.ui.walkthrough.dismissed";
 
 export interface UiPreferences {
   preferredSortMode: ResultControlsState["sortMode"];
@@ -120,4 +123,91 @@ export function dismissOnboarding(storage: Pick<Storage, "setItem"> | null): voi
   }
 
   storage.setItem(ONBOARDING_KEY, "true");
+}
+
+type ValidationPromptState = Record<string, string>;
+type StakeholderNotesState = Record<string, string>;
+type WalkthroughDismissState = Record<string, string>;
+
+export function shouldShowValidationPrompt(
+  storage: Pick<Storage, "getItem"> | null,
+  promptKey: string,
+  cooldownHours = 12
+): boolean {
+  if (!storage) {
+    return true;
+  }
+
+  const stored = safeParse<ValidationPromptState>(storage.getItem(VALIDATION_PROMPT_KEY)) ?? {};
+  const timestamp = stored[promptKey];
+  if (!timestamp) {
+    return true;
+  }
+
+  const elapsedMs = Date.now() - new Date(timestamp).getTime();
+  return elapsedMs >= cooldownHours * 60 * 60 * 1000;
+}
+
+export function markValidationPromptSeen(
+  storage: Pick<Storage, "getItem" | "setItem"> | null,
+  promptKey: string
+): void {
+  if (!storage) {
+    return;
+  }
+
+  const stored = safeParse<ValidationPromptState>(storage.getItem(VALIDATION_PROMPT_KEY)) ?? {};
+  stored[promptKey] = new Date().toISOString();
+  storage.setItem(VALIDATION_PROMPT_KEY, JSON.stringify(stored));
+}
+
+export function loadStakeholderNote(
+  storage: Pick<Storage, "getItem"> | null,
+  noteKey: string
+): string {
+  if (!storage) {
+    return "";
+  }
+
+  const stored = safeParse<StakeholderNotesState>(storage.getItem(STAKEHOLDER_NOTES_KEY)) ?? {};
+  return stored[noteKey] ?? "";
+}
+
+export function saveStakeholderNote(
+  storage: Pick<Storage, "getItem" | "setItem"> | null,
+  noteKey: string,
+  note: string
+): void {
+  if (!storage) {
+    return;
+  }
+
+  const stored = safeParse<StakeholderNotesState>(storage.getItem(STAKEHOLDER_NOTES_KEY)) ?? {};
+  stored[noteKey] = note;
+  storage.setItem(STAKEHOLDER_NOTES_KEY, JSON.stringify(stored));
+}
+
+export function isWalkthroughDismissed(
+  storage: Pick<Storage, "getItem"> | null,
+  walkthroughKey: string
+): boolean {
+  if (!storage) {
+    return false;
+  }
+
+  const stored = safeParse<WalkthroughDismissState>(storage.getItem(WALKTHROUGH_DISMISS_KEY)) ?? {};
+  return Boolean(stored[walkthroughKey]);
+}
+
+export function dismissWalkthrough(
+  storage: Pick<Storage, "getItem" | "setItem"> | null,
+  walkthroughKey: string
+): void {
+  if (!storage) {
+    return;
+  }
+
+  const stored = safeParse<WalkthroughDismissState>(storage.getItem(WALKTHROUGH_DISMISS_KEY)) ?? {};
+  stored[walkthroughKey] = new Date().toISOString();
+  storage.setItem(WALKTHROUGH_DISMISS_KEY, JSON.stringify(stored));
 }

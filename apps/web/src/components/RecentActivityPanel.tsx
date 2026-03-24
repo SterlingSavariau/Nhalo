@@ -19,8 +19,10 @@ interface RecentActivityPanelProps {
   onRerunDefinition(id: string): void;
   onRerunHistory(id: string): void;
   onOpenSnapshot(id: string): void;
+  onShareSnapshot(id: string): void;
   onTogglePinned(definition: SearchDefinition): void;
   onDeleteDefinition(id: string): void;
+  sharingSnapshotId?: string | null;
 }
 
 function formatWhen(timestamp: string | null): string {
@@ -44,8 +46,10 @@ export function RecentActivityPanel({
   onRerunDefinition,
   onRerunHistory,
   onOpenSnapshot,
+  onShareSnapshot,
   onTogglePinned,
-  onDeleteDefinition
+  onDeleteDefinition,
+  sharingSnapshotId
 }: RecentActivityPanelProps) {
   return (
     <section className="activity-panel">
@@ -178,6 +182,9 @@ export function RecentActivityPanel({
                 <p className="muted">
                   {snapshot.response.metadata.returnedCount} results · {formatWhen(snapshot.createdAt)}
                 </p>
+                <p className="muted">
+                  {snapshot.validationMetadata?.shareCount ?? 0} shares · {snapshot.validationMetadata?.feedbackCount ?? 0} feedback
+                </p>
               </div>
               <div className="activity-actions">
                 <button
@@ -196,6 +203,9 @@ export function RecentActivityPanel({
                 </button>
                 <button className="chip" onClick={() => onOpenSnapshot(snapshot.id)} type="button">
                   Open snapshot
+                </button>
+                <button className="chip" onClick={() => onShareSnapshot(snapshot.id)} type="button">
+                  {sharingSnapshotId === snapshot.id ? "Sharing..." : "Share"}
                 </button>
               </div>
             </article>

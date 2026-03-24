@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   applyPreferencesToRequest,
+  dismissWalkthrough,
   dismissOnboarding,
   getOrCreateSessionIdentity,
   isOnboardingDismissed,
+  isWalkthroughDismissed,
+  loadStakeholderNote,
   loadUiPreferences,
-  saveUiPreferences
+  markValidationPromptSeen,
+  saveStakeholderNote,
+  saveUiPreferences,
+  shouldShowValidationPrompt
 } from "./local-state";
 import { INITIAL_SEARCH_REQUEST } from "./components/SearchForm";
 
@@ -74,5 +80,39 @@ describe("local-state", () => {
     dismissOnboarding(storage);
 
     expect(isOnboardingDismissed(storage)).toBe(true);
+  });
+
+  it("rate-limits validation prompts safely in local storage", () => {
+    const storage = createMemoryStorage();
+
+    expect(shouldShowValidationPrompt(storage, "results", 12)).toBe(true);
+
+    markValidationPromptSeen(storage, "results");
+
+    expect(shouldShowValidationPrompt(storage, "results", 12)).toBe(false);
+    expect(shouldShowValidationPrompt(storage, "comparison", 12)).toBe(true);
+  });
+
+  it("stores stakeholder notes locally without affecting shared state", () => {
+    const storage = createMemoryStorage();
+
+    expect(loadStakeholderNote(storage, "demo:southfield")).toBe("");
+
+    saveStakeholderNote(storage, "demo:southfield", "Lead with the family-safe shortlist.");
+
+    expect(loadStakeholderNote(storage, "demo:southfield")).toBe(
+      "Lead with the family-safe shortlist."
+    );
+    expect(loadStakeholderNote(storage, "snapshot:abc")).toBe("");
+  });
+
+  it("persists walkthrough dismissal safely in local storage", () => {
+    const storage = createMemoryStorage();
+
+    expect(isWalkthroughDismissed(storage, "southfield-family-balance")).toBe(false);
+
+    dismissWalkthrough(storage, "southfield-family-balance");
+
+    expect(isWalkthroughDismissed(storage, "southfield-family-balance")).toBe(true);
   });
 });

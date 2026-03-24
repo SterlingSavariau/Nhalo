@@ -1,9 +1,14 @@
 import type {
+  DemoScenario,
+  FeedbackCategory,
   GeocodePrecision,
+  HistoricalComparisonPayload,
   ListingRejectionSummary,
   ScoredHome,
   SearchRequest,
-  SearchResponse
+  SearchResponse,
+  SearchSnapshotRecord,
+  ShortlistItem
 } from "@nhalo/types";
 
 export const ONBOARDING_CONTENT = {
@@ -69,8 +74,190 @@ export const RESULT_COPY = {
   concerns: "What may concern a family",
   confidence: "Data confidence",
   originPrecision: "Search origin precision",
-  detailTitle: "Home detail"
+  detailTitle: "Home detail",
+  sharedSnapshotTitle: "Shared snapshot",
+  sharedSnapshotWarning:
+    "This is a read-only stored snapshot. It does not rerun the search or refresh provider data.",
+  shareSnapshotHelp:
+    "Sharing creates a read-only link to this exact stored result set. It does not expose a live search.",
+  validationPromptTitle: "Quick feedback",
+  demoScenarioTitle: "Guided demos",
+  executiveSummaryTitle: "Snapshot summary",
+  exportTitle: "Stakeholder export",
+  notesTitle: "Presenter notes",
+  walkthroughTitle: "Demo walkthrough",
+  shortlistTitle: "Shortlists",
+  shortlistWarning: "Shortlists and notes are mutable workflow tools. They do not change stored results or scores.",
+  historicalCompareTitle: "Historical compare",
+  resultNotesTitle: "Decision notes"
 } as const;
+
+export const SHORTLIST_COPY = {
+  createTitle: "Create shortlist",
+  defaultTitle: "Family shortlist",
+  descriptionPlaceholder: "Why this set of homes matters for the partner conversation.",
+  addAction: "Save to shortlist",
+  removeAction: "Remove from shortlist",
+  notesPlaceholder: "Example: Strong safety, but the tradeoff is size.",
+  compareExplanation:
+    "This compares the stored shortlist capture against the currently returned result. Historical values come from saved data only.",
+  shareTitle: "Share shortlist",
+  shareReadOnly: "Read-only",
+  shareCommentOnly: "Comments only",
+  shareReviewOnly: "Review and comments",
+  sharedWarning:
+    "Shared shortlist links use stored shortlist captures. Comments and reviewer decisions do not change scores or snapshots.",
+  commentPlaceholder: "Add a short partner comment about this home.",
+  reviewerDecisionLabel: "Reviewer decision",
+  reviewerDecisionPlaceholder: "Optional note about why you agree, disagree, or want to discuss.",
+  immutableWarning:
+    "Stored home facts and scores are fixed here. Comments and reviewer decisions are separate workflow notes."
+} as const;
+
+export const COLLABORATION_COPY = {
+  sharedShortlistTitle: "Shared shortlist review",
+  readOnlyLabel: "Read-only access",
+  reviewerLabel: "Reviewer access",
+  ownerLabel: "Owner controls",
+  expiredLabel: "This share link has expired.",
+  revokedLabel: "This share link has been revoked.",
+  activityTitle: "Collaboration activity"
+} as const;
+
+export const DEMO_SCENARIO_COPY: DemoScenario[] = [
+  {
+    id: "southfield-family-balance",
+    label: "Best family-fit homes in Southfield under $425k",
+    description: "Balanced affordability, family space, and safety using the seeded Southfield scenario.",
+    whyThisMatters:
+      "This shows the core Nhalo promise: a family-first shortlist that balances budget, space, and safety in one pass.",
+    request: {
+      locationType: "city",
+      locationValue: "Southfield, MI",
+      radiusMiles: 5,
+      budget: { max: 425000 },
+      minSqft: 1800,
+      minBedrooms: 3,
+      propertyTypes: ["single_family", "condo", "townhome"],
+      weights: { price: 40, size: 30, safety: 30 }
+    }
+  },
+  {
+    id: "novi-safety-priority",
+    label: "Safer but smaller options near Novi",
+    description: "A safety-heavy family search that shows how safer areas can trade off against size.",
+    whyThisMatters:
+      "This scenario helps stakeholders see that safety can materially change the shortlist without changing the scoring engine.",
+    request: {
+      locationType: "city",
+      locationValue: "Novi, MI",
+      radiusMiles: 6,
+      budget: { max: 500000 },
+      minSqft: 1500,
+      minBedrooms: 3,
+      propertyTypes: ["single_family", "townhome", "condo"],
+      weights: { price: 25, size: 20, safety: 55 }
+    }
+  },
+  {
+    id: "austin-address-tight-radius",
+    label: "Address-based search with tighter radius",
+    description: "Shows how a more exact address anchor narrows distance filtering and confidence context.",
+    whyThisMatters:
+      "This demonstrates geocode precision, radius discipline, and why more exact origins can change which homes survive the search.",
+    request: {
+      locationType: "address",
+      locationValue: "1500 South Lamar Blvd, Austin, TX",
+      radiusMiles: 2,
+      budget: { max: 650000 },
+      minSqft: 1400,
+      minBedrooms: 3,
+      propertyTypes: ["single_family", "townhome", "condo"],
+      weights: { price: 35, size: 30, safety: 35 }
+    }
+  },
+  {
+    id: "royal-oak-low-result-recovery",
+    label: "Low-result recovery example",
+    description: "A deliberately tight family search to show why results can narrow and how to recover cleanly.",
+    whyThisMatters:
+      "This lets external viewers see that Nhalo explains thin result sets rather than silently relaxing the search.",
+    request: {
+      locationType: "city",
+      locationValue: "Royal Oak, MI",
+      radiusMiles: 2,
+      budget: { max: 300000 },
+      minSqft: 2200,
+      minBedrooms: 4,
+      propertyTypes: ["single_family"],
+      weights: { price: 40, size: 30, safety: 30 }
+    }
+  }
+];
+
+export const FEEDBACK_PROMPTS: Record<
+  "results" | "comparison" | "empty",
+  {
+    title: string;
+    question: string;
+    category: FeedbackCategory;
+    options: Array<{
+      label: string;
+      value: "positive" | "negative" | "clear" | "unclear" | "accurate" | "inaccurate";
+    }>;
+  }
+> = {
+  results: {
+    title: "Did these results feel useful?",
+    question: "This helps us learn whether the ranked homes felt relevant for a real family decision.",
+    category: "useful",
+    options: [
+      { label: "Yes", value: "positive" },
+      { label: "No", value: "negative" }
+    ]
+  },
+  comparison: {
+    title: "Did comparison help narrow the decision?",
+    question: "Use this after comparing homes side by side.",
+    category: "comparison_helpful",
+    options: [
+      { label: "Yes", value: "positive" },
+      { label: "No", value: "negative" }
+    ]
+  },
+  empty: {
+    title: "Was this guidance helpful?",
+    question: "Use this after reviewing the recovery suggestions for a tight or empty result set.",
+    category: "empty_state_helpful",
+    options: [
+      { label: "Clear", value: "clear" },
+      { label: "Confusing", value: "unclear" }
+    ]
+  }
+};
+
+export const DEMO_WALKTHROUGH_STEPS = [
+  {
+    title: "What was searched",
+    body: "Start with the search summary so the viewer sees the location anchor, family filters, and weighting before reading results."
+  },
+  {
+    title: "How Nhalo scored the shortlist",
+    body: "Explain that Nhalo applies hard family constraints first, then ranks homes with deterministic price, size, and safety scores."
+  },
+  {
+    title: "Why the top home ranked highest",
+    body: "Use the top card and the snapshot summary to show which tradeoffs were strongest for the leading option."
+  },
+  {
+    title: "Where confidence and provenance matter",
+    body: "Point out stale, cached, mock, or partial data indicators so the audience understands how trust changes across homes."
+  },
+  {
+    title: "How snapshots can be shared",
+    body: "Show that shared snapshots are stored, read-only outputs that preserve the exact result set without rerunning the search."
+  }
+] as const;
 
 export function geocodePrecisionExplanation(precision: GeocodePrecision): string {
   switch (precision) {
@@ -144,6 +331,187 @@ export function buildTradeoffSummary(home: ScoredHome): string {
   }
 
   return "Balanced space, price, and safety";
+}
+
+export function buildExecutiveSnapshotSummary(results: SearchResponse): {
+  headline: string;
+  topHomeSummary: string;
+  confidenceSummary: string;
+  notableCaveats: string[];
+} {
+  const topHome = results.homes[0];
+  const caveats: string[] = [];
+
+  if (results.metadata.mockFallbackUsed) {
+    caveats.push("Some underlying inputs came from mock fallback.");
+  }
+  if (results.metadata.staleDataPresent) {
+    caveats.push("Some listing or safety inputs are stale.");
+  }
+  if (results.metadata.returnedCount < 5) {
+    caveats.push("Only a small number of homes met the family criteria.");
+  }
+  if (topHome && (topHome.scores.overallConfidence === "low" || topHome.scores.overallConfidence === "none")) {
+    caveats.push("The top-ranked home should be reviewed carefully because confidence is reduced.");
+  }
+  if (results.metadata.warnings.length > 0) {
+    caveats.push(results.metadata.warnings[0].message);
+  }
+
+  return {
+    headline: `${results.metadata.returnedCount} homes ranked for ${results.appliedFilters.locationValue}.`,
+    topHomeSummary: topHome
+      ? `${topHome.address} leads with Nhalo ${topHome.scores.nhalo}, Price ${topHome.scores.price}, Size ${topHome.scores.size}, and Safety ${topHome.scores.safety}.`
+      : "No homes were returned for this stored search.",
+    confidenceSummary: topHome
+      ? `Top result confidence is ${topHome.scores.overallConfidence}. Safety confidence is ${topHome.scores.safetyConfidence}.`
+      : "No confidence summary is available because no homes were returned.",
+    notableCaveats: caveats
+  };
+}
+
+export function buildSnapshotExportText(snapshot: SearchSnapshotRecord, appName: string): string {
+  const executive = buildExecutiveSnapshotSummary(snapshot.response);
+  const topHome = snapshot.response.homes[0];
+
+  return [
+    `${appName} snapshot summary`,
+    `Location: ${snapshot.request.locationValue}`,
+    `Radius: ${snapshot.request.radiusMiles} miles`,
+    `Budget max: ${snapshot.request.budget?.max ? `$${snapshot.request.budget.max.toLocaleString()}` : "Not set"}`,
+    `Minimums: ${snapshot.request.minBedrooms ?? 0} bedrooms, ${snapshot.request.minSqft ?? 0} sqft`,
+    `Weights: Price ${snapshot.response.appliedWeights.price}, Size ${snapshot.response.appliedWeights.size}, Safety ${snapshot.response.appliedWeights.safety}`,
+    `Created: ${new Date(snapshot.createdAt).toLocaleString()}`,
+    `Formula: ${snapshot.formulaVersion ?? "nhalo-v1"}`,
+    executive.headline,
+    executive.topHomeSummary,
+    executive.confidenceSummary,
+    topHome ? `Why this home: ${topHome.explainability?.headline ?? topHome.explanation}` : "No ranked home summary available.",
+    executive.notableCaveats.length > 0 ? `Caveats: ${executive.notableCaveats.join(" ")}` : "Caveats: none flagged."
+  ].join("\n");
+}
+
+export function buildShareSnapshotUrl(shareId: string): string {
+  return `/?sharedSnapshot=${encodeURIComponent(shareId)}`;
+}
+
+export function buildWorkflowActivityLabel(
+  eventType: string
+): string {
+  switch (eventType) {
+    case "shortlist_created":
+      return "Shortlist created";
+    case "shortlist_updated":
+      return "Shortlist updated";
+    case "shortlist_deleted":
+      return "Shortlist deleted";
+    case "shortlist_item_added":
+      return "Home added to shortlist";
+    case "shortlist_item_removed":
+      return "Home removed from shortlist";
+    case "note_created":
+      return "Note added";
+    case "note_updated":
+      return "Note updated";
+    case "note_deleted":
+      return "Note deleted";
+    case "review_state_changed":
+      return "Review state changed";
+    default:
+      return "Workflow activity";
+  }
+}
+
+export function buildHistoricalComparison(
+  item: ShortlistItem,
+  currentHome: ScoredHome | null
+): HistoricalComparisonPayload {
+  const changes: HistoricalComparisonPayload["changes"] = [];
+  const previous = item.capturedHome;
+
+  if (currentHome) {
+    const scorePairs = [
+      ["nhaloScore", previous.scores.nhalo, currentHome.scores.nhalo],
+      ["priceScore", previous.scores.price, currentHome.scores.price],
+      ["sizeScore", previous.scores.size, currentHome.scores.size],
+      ["safetyScore", previous.scores.safety, currentHome.scores.safety]
+    ] as const;
+
+    for (const [field, from, to] of scorePairs) {
+      if (from !== to) {
+        changes.push({
+          field,
+          from,
+          to,
+          status: to > from ? "improved" : "declined"
+        });
+      }
+    }
+
+    if (previous.scores.overallConfidence !== currentHome.scores.overallConfidence) {
+      changes.push({
+        field: "overallConfidence",
+        from: previous.scores.overallConfidence,
+        to: currentHome.scores.overallConfidence,
+        status: "changed"
+      });
+    }
+
+    if (previous.scores.safetyConfidence !== currentHome.scores.safetyConfidence) {
+      changes.push({
+        field: "safetyConfidence",
+        from: previous.scores.safetyConfidence,
+        to: currentHome.scores.safetyConfidence,
+        status: "changed"
+      });
+    }
+
+    if (previous.provenance?.listingDataSource !== currentHome.provenance?.listingDataSource) {
+      changes.push({
+        field: "listingSource",
+        from: previous.provenance?.listingDataSource ?? null,
+        to: currentHome.provenance?.listingDataSource ?? null,
+        status: "changed"
+      });
+    }
+
+    if (previous.provenance?.safetyDataSource !== currentHome.provenance?.safetyDataSource) {
+      changes.push({
+        field: "safetySource",
+        from: previous.provenance?.safetyDataSource ?? null,
+        to: currentHome.provenance?.safetyDataSource ?? null,
+        status: "changed"
+      });
+    }
+
+    const previousFlags = previous.qualityFlags ?? [];
+    const currentFlags = currentHome.qualityFlags ?? [];
+    if (previousFlags.join("|") !== currentFlags.join("|")) {
+      changes.push({
+        field: "qualityFlags",
+        from: previousFlags,
+        to: currentFlags,
+        status: "changed"
+      });
+    }
+  }
+
+  return {
+    canonicalPropertyId: item.canonicalPropertyId,
+    historical: {
+      label: "Saved shortlist capture",
+      home: item.capturedHome,
+      sourceSnapshotId: item.sourceSnapshotId ?? null,
+      capturedAt: item.addedAt
+    },
+    current: currentHome
+      ? {
+          label: "Current result",
+          home: currentHome
+        }
+      : null,
+    changes
+  };
 }
 
 export function buildEmptyStateSuggestions(response: SearchResponse): Array<{

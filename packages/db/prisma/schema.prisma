@@ -35,6 +35,7 @@ model SearchRequest {
   searchDefinitionId    String?
   rerunSourceType       String?
   rerunSourceId         String?
+  demoScenarioId        String?
   locationType          String
   locationValue         String
   resolvedCity          String?
@@ -61,6 +62,9 @@ model SearchRequest {
   suggestions           Json?
   createdAt             DateTime        @default(now())
   scoreSnapshots        ScoreSnapshot[]
+  feedback              Feedback[]
+  validationEvents      ValidationEvent[]
+  shortlistItems        ShortlistItem[]  @relation("ShortlistItemSourceHistory")
 
   @@index([sessionId, createdAt])
 }
@@ -71,9 +75,15 @@ model SearchSnapshot {
   sessionId      String?
   searchDefinitionId String?
   historyRecordId String?
+  demoScenarioId String?
   requestPayload Json
   responsePayload Json
   createdAt      DateTime @default(now())
+  sharedLinks    SharedSnapshotLink[]
+  feedback       Feedback[]
+  validationEvents ValidationEvent[]
+  shortlists     Shortlist[]
+  shortlistItems ShortlistItem[] @relation("ShortlistItemSourceSnapshot")
 
   @@index([createdAt])
   @@index([sessionId, createdAt])
@@ -89,8 +99,171 @@ model SearchDefinition {
   lastRunAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  feedback     Feedback[]
+  validationEvents ValidationEvent[]
+  shortlistItems ShortlistItem[] @relation("ShortlistItemSourceDefinition")
 
   @@index([sessionId, updatedAt])
+}
+
+model SharedSnapshotLink {
+  id         String   @id @default(cuid())
+  shareId    String   @unique
+  snapshotId String
+  sessionId  String?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  openCount  Int      @default(0)
+  createdAt  DateTime @default(now())
+  snapshot   SearchSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@index([snapshotId, createdAt])
+  @@index([shareId, expiresAt, revokedAt])
+}
+
+model Feedback {
+  id                 String   @id @default(cuid())
+  sessionId          String?
+  snapshotId         String?
+  historyRecordId    String?
+  searchDefinitionId String?
+  category           String
+  value              String
+  comment            String?
+  createdAt          DateTime @default(now())
+  snapshot           SearchSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+  searchRequest      SearchRequest? @relation(fields: [historyRecordId], references: [id], onDelete: SetNull)
+  searchDefinition   SearchDefinition? @relation(fields: [searchDefinitionId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, createdAt])
+  @@index([snapshotId, createdAt])
+  @@index([historyRecordId, createdAt])
+}
+
+model ValidationEvent {
+  id                 String   @id @default(cuid())
+  eventName          String
+  sessionId          String?
+  snapshotId         String?
+  historyRecordId    String?
+  searchDefinitionId String?
+  demoScenarioId     String?
+  payload            Json?
+  createdAt          DateTime @default(now())
+  snapshot           SearchSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+  searchRequest      SearchRequest? @relation(fields: [historyRecordId], references: [id], onDelete: SetNull)
+  searchDefinition   SearchDefinition? @relation(fields: [searchDefinitionId], references: [id], onDelete: SetNull)
+
+  @@index([eventName, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([demoScenarioId, createdAt])
+}
+
+model Shortlist {
+  id             String   @id @default(cuid())
+  sessionId      String?
+  title          String
+  description    String?
+  sourceSnapshotId String?
+  pinned         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  sourceSnapshot SearchSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
+  items          ShortlistItem[]
+  sharedLinks    SharedShortlistLink[]
+
+  @@index([sessionId, updatedAt])
+  @@index([sourceSnapshotId, createdAt])
+}
+
+model ShortlistItem {
+  id                     String   @id @default(cuid())
+  shortlistId            String
+  canonicalPropertyId    String
+  sourceSnapshotId       String?
+  sourceHistoryId        String?
+  sourceSearchDefinitionId String?
+  capturedHomePayload    Json
+  reviewState            String   @default("undecided")
+  addedAt                DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  shortlist              Shortlist @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
+  sourceSnapshot         SearchSnapshot? @relation("ShortlistItemSourceSnapshot", fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
+  sourceHistory          SearchRequest? @relation("ShortlistItemSourceHistory", fields: [sourceHistoryId], references: [id], onDelete: SetNull)
+  sourceSearchDefinition SearchDefinition? @relation("ShortlistItemSourceDefinition", fields: [sourceSearchDefinitionId], references: [id], onDelete: SetNull)
+  notes                  ResultNote[]
+  reviewerDecisions      ReviewerDecision[]
+  comments               SharedComment[]
+
+  @@index([shortlistId, addedAt])
+  @@index([canonicalPropertyId, addedAt])
+  @@unique([shortlistId, canonicalPropertyId])
+}
+
+model SharedShortlistLink {
+  id         String   @id @default(cuid())
+  shareId    String   @unique
+  shortlistId String
+  sessionId  String?
+  shareMode  String
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  openCount  Int      @default(0)
+  createdAt  DateTime @default(now())
+  shortlist  Shortlist @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
+  comments   SharedComment[]
+  reviewerDecisions ReviewerDecision[]
+
+  @@index([shortlistId, createdAt])
+  @@index([shareId, expiresAt, revokedAt])
+}
+
+model SharedComment {
+  id          String   @id @default(cuid())
+  shareId     String
+  entityType  String
+  entityId    String
+  authorLabel String?
+  body        String
+  shortlistItemId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  share       SharedShortlistLink @relation(fields: [shareId], references: [shareId], onDelete: Cascade)
+  shortlistItem ShortlistItem? @relation(fields: [shortlistItemId], references: [id], onDelete: SetNull)
+
+  @@index([shareId, updatedAt])
+  @@index([entityType, entityId, updatedAt])
+}
+
+model ReviewerDecision {
+  id             String   @id @default(cuid())
+  shortlistItemId String
+  shareId        String
+  decision       String
+  note           String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  shortlistItem  ShortlistItem @relation(fields: [shortlistItemId], references: [id], onDelete: Cascade)
+  share          SharedShortlistLink @relation(fields: [shareId], references: [shareId], onDelete: Cascade)
+
+  @@index([shareId, updatedAt])
+  @@index([shortlistItemId, updatedAt])
+  @@unique([shareId, shortlistItemId])
+}
+
+model ResultNote {
+  id          String   @id @default(cuid())
+  sessionId   String?
+  entityType  String
+  entityId    String
+  body        String
+  shortlistItemId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  shortlistItem ShortlistItem? @relation(fields: [shortlistItemId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, updatedAt])
+  @@index([entityType, entityId, updatedAt])
 }
 
 model ScoreSnapshot {

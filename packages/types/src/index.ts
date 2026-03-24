@@ -418,6 +418,14 @@ export interface SearchResponse {
   metadata: SearchMetadata;
 }
 
+export interface ValidationArtifactMetadata {
+  wasShared?: boolean;
+  shareCount?: number;
+  feedbackCount?: number;
+  demoScenarioId?: string | null;
+  rerunCount?: number;
+}
+
 export interface SearchSnapshotRecord {
   id: string;
   formulaVersion: string | null;
@@ -426,6 +434,7 @@ export interface SearchSnapshotRecord {
   sessionId?: string | null;
   searchDefinitionId?: string | null;
   historyRecordId?: string | null;
+  validationMetadata?: ValidationArtifactMetadata;
   createdAt: string;
 }
 
@@ -461,6 +470,7 @@ export interface SearchHistoryRecord {
   searchDefinitionId: string | null;
   rerunSourceType: "definition" | "history" | null;
   rerunSourceId: string | null;
+  validationMetadata?: ValidationArtifactMetadata;
   createdAt: string;
 }
 
@@ -471,6 +481,175 @@ export interface SearchRestorePayload {
   request: SearchRequest;
 }
 
+export type ReviewState = "undecided" | "interested" | "needs_review" | "rejected";
+export type ShareMode = "read_only" | "comment_only" | "review_only";
+export type CollaborationRole = "owner" | "viewer" | "reviewer";
+export type SharedShortlistStatus = "active" | "expired" | "revoked";
+export type SharedCommentEntityType = "shared_shortlist_item";
+export type ReviewerDecisionValue = "agree" | "disagree" | "discuss" | "favorite" | "pass";
+
+export interface Shortlist {
+  id: string;
+  sessionId: string | null;
+  title: string;
+  description?: string | null;
+  sourceSnapshotId?: string | null;
+  pinned: boolean;
+  itemCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ShortlistItem {
+  id: string;
+  shortlistId: string;
+  canonicalPropertyId: string;
+  sourceSnapshotId?: string | null;
+  sourceHistoryId?: string | null;
+  sourceSearchDefinitionId?: string | null;
+  capturedHome: ScoredHome;
+  reviewState: ReviewState;
+  addedAt: string;
+  updatedAt: string;
+}
+
+export type ResultNoteEntityType =
+  | "shortlist_item"
+  | "snapshot_result"
+  | "shared_snapshot_result";
+
+export interface ResultNote {
+  id: string;
+  sessionId: string | null;
+  entityType: ResultNoteEntityType;
+  entityId: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SharedShortlist {
+  id: string;
+  shareId: string;
+  shortlistId: string;
+  sessionId?: string | null;
+  shareMode: ShareMode;
+  collaborationRole: CollaborationRole;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+  openCount: number;
+  status: SharedShortlistStatus;
+  createdAt: string;
+}
+
+export interface SharedComment {
+  id: string;
+  shareId: string;
+  entityType: SharedCommentEntityType;
+  entityId: string;
+  authorLabel?: string | null;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReviewerDecision {
+  id: string;
+  shortlistItemId: string;
+  shareId: string;
+  decision: ReviewerDecisionValue;
+  note?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CollaborationActivityType =
+  | "shortlist_shared"
+  | "shared_shortlist_opened"
+  | "shared_comment_added"
+  | "shared_comment_updated"
+  | "shared_comment_deleted"
+  | "reviewer_decision_submitted"
+  | "reviewer_decision_updated"
+  | "share_link_revoked"
+  | "share_link_expired";
+
+export interface CollaborationActivityRecord {
+  id: string;
+  shareId: string | null;
+  shortlistId: string | null;
+  shortlistItemId: string | null;
+  commentId: string | null;
+  reviewerDecisionId: string | null;
+  eventType: CollaborationActivityType;
+  payload?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface SharedShortlistView {
+  readOnly: boolean;
+  shared: true;
+  share: SharedShortlist;
+  shortlist: Shortlist;
+  items: ShortlistItem[];
+  comments: SharedComment[];
+  reviewerDecisions: ReviewerDecision[];
+  collaborationActivity: CollaborationActivityRecord[];
+}
+
+export type WorkflowActivityType =
+  | "shortlist_created"
+  | "shortlist_updated"
+  | "shortlist_deleted"
+  | "shortlist_item_added"
+  | "shortlist_item_removed"
+  | "note_created"
+  | "note_updated"
+  | "note_deleted"
+  | "review_state_changed";
+
+export interface WorkflowActivityRecord {
+  id: string;
+  sessionId: string | null;
+  eventType: WorkflowActivityType;
+  shortlistId?: string | null;
+  shortlistItemId?: string | null;
+  noteId?: string | null;
+  payload?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface HistoricalComparisonChange {
+  field:
+    | "nhaloScore"
+    | "priceScore"
+    | "sizeScore"
+    | "safetyScore"
+    | "overallConfidence"
+    | "safetyConfidence"
+    | "listingSource"
+    | "safetySource"
+    | "qualityFlags";
+  from: string | number | string[] | null;
+  to: string | number | string[] | null;
+  status: "improved" | "declined" | "changed";
+}
+
+export interface HistoricalComparisonPayload {
+  canonicalPropertyId: string;
+  historical: {
+    label: string;
+    home: ScoredHome;
+    sourceSnapshotId?: string | null;
+    capturedAt: string;
+  };
+  current: {
+    label: string;
+    home: ScoredHome;
+  } | null;
+  changes: HistoricalComparisonChange[];
+}
+
 export interface RerunResultMetadata {
   sourceType: "definition" | "history";
   sourceId: string;
@@ -478,6 +657,152 @@ export interface RerunResultMetadata {
   historyRecordId: string | null;
   snapshotId: string | null;
   freshResult: true;
+}
+
+export type SharedSnapshotStatus = "active" | "expired" | "revoked";
+
+export interface SharedSnapshotRecord {
+  id: string;
+  shareId: string;
+  snapshotId: string;
+  sessionId?: string | null;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+  openCount: number;
+  status: SharedSnapshotStatus;
+  createdAt: string;
+}
+
+export interface SharedSnapshotView {
+  share: SharedSnapshotRecord;
+  snapshot: SearchSnapshotRecord;
+}
+
+export type FeedbackCategory =
+  | "useful"
+  | "accuracy"
+  | "explainability"
+  | "confidence"
+  | "missing_homes"
+  | "bad_matches"
+  | "comparison_helpful"
+  | "empty_state_helpful"
+  | "general";
+
+export interface FeedbackRecord {
+  id: string;
+  sessionId?: string | null;
+  snapshotId?: string | null;
+  historyRecordId?: string | null;
+  searchDefinitionId?: string | null;
+  category: FeedbackCategory;
+  value: "positive" | "negative" | "clear" | "unclear" | "accurate" | "inaccurate";
+  comment?: string | null;
+  createdAt: string;
+}
+
+export type ValidationEventName =
+  | "search_completed"
+  | "result_opened"
+  | "comparison_started"
+  | "snapshot_shared"
+  | "snapshot_opened"
+  | "rerun_executed"
+  | "feedback_submitted"
+  | "empty_state_encountered"
+  | "suggestion_used"
+  | "demo_scenario_started"
+  | "restore_used"
+  | WorkflowActivityType
+  | CollaborationActivityType;
+
+export interface ValidationEventRecord {
+  id: string;
+  eventName: ValidationEventName;
+  sessionId?: string | null;
+  snapshotId?: string | null;
+  historyRecordId?: string | null;
+  searchDefinitionId?: string | null;
+  demoScenarioId?: string | null;
+  payload?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface ValidationSummary {
+  searchesPerSession: {
+    sessions: number;
+    searches: number;
+    average: number;
+  };
+  shareableSnapshotsCreated: number;
+  sharedSnapshotOpens: number;
+  sharedSnapshotOpenRate: {
+    opens: number;
+    created: number;
+    rate: number;
+  };
+  feedbackSubmissionRate: {
+    feedbackCount: number;
+    sessions: number;
+    rate: number;
+  };
+  emptyStateRate: {
+    emptyStates: number;
+    searches: number;
+    rate: number;
+  };
+  rerunRate: {
+    reruns: number;
+    searches: number;
+    rate: number;
+  };
+  compareUsageRate: {
+    comparisons: number;
+    sessions: number;
+    rate: number;
+  };
+  restoreUsageRate: {
+    restores: number;
+    sessions: number;
+    rate: number;
+  };
+  mostCommonRejectionReasons: Array<{
+    reason: string;
+    count: number;
+  }>;
+  mostCommonConfidenceLevels: Array<{
+    confidence: SafetyConfidence;
+    count: number;
+  }>;
+  topDemoScenariosUsed: Array<{
+    demoScenarioId: string;
+    count: number;
+  }>;
+  mostViewedSharedSnapshots: Array<{
+    snapshotId: string;
+    opens: number;
+  }>;
+  topSharedShortlists?: Array<{
+    shortlistId: string;
+    opens: number;
+  }>;
+}
+
+export interface WorkflowFeatureConfig {
+  shortlistsEnabled: boolean;
+  resultNotesEnabled: boolean;
+  historicalCompareEnabled: boolean;
+  sharedShortlistsEnabled?: boolean;
+  sharedCommentsEnabled?: boolean;
+  reviewerDecisionsEnabled?: boolean;
+}
+
+export interface DemoScenario {
+  id: string;
+  label: string;
+  description: string;
+  whyThisMatters?: string;
+  request: SearchRequest;
 }
 
 export interface PersistedSearchResult {
@@ -567,6 +892,129 @@ export interface SearchRepository {
   deleteSearchDefinition(id: string): Promise<boolean>;
   listSearchHistory(sessionId?: string | null, limit?: number): Promise<SearchHistoryRecord[]>;
   getSearchHistory(id: string): Promise<SearchHistoryRecord | null>;
+  createSharedSnapshot(payload: {
+    snapshotId: string;
+    sessionId?: string | null;
+    expiresAt?: string | null;
+  }): Promise<SharedSnapshotRecord>;
+  getSharedSnapshot(shareId: string): Promise<SharedSnapshotView | null>;
+  createSharedShortlist(payload: {
+    shortlistId: string;
+    sessionId?: string | null;
+    shareMode: ShareMode;
+    expiresAt?: string | null;
+  }): Promise<SharedShortlist>;
+  listSharedShortlists(shortlistId: string): Promise<SharedShortlist[]>;
+  getSharedShortlist(shareId: string): Promise<SharedShortlistView | null>;
+  revokeSharedShortlist(shareId: string): Promise<SharedShortlist | null>;
+  createFeedback(payload: {
+    sessionId?: string | null;
+    snapshotId?: string | null;
+    historyRecordId?: string | null;
+    searchDefinitionId?: string | null;
+    category: FeedbackCategory;
+    value: FeedbackRecord["value"];
+    comment?: string | null;
+  }): Promise<FeedbackRecord>;
+  createShortlist(payload: {
+    sessionId?: string | null;
+    title: string;
+    description?: string | null;
+    sourceSnapshotId?: string | null;
+    pinned?: boolean;
+  }): Promise<Shortlist>;
+  listShortlists(sessionId?: string | null): Promise<Shortlist[]>;
+  getShortlist(id: string): Promise<Shortlist | null>;
+  updateShortlist(
+    id: string,
+    patch: {
+      title?: string;
+      description?: string | null;
+      pinned?: boolean;
+    }
+  ): Promise<Shortlist | null>;
+  deleteShortlist(id: string): Promise<boolean>;
+  createShortlistItem(
+    shortlistId: string,
+    payload: {
+      canonicalPropertyId: string;
+      sourceSnapshotId?: string | null;
+      sourceHistoryId?: string | null;
+      sourceSearchDefinitionId?: string | null;
+      capturedHome: ScoredHome;
+      reviewState?: ReviewState;
+    }
+  ): Promise<ShortlistItem | null>;
+  listShortlistItems(shortlistId: string): Promise<ShortlistItem[]>;
+  updateShortlistItem(
+    shortlistId: string,
+    itemId: string,
+    patch: {
+      reviewState?: ReviewState;
+    }
+  ): Promise<ShortlistItem | null>;
+  deleteShortlistItem(shortlistId: string, itemId: string): Promise<boolean>;
+  createResultNote(payload: {
+    sessionId?: string | null;
+    entityType: ResultNoteEntityType;
+    entityId: string;
+    body: string;
+  }): Promise<ResultNote>;
+  listResultNotes(filters?: {
+    sessionId?: string | null;
+    entityType?: ResultNoteEntityType;
+    entityId?: string;
+  }): Promise<ResultNote[]>;
+  updateResultNote(id: string, body: string): Promise<ResultNote | null>;
+  deleteResultNote(id: string): Promise<boolean>;
+  listWorkflowActivity(sessionId?: string | null, limit?: number): Promise<WorkflowActivityRecord[]>;
+  createSharedComment(payload: {
+    shareId: string;
+    entityType: SharedCommentEntityType;
+    entityId: string;
+    authorLabel?: string | null;
+    body: string;
+  }): Promise<SharedComment>;
+  listSharedComments(filters: {
+    shareId: string;
+    entityType?: SharedCommentEntityType;
+    entityId?: string;
+  }): Promise<SharedComment[]>;
+  updateSharedComment(id: string, body: string, authorLabel?: string | null): Promise<SharedComment | null>;
+  deleteSharedComment(id: string): Promise<boolean>;
+  createReviewerDecision(payload: {
+    shareId: string;
+    shortlistItemId: string;
+    decision: ReviewerDecisionValue;
+    note?: string | null;
+  }): Promise<ReviewerDecision>;
+  listReviewerDecisions(filters: {
+    shareId: string;
+    shortlistItemId?: string;
+  }): Promise<ReviewerDecision[]>;
+  updateReviewerDecision(
+    id: string,
+    patch: {
+      decision?: ReviewerDecisionValue;
+      note?: string | null;
+    }
+  ): Promise<ReviewerDecision | null>;
+  deleteReviewerDecision(id: string): Promise<boolean>;
+  listCollaborationActivity(filters: {
+    shareId?: string;
+    shortlistId?: string;
+    limit?: number;
+  }): Promise<CollaborationActivityRecord[]>;
+  recordValidationEvent(payload: {
+    eventName: ValidationEventName;
+    sessionId?: string | null;
+    snapshotId?: string | null;
+    historyRecordId?: string | null;
+    searchDefinitionId?: string | null;
+    demoScenarioId?: string | null;
+    payload?: Record<string, unknown> | null;
+  }): Promise<ValidationEventRecord>;
+  getValidationSummary(): Promise<ValidationSummary>;
 }
 
 export interface RankingContext {
@@ -844,6 +1292,26 @@ export interface SearchMetrics {
   searchHistoryReadCount: number;
   searchRerunCount: number;
   searchRestoreCount: number;
+  shortlistCreateCount: number;
+  shortlistDeleteCount: number;
+  shortlistItemAddCount: number;
+  shortlistItemRemoveCount: number;
+  shortlistViewCount: number;
+  noteCreateCount: number;
+  noteUpdateCount: number;
+  noteDeleteCount: number;
+  reviewStateChangeCount: number;
+  historicalCompareViewCount: number;
+  shortlistShareCreateCount: number;
+  shortlistShareOpenCount: number;
+  shortlistShareRevokeCount: number;
+  sharedCommentCreateCount: number;
+  sharedCommentUpdateCount: number;
+  sharedCommentDeleteCount: number;
+  reviewerDecisionCreateCount: number;
+  reviewerDecisionUpdateCount: number;
+  collaborationActivityReadCount: number;
+  expiredShareOpenCount: number;
   recentActivityPanelViewCount: number;
   savedSearchPinCount: number;
   onboardingViewCount: number;
@@ -854,6 +1322,59 @@ export interface SearchMetrics {
   resultCompareAddCount: number;
   snapshotReopenCount: number;
   savedSearchRestoreCount: number;
+  sharedSnapshotCreateCount: number;
+  sharedSnapshotOpenCount: number;
+  feedbackSubmitCount: number;
+  feedbackUsefulRate: {
+    useful: number;
+    total: number;
+    rate: number;
+  };
+  demoScenarioStartCount: number;
+  walkthroughViewCount: number;
+  walkthroughDismissCount: number;
+  exportUsageCount: number;
+  ctaClickCount: number;
+  validationPromptViewCount: number;
+  validationPromptResponseCount: number;
+  sharedSnapshotExpiredCount: number;
+  validationSummaryReadCount: number;
+  searchSuccessRate: {
+    successes: number;
+    failures: number;
+    rate: number;
+  };
+  searchFailureRate: {
+    successes: number;
+    failures: number;
+    rate: number;
+  };
+  providerTimeoutRate: {
+    requests: number;
+    timeouts: number;
+    rate: number;
+  };
+  cacheHitRate: {
+    hits: number;
+    misses: number;
+    rate: number;
+  };
+  snapshotCreationRate: {
+    created: number;
+    windowCount: number;
+    rate: number;
+  };
+  snapshotRetrievalLatency: {
+    count: number;
+    average: number;
+    last: number | null;
+  };
+  errorRateByCategory: Record<
+    "VALIDATION_ERROR" | "PROVIDER_ERROR" | "DATABASE_ERROR" | "CONFIG_ERROR" | "INTERNAL_ERROR",
+    {
+      count: number;
+    }
+  >;
   scoreDistribution: {
     count: number;
     average: number;

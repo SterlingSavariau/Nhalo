@@ -552,3 +552,51 @@ export const MOCK_SAFETY: SafetyRecord[] = [
   { propertyId: "atx-003", crimeIndex: 42, schoolRating: 7.1, stabilityIndex: 62, source: "mock-safety", updatedAt: now },
   { propertyId: "atx-004", crimeIndex: 34, schoolRating: 7.9, stabilityIndex: 70, source: "mock-safety", updatedAt: now }
 ];
+
+export const DEMO_SEARCH_SCENARIOS = [
+  {
+    id: "southfield-family-balance",
+    label: "Southfield family balance",
+    request: {
+      locationType: "city",
+      locationValue: "Southfield, MI",
+      radiusMiles: 5,
+      budget: { max: 425000 },
+      minSqft: 1800,
+      minBedrooms: 3,
+      propertyTypes: ["single_family", "condo", "townhome"],
+      preferences: [],
+      weights: { price: 40, size: 30, safety: 30 }
+    }
+  },
+  {
+    id: "novi-safety-priority",
+    label: "Novi safety priority",
+    request: {
+      locationType: "city",
+      locationValue: "Novi, MI",
+      radiusMiles: 6,
+      budget: { max: 650000 },
+      minSqft: 2200,
+      minBedrooms: 4,
+      propertyTypes: ["single_family", "townhome"],
+      preferences: [],
+      weights: { price: 25, size: 25, safety: 50 }
+    }
+  },
+  {
+    id: "austin-value-search",
+    label: "Austin value search",
+    request: {
+      locationType: "zip",
+      locationValue: "78704",
+      radiusMiles: 4,
+      budget: { max: 575000 },
+      minSqft: 1500,
+      minBedrooms: 3,
+      propertyTypes: ["single_family", "condo", "townhome"],
+      preferences: [],
+      weights: { price: 50, size: 25, safety: 25 }
+    }
+  }
+] as const;
