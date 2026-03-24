@@ -310,6 +310,35 @@ export interface ScoreBreakdown {
   formulaVersion: string;
 }
 
+export interface ExplainabilityScoreDrivers {
+  primary: "price" | "size" | "safety";
+  secondary: "price" | "size" | "safety";
+  weakest: "price" | "size" | "safety";
+}
+
+export interface ExplainabilityPayload {
+  headline: string;
+  strengths: string[];
+  risks: string[];
+  scoreDrivers: ExplainabilityScoreDrivers;
+}
+
+export interface ResultProvenance {
+  listingDataSource: ListingDataSource;
+  listingProvider: string | null;
+  listingFetchedAt: string | null;
+  sourceListingId: string | null;
+  safetyDataSource: SafetyDataSource;
+  crimeProvider: string | null;
+  schoolProvider: string | null;
+  crimeFetchedAt: string | null;
+  schoolFetchedAt: string | null;
+  geocodeDataSource: GeocodeDataSource;
+  geocodeProvider: string | null;
+  geocodeFetchedAt: string | null;
+  geocodePrecision: GeocodePrecision;
+}
+
 export interface ScoredHome {
   id: string;
   address: string;
@@ -331,6 +360,11 @@ export interface ScoredHome {
   distanceMiles?: number;
   insideRequestedRadius?: boolean;
   qualityFlags?: string[];
+  strengths?: string[];
+  risks?: string[];
+  confidenceReasons?: string[];
+  explainability?: ExplainabilityPayload;
+  provenance?: ResultProvenance;
   neighborhoodSafetyScore: number;
   explanation: string;
   scores: ScoreBreakdown;
@@ -365,6 +399,8 @@ export interface SearchMetadata {
   suggestions: SearchSuggestion[];
   rejectionSummary?: ListingRejectionSummary;
   searchOrigin?: SearchOriginMetadata;
+  mockFallbackUsed?: boolean;
+  staleDataPresent?: boolean;
 }
 
 export interface SearchResponse {
@@ -374,10 +410,22 @@ export interface SearchResponse {
   metadata: SearchMetadata;
 }
 
+export interface SearchSnapshotRecord {
+  id: string;
+  formulaVersion: string | null;
+  request: SearchRequest;
+  response: SearchResponse;
+  createdAt: string;
+}
+
 export interface PersistedSearchResult {
   propertyId: string;
   formulaVersion: string;
   explanation: string;
+  explainability?: ExplainabilityPayload;
+  strengths?: string[];
+  risks?: string[];
+  confidenceReasons?: string[];
   scores: ScoreBreakdown;
   scoreInputs: Record<string, unknown>;
   weights: SearchWeights;
@@ -425,6 +473,11 @@ export interface SearchPersistenceInput {
 export interface SearchRepository {
   saveSearch(payload: SearchPersistenceInput): Promise<void>;
   getScoreAudit(propertyId: string): Promise<ScoreAuditRecord | null>;
+  createSearchSnapshot(payload: {
+    request: SearchRequest;
+    response: SearchResponse;
+  }): Promise<SearchSnapshotRecord>;
+  getSearchSnapshot(id: string): Promise<SearchSnapshotRecord | null>;
 }
 
 export interface RankingContext {
@@ -525,6 +578,10 @@ export interface ScoreAuditRecord {
     radiusMiles: number | null;
     insideRequestedRadius: boolean;
   };
+  explainability?: ExplainabilityPayload;
+  strengths?: string[];
+  risks?: string[];
+  confidenceReasons?: string[];
   searchQualityContext?: {
     canonicalPropertyId: string | null;
     deduplicationDecision?: string | null;
@@ -688,6 +745,11 @@ export interface SearchMetrics {
     eligible: number;
     ratio: number;
   };
+  snapshotCreateCount: number;
+  snapshotReadCount: number;
+  comparisonViewCount: number;
+  auditViewCount: number;
+  explainabilityRenderCount: number;
   scoreDistribution: {
     count: number;
     average: number;

@@ -50,19 +50,19 @@ describe("live safety integration", () => {
               riskScore: 22,
               maxRiskScore: 100,
               provider: "crime-live",
-              fetchedAt: "2026-03-22T20:15:00Z"
+              fetchedAt: "2026-03-23T20:15:00Z"
             }),
             { status: 200, headers: { "content-type": "application/json" } }
           );
         }
 
         return new Response(
-          JSON.stringify({
-            rating: 8.7,
-            maxRating: 10,
-            provider: "school-live",
-            fetchedAt: "2026-03-22T20:15:00Z"
-          }),
+            JSON.stringify({
+              rating: 8.7,
+              maxRating: 10,
+              provider: "school-live",
+              fetchedAt: "2026-03-23T20:15:00Z"
+            }),
           { status: 200, headers: { "content-type": "application/json" } }
         );
       }
@@ -147,6 +147,18 @@ describe("live safety integration", () => {
   });
 
   it("records safety-specific metrics for live fetches and cache hits", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/search",
+      payload: {
+        locationType: "city",
+        locationValue: "Southfield, MI",
+        radiusMiles: 5,
+        budget: { max: 425000 },
+        minSqft: 1800,
+        minBedrooms: 3
+      }
+    });
     await app.inject({
       method: "POST",
       url: "/search",

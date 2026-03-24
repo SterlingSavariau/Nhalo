@@ -11,12 +11,30 @@ import type {
   SearchRepository
 } from "@nhalo/types";
 import Fastify from "fastify";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
 import { isApiError } from "./errors";
 import { MetricsCollector } from "./metrics";
 import { instrumentProviders } from "./provider-runtime";
 import { searchRequestSchema } from "./search-schema";
 import { runSearch } from "./search-service";
+
+const searchSnapshotPayloadSchema = z.object({
+  request: searchRequestSchema,
+  response: z.object({
+    homes: z.array(z.unknown()),
+    appliedFilters: z.record(z.string(), z.unknown()),
+    appliedWeights: z.object({
+      price: z.number(),
+      size: z.number(),
+      safety: z.number()
+    }),
+    metadata: z.record(z.string(), z.unknown())
+  })
+});
+
+const metricsEventSchema = z.object({
+  eventType: z.enum(["comparison_view", "explainability_render"])
+});
 
 export interface AppDependencies {
   repository: SearchRepository;
@@ -142,10 +160,25 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       });
     }
 
+    metrics.recordAuditView();
     return auditRecord;
   });
 
   app.get("/metrics", async () => metrics.snapshot());
+
+  app.post("/metrics/events", async (request, reply) => {
+    const payload = metricsEventSchema.parse(request.body);
+
+    if (payload.eventType === "comparison_view") {
+      metrics.recordComparisonView();
+    }
+
+    if (payload.eventType === "explainability_render") {
+      metrics.recordExplainabilityRender();
+    }
+
+    return reply.status(202).send({ status: "accepted" });
+  });
 
   app.post("/search", async (request) => {
     const payload = searchRequestSchema.parse(request.body);
@@ -158,6 +191,49 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       safetyProvider: providers.safety,
       getProviderFreshnessHours: () => providers.getFreshnessHours()
     });
+  });
+
+  app.post("/search/snapshots", async (request, reply) => {
+    const payload = searchSnapshotPayloadSchema.parse(request.body);
+    const snapshot = await persistence.searchRepository.createSearchSnapshot(payload);
+    metrics.recordSnapshotCreated();
+
+    return reply.status(201).send(snapshot);
+  });
+
+  app.get("/search/snapshots/:id", async (request, reply) => {
+    const params = request.params as { id?: string };
+    const snapshotId = params.id?.trim();
+
+    if (!snapshotId) {
+      return reply.status(400).send({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid snapshot id",
+          details: [
+            {
+              field: "id",
+              message: "id is required"
+            }
+          ]
+        }
+      });
+    }
+
+    const snapshot = await persistence.searchRepository.getSearchSnapshot(snapshotId);
+
+    if (!snapshot) {
+      return reply.status(404).send({
+        error: {
+          code: "SEARCH_SNAPSHOT_NOT_FOUND",
+          message: "No stored search snapshot was found for this id.",
+          details: []
+        }
+      });
+    }
+
+    metrics.recordSnapshotRead();
+    return snapshot;
   });
 
   app.get("/", async () => ({

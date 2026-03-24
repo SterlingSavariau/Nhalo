@@ -63,6 +63,7 @@ export function SearchForm({ busy, onSubmit }: SearchFormProps) {
           >
             <option value="city">City</option>
             <option value="zip">ZIP</option>
+            <option value="address">Address</option>
           </select>
         </label>
         <label>

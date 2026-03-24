@@ -18,7 +18,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -79,7 +80,11 @@ h1 {
 }
 
 .search-form,
-.results-stack {
+.results-stack,
+.decision-console,
+.summary-panel,
+.controls-panel,
+.audit-stack {
   display: grid;
   gap: 1rem;
 }
@@ -135,12 +140,22 @@ select {
 .chip,
 .metadata-badges span,
 .listing-facts span,
-.score-pill {
+.score-pill,
+.ghost-button {
   border: 1px solid rgba(212, 180, 131, 0.22);
   border-radius: 999px;
   padding: 0.45rem 0.8rem;
   background: rgba(255, 248, 235, 0.05);
   color: #f5f1e8;
+}
+
+.ghost-button {
+  cursor: pointer;
+}
+
+.ghost-button.active,
+.chip.subdued {
+  background: rgba(212, 180, 131, 0.12);
 }
 
 .chip.active {
@@ -173,7 +188,9 @@ select {
 }
 
 .metadata-row,
-.result-header {
+.result-header,
+.summary-header,
+.comparison-card-header {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
@@ -197,6 +214,39 @@ select {
     rgba(255, 255, 255, 0.02);
 }
 
+.summary-panel,
+.controls-panel,
+.comparison-panel {
+  border: 1px solid rgba(212, 180, 131, 0.16);
+  border-radius: 1.2rem;
+  padding: 1rem;
+  background: rgba(255, 248, 235, 0.04);
+}
+
+.summary-grid,
+.provenance-grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.summary-block,
+.audit-section,
+.comparison-card {
+  border: 1px solid rgba(212, 180, 131, 0.12);
+  border-radius: 1rem;
+  padding: 0.9rem;
+  background: rgba(255, 248, 235, 0.03);
+}
+
+.summary-block h3,
+.comparison-card h4,
+.why-home h4,
+.controls-panel h3,
+.audit-section h4 {
+  margin-bottom: 0.35rem;
+}
+
 .headline-score {
   min-width: 6.5rem;
   text-align: right;
@@ -214,6 +264,38 @@ select {
 
 .explanation {
   font-size: 1rem;
+}
+
+.status-row,
+.card-actions,
+.comparison-facts,
+.comparison-details {
+  display: flex;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.confidence-pill {
+  border-radius: 999px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.88rem;
+  border: 1px solid rgba(212, 180, 131, 0.18);
+}
+
+.confidence-pill.high {
+  background: rgba(137, 221, 157, 0.12);
+  border-color: rgba(137, 221, 157, 0.28);
+}
+
+.confidence-pill.medium {
+  background: rgba(234, 204, 109, 0.12);
+  border-color: rgba(234, 204, 109, 0.28);
+}
+
+.confidence-pill.low,
+.confidence-pill.none {
+  background: rgba(232, 121, 121, 0.12);
+  border-color: rgba(232, 121, 121, 0.28);
 }
 
 .score-pill {
@@ -239,6 +321,54 @@ select {
   border-color: rgba(232, 121, 121, 0.34);
 }
 
+.two-column-list,
+.comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+ul {
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.compact {
+  padding: 0.8rem;
+}
+
+.provenance-details summary {
+  cursor: pointer;
+  color: #f5f1e8;
+}
+
+.provenance-grid p,
+.provenance-grid strong {
+  display: block;
+}
+
+.audit-drawer {
+  position: sticky;
+  bottom: 1rem;
+  margin: 1rem auto 0;
+  max-width: 90rem;
+  border: 1px solid rgba(212, 180, 131, 0.18);
+  border-radius: 1.3rem;
+  background: rgba(13, 19, 16, 0.94);
+  backdrop-filter: blur(18px);
+  padding: 1rem;
+  box-shadow: 0 24px 60px rgba(4, 8, 6, 0.28);
+}
+
+.audit-section pre {
+  margin: 0;
+  padding: 0.9rem;
+  border-radius: 0.8rem;
+  background: rgba(0, 0, 0, 0.22);
+  overflow: auto;
+  font-size: 0.84rem;
+}
+
 .callout.warning,
 .error-banner {
   background: rgba(232, 121, 121, 0.12);
@@ -251,6 +381,10 @@ select {
   border: 1px solid rgba(212, 180, 131, 0.18);
 }
 
+a {
+  color: #f0d29a;
+}
+
 @media (max-width: 900px) {
   .page-shell {
     padding: 1rem;
@@ -258,12 +392,18 @@ select {
 
   .content-grid,
   .field-grid,
-  .weight-grid {
+  .weight-grid,
+  .summary-grid,
+  .provenance-grid,
+  .two-column-list,
+  .comparison-grid {
     grid-template-columns: 1fr;
   }
 
   .metadata-row,
-  .result-header {
+  .result-header,
+  .summary-header,
+  .comparison-card-header {
     flex-direction: column;
   }
 

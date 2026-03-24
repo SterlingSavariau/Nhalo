@@ -13,8 +13,10 @@ import type {
   SearchResponse,
   SearchSuggestion,
   SearchWarning,
+  SafetyRecord,
   SafetyProvider
 } from "@nhalo/types";
+import { buildExplainability } from "./explainability";
 import { ApiError } from "./errors";
 import { MetricsCollector } from "./metrics";
 import {
@@ -147,7 +149,34 @@ function buildSuggestions(request: SearchRequestInput, totalMatched: number): Se
   return suggestions;
 }
 
-function mapRankedHome(ranked: RankedListing, distanceByPropertyId: Map<string, number>) {
+function mapRankedHome(
+  ranked: RankedListing,
+  distanceByPropertyId: Map<string, number>,
+  safetyRecord: SafetyRecord | undefined,
+  searchOrigin: SearchOriginMetadata
+) {
+  const provenance = {
+    listingDataSource: ranked.listing.listingDataSource ?? "none",
+    listingProvider: ranked.listing.sourceProvider ?? null,
+    listingFetchedAt: ranked.listing.fetchedAt ?? null,
+    sourceListingId: ranked.listing.sourceListingId ?? null,
+    safetyDataSource: safetyRecord?.safetyDataSource ?? "none",
+    crimeProvider: safetyRecord?.crimeProvider ?? null,
+    schoolProvider: safetyRecord?.schoolProvider ?? null,
+    crimeFetchedAt: safetyRecord?.crimeFetchedAt ?? null,
+    schoolFetchedAt: safetyRecord?.schoolFetchedAt ?? null,
+    geocodeDataSource: searchOrigin.geocodeDataSource,
+    geocodeProvider: searchOrigin.geocodeProvider,
+    geocodeFetchedAt: searchOrigin.geocodeFetchedAt,
+    geocodePrecision: searchOrigin.precision
+  } as const;
+  const explainability = buildExplainability({
+    scores: ranked.scores,
+    qualityFlags: ranked.qualityFlags ?? [],
+    distanceMiles: distanceByPropertyId.get(ranked.listing.id) ?? 0,
+    provenance
+  });
+
   return {
     id: ranked.listing.id,
     address: ranked.listing.address,
@@ -169,6 +198,11 @@ function mapRankedHome(ranked: RankedListing, distanceByPropertyId: Map<string, 
     distanceMiles: Number((distanceByPropertyId.get(ranked.listing.id) ?? 0).toFixed(2)),
     insideRequestedRadius: true,
     qualityFlags: ranked.qualityFlags ?? [],
+    strengths: explainability.strengths,
+    risks: explainability.risks,
+    confidenceReasons: explainability.confidenceReasons,
+    explainability: explainability.explainability,
+    provenance,
     neighborhoodSafetyScore: ranked.scores.safety,
     explanation: ranked.explanation,
     scores: ranked.scores
@@ -362,7 +396,15 @@ export async function runSearch(
       );
     })
     .slice(0, DEFAULT_RESULT_LIMIT);
-  const homes = rankedListings.map((ranked) => mapRankedHome(ranked, distanceByPropertyId));
+  const homes = rankedListings.map((ranked) =>
+    mapRankedHome(
+      ranked,
+      distanceByPropertyId,
+      safetyByPropertyId.get(ranked.listing.id),
+      searchOrigin
+    )
+  );
+  const homesById = new Map(homes.map((home) => [home.id, home]));
   const combinedRejectionSummary = addRejectionCounts(
     addRejectionCounts(
       addRejectionCounts(normalizationRejections, qualityGate.rejectionSummary),
@@ -420,7 +462,13 @@ export async function runSearch(
       warnings,
       suggestions: buildSuggestions(request, matchedListings.length),
       rejectionSummary: combinedRejectionSummary,
-      searchOrigin
+      searchOrigin,
+      mockFallbackUsed: homes.some((home) => (home.qualityFlags ?? []).includes("mockFallbackUsed")),
+      staleDataPresent: homes.some(
+        (home) =>
+          (home.qualityFlags ?? []).includes("staleListingData") ||
+          (home.qualityFlags ?? []).includes("staleSafetyData")
+      )
     }
   };
 
@@ -460,6 +508,10 @@ export async function runSearch(
       propertyId: ranked.listing.id,
       formulaVersion: ranked.scores.formulaVersion,
       explanation: ranked.explanation,
+      explainability: homesById.get(ranked.listing.id)?.explainability,
+      strengths: homesById.get(ranked.listing.id)?.strengths ?? [],
+      risks: homesById.get(ranked.listing.id)?.risks ?? [],
+      confidenceReasons: homesById.get(ranked.listing.id)?.confidenceReasons ?? [],
       scores: ranked.scores,
       scoreInputs: ranked.scoreInputs,
       weights: request.weights,

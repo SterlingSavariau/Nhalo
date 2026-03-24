@@ -18,6 +18,7 @@ import type {
   SafetySignalCacheRecord,
   SafetySignalCacheRepository,
   ScoreAuditRecord,
+  SearchSnapshotRecord,
   SearchPersistenceInput,
   SearchRepository
 } from "@nhalo/types";
@@ -28,6 +29,10 @@ function createId(prefix: string): string {
 
 function ageHours(timestamp: string): number {
   return (Date.now() - new Date(timestamp).getTime()) / 3_600_000;
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 type StoredSnapshot = {
@@ -52,6 +57,14 @@ type StoredSnapshot = {
 };
 
 function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
+  const explainability =
+    (snapshot.scoreInputs.explainability as ScoreAuditRecord["explainability"] | undefined) ??
+    undefined;
+  const strengths = (snapshot.scoreInputs.strengths as string[] | undefined) ?? [];
+  const risks = (snapshot.scoreInputs.risks as string[] | undefined) ?? [];
+  const confidenceReasons =
+    (snapshot.scoreInputs.confidenceReasons as string[] | undefined) ?? [];
+
   return {
     propertyId: snapshot.propertyId,
     formulaVersion: snapshot.formulaVersion,
@@ -70,6 +83,10 @@ function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
     listingProvenance: snapshot.listingProvenance,
     searchOrigin: snapshot.searchOrigin,
     spatialContext: snapshot.spatialContext,
+    explainability,
+    strengths,
+    risks,
+    confidenceReasons,
     searchQualityContext: {
       canonicalPropertyId:
         (snapshot.scoreInputs.canonicalPropertyId as string | null | undefined) ?? null,
@@ -94,6 +111,7 @@ function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
 export class InMemorySearchRepository implements SearchRepository {
   public readonly searches: SearchPersistenceInput[] = [];
   public readonly scoreSnapshots: StoredSnapshot[] = [];
+  public readonly searchSnapshots: SearchSnapshotRecord[] = [];
 
   async saveSearch(payload: SearchPersistenceInput): Promise<void> {
     this.searches.push(payload);
@@ -112,7 +130,13 @@ export class InMemorySearchRepository implements SearchRepository {
         overallConfidence: result.scores.overallConfidence,
         weights: result.weights,
         inputs: result.inputs,
-        scoreInputs: result.scoreInputs,
+        scoreInputs: {
+          ...result.scoreInputs,
+          explainability: result.explainability,
+          strengths: result.strengths ?? [],
+          risks: result.risks ?? [],
+          confidenceReasons: result.confidenceReasons ?? []
+        },
         createdAt: result.computedAt,
         safetyProvenance: {
           safetyDataSource: result.safetyDataSource,
@@ -147,6 +171,29 @@ export class InMemorySearchRepository implements SearchRepository {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
 
     return snapshot ? toAuditRecord(snapshot) : null;
+  }
+
+  async createSearchSnapshot(payload: {
+    request: SearchPersistenceInput["request"];
+    response: SearchPersistenceInput["response"];
+  }): Promise<SearchSnapshotRecord> {
+    const snapshot: SearchSnapshotRecord = {
+      id: createId("snapshot"),
+      formulaVersion: payload.response.homes[0]?.scores.formulaVersion ?? null,
+      request: clone(payload.request),
+      response: clone(payload.response),
+      createdAt: new Date().toISOString()
+    };
+
+    this.searchSnapshots.push(snapshot);
+
+    return clone(snapshot);
+  }
+
+  async getSearchSnapshot(id: string): Promise<SearchSnapshotRecord | null> {
+    const snapshot = this.searchSnapshots.find((entry) => entry.id === id) ?? null;
+
+    return snapshot ? clone(snapshot) : null;
   }
 }
 
@@ -297,6 +344,10 @@ type PrismaClientLike = {
     createMany(args: Record<string, unknown>): Promise<unknown>;
     findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   };
+  searchSnapshot: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+  };
   marketSnapshot: {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
@@ -410,6 +461,10 @@ function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord
       radiusMiles: (searchRequest.radiusMiles as number | null | undefined) ?? null,
       insideRequestedRadius: Boolean(record.insideRequestedRadius ?? true)
     },
+    explainability: (scoreInputs.explainability as ScoreAuditRecord["explainability"] | undefined) ?? undefined,
+    strengths: (scoreInputs.strengths as string[] | undefined) ?? [],
+    risks: (scoreInputs.risks as string[] | undefined) ?? [],
+    confidenceReasons: (scoreInputs.confidenceReasons as string[] | undefined) ?? [],
     searchQualityContext: {
       canonicalPropertyId: (scoreInputs.canonicalPropertyId as string | null | undefined) ?? null,
       deduplicationDecision:
@@ -503,7 +558,11 @@ export class PrismaSearchRepository implements SearchRepository {
           insideRequestedRadius: result.insideRequestedRadius,
           scoreInputs: {
             ...result.inputs,
-            ...result.scoreInputs
+            ...result.scoreInputs,
+            explainability: result.explainability,
+            strengths: result.strengths ?? [],
+            risks: result.risks ?? [],
+            confidenceReasons: result.confidenceReasons ?? []
           },
           createdAt: new Date(result.computedAt)
         }))
@@ -541,6 +600,47 @@ export class PrismaSearchRepository implements SearchRepository {
     });
 
     return record ? mapPrismaAuditRecord(record) : null;
+  }
+
+  async createSearchSnapshot(payload: {
+    request: SearchPersistenceInput["request"];
+    response: SearchPersistenceInput["response"];
+  }): Promise<SearchSnapshotRecord> {
+    const record = await this.client.searchSnapshot.create({
+      data: {
+        formulaVersion: payload.response.homes[0]?.scores.formulaVersion ?? null,
+        requestPayload: payload.request,
+        responsePayload: payload.response
+      }
+    });
+
+    return {
+      id: record.id as string,
+      formulaVersion: (record.formulaVersion as string | null) ?? null,
+      request: record.requestPayload as SearchSnapshotRecord["request"],
+      response: record.responsePayload as SearchSnapshotRecord["response"],
+      createdAt: (record.createdAt as Date).toISOString()
+    };
+  }
+
+  async getSearchSnapshot(id: string): Promise<SearchSnapshotRecord | null> {
+    const record = await this.client.searchSnapshot.findUnique({
+      where: {
+        id
+      }
+    });
+
+    if (!record) {
+      return null;
+    }
+
+    return {
+      id: record.id as string,
+      formulaVersion: (record.formulaVersion as string | null) ?? null,
+      request: record.requestPayload as SearchSnapshotRecord["request"],
+      response: record.responsePayload as SearchSnapshotRecord["response"],
+      createdAt: (record.createdAt as Date).toISOString()
+    };
   }
 
   private async upsertProperty(listing: ListingRecord): Promise<void> {

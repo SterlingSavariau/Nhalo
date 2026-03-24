@@ -59,6 +59,16 @@ model SearchRequest {
   scoreSnapshots        ScoreSnapshot[]
 }
 
+model SearchSnapshot {
+  id             String   @id @default(cuid())
+  formulaVersion String?
+  requestPayload Json
+  responsePayload Json
+  createdAt      DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 model ScoreSnapshot {
   id                    String        @id @default(cuid())
   searchRequestId       String

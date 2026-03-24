@@ -101,6 +101,11 @@ export class MetricsCollector {
     active: 0,
     eligible: 0
   };
+  private readonly snapshotCreates = { count: 0 };
+  private readonly snapshotReads = { count: 0 };
+  private readonly comparisonViews = { count: 0 };
+  private readonly auditViews = { count: 0 };
+  private readonly explainabilityRenders = { count: 0 };
 
   recordSearch(payload: {
     durationMs: number;
@@ -224,6 +229,26 @@ export class MetricsCollector {
   recordActiveListingRatio(payload: { active: number; eligible: number }): void {
     this.activeListing.active += payload.active;
     this.activeListing.eligible += payload.eligible;
+  }
+
+  recordSnapshotCreated(): void {
+    this.snapshotCreates.count += 1;
+  }
+
+  recordSnapshotRead(): void {
+    this.snapshotReads.count += 1;
+  }
+
+  recordComparisonView(): void {
+    this.comparisonViews.count += 1;
+  }
+
+  recordAuditView(): void {
+    this.auditViews.count += 1;
+  }
+
+  recordExplainabilityRender(count = 1): void {
+    this.explainabilityRenders.count += count;
   }
 
   recordSafetyResolution(payload: {
@@ -472,6 +497,11 @@ export class MetricsCollector {
             ? 0
             : Number((this.activeListing.active / this.activeListing.eligible).toFixed(4))
       },
+      snapshotCreateCount: this.snapshotCreates.count,
+      snapshotReadCount: this.snapshotReads.count,
+      comparisonViewCount: this.comparisonViews.count,
+      auditViewCount: this.auditViews.count,
+      explainabilityRenderCount: this.explainabilityRenders.count,
       scoreDistribution: {
         count: this.scores.count,
         average: average(this.scores),
