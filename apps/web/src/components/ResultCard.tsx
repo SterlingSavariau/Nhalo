@@ -172,9 +172,20 @@ export function ResultCard({
         </div>
       ) : null}
 
-      {(home.qualityFlags ?? []).length > 0 ? (
+      {(home.dataWarnings ?? []).length > 0 || (home.degradedReasons ?? []).length > 0 ? (
+        <div className="callout warning compact">
+          {[...(home.dataWarnings ?? []), ...(home.degradedReasons ?? [])].join(" ")}
+        </div>
+      ) : null}
+
+      {(home.qualityFlags ?? []).length > 0 || (home.integrityFlags ?? []).length > 0 ? (
         <div className="chip-row">
           {(home.qualityFlags ?? []).map((flag) => (
+            <span className="chip subdued" key={flag}>
+              {flag}
+            </span>
+          ))}
+          {(home.integrityFlags ?? []).map((flag) => (
             <span className="chip subdued" key={flag}>
               {flag}
             </span>

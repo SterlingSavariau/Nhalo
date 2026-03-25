@@ -1,8 +1,14 @@
 import type {
   CollaborationActivityRecord,
+  DataQualityEvent,
   DemoScenario,
   FeedbackRecord,
   HistoricalComparisonPayload,
+  OpsActionRecord,
+  PilotActivityRecord,
+  PilotContext,
+  PilotLinkRecord,
+  PilotPartner,
   ReviewerDecision,
   ResultNote,
   ScoreAuditRecord,
@@ -25,6 +31,8 @@ import { DEFAULT_WEIGHTS } from "@nhalo/config";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addShortlistItem,
+  createPilotLink,
+  createPilotPartner,
   createReviewerDecision,
   createSharedComment,
   createSharedShortlist,
@@ -39,7 +47,14 @@ import {
   deleteShortlistItem,
   deleteSearchDefinition,
   fetchCollaborationActivity,
+  fetchDataQualityEvents,
   fetchDemoScenarios,
+  fetchOpsActions,
+  fetchOpsSummary,
+  fetchPilotActivity,
+  fetchPilotLink,
+  fetchPilotLinks,
+  fetchPilotPartners,
   fetchReviewerDecisions,
   fetchSharedComments,
   fetchSharedShortlist,
@@ -55,12 +70,15 @@ import {
   fetchSharedSnapshot,
   fetchWorkflowActivity,
   recordValidationEvent,
+  revokePilotLink,
   rerunSearchDefinition,
   rerunSearchHistory,
   searchHomes,
+  setPilotLinkContext,
   submitFeedback,
   trackUiMetric,
   revokeSharedShortlist,
+  updateDataQualityEventStatus,
   updateResultNote,
   updateReviewerDecision,
   updateSharedComment,
@@ -77,6 +95,8 @@ import { FeedbackPrompt } from "./components/FeedbackPrompt";
 import { HistoricalComparePanel } from "./components/HistoricalComparePanel";
 import { HomeDetailPanel } from "./components/HomeDetailPanel";
 import { OnboardingModal } from "./components/OnboardingModal";
+import { OpsPanel } from "./components/OpsPanel";
+import { PilotContextBanner } from "./components/PilotContextBanner";
 import { PilotContactPanel } from "./components/PilotContactPanel";
 import { RecentActivityPanel } from "./components/RecentActivityPanel";
 import { ResultCard } from "./components/ResultCard";
@@ -93,8 +113,10 @@ import { applyPageMetadata, buildSharedSnapshotMetadata, getBrandingConfig } fro
 import {
   dismissWalkthrough,
   isWalkthroughDismissed,
+  loadPilotContext,
   loadStakeholderNote,
   saveStakeholderNote,
+  savePilotContext,
   markValidationPromptSeen,
   shouldShowValidationPrompt,
   applyPreferencesToRequest,
@@ -127,6 +149,7 @@ export default function App() {
     sessionId: null,
     source: "none"
   });
+  const [pilotContext, setPilotContext] = useState<PilotContext | null>(null);
   const [formState, setFormState] = useState<SearchRequest>(() =>
     applyPreferencesToRequest(INITIAL_SEARCH_REQUEST, initialPreferences)
   );
@@ -172,6 +195,15 @@ export default function App() {
   const [walkthroughVisible, setWalkthroughVisible] = useState(false);
   const [saveLabel, setSaveLabel] = useState("Family shortlist");
   const [savingDefinition, setSavingDefinition] = useState(false);
+  const [opsSummary, setOpsSummary] = useState<Awaited<ReturnType<typeof fetchOpsSummary>> | null>(null);
+  const [pilotPartners, setPilotPartners] = useState<PilotPartner[]>([]);
+  const [selectedPilotPartnerId, setSelectedPilotPartnerId] = useState<string | null>(null);
+  const [pilotLinks, setPilotLinks] = useState<PilotLinkRecord[]>([]);
+  const [pilotActivity, setPilotActivity] = useState<PilotActivityRecord[]>([]);
+  const [opsActions, setOpsActions] = useState<OpsActionRecord[]>([]);
+  const [dataQualityEvents, setDataQualityEvents] = useState<DataQualityEvent[]>([]);
+  const [opsLoading, setOpsLoading] = useState(false);
+  const [opsError, setOpsError] = useState<string | null>(null);
   const comparedRef = useRef(0);
   const renderedSnapshotRef = useRef<string | null>(null);
   const activityTrackedRef = useRef(false);
@@ -189,6 +221,16 @@ export default function App() {
     }
     return `search:${formState.locationType}:${formState.locationValue}`;
   }, [activeDemoScenarioId, formState.locationType, formState.locationValue, sharedSnapshotView, snapshot]);
+  const pilotFeatures = pilotContext?.allowedFeatures;
+  const demoModeEnabled = branding.enableDemoMode && (pilotFeatures?.demoModeEnabled ?? true);
+  const feedbackEnabled = pilotFeatures?.feedbackEnabled ?? true;
+  const sharedSnapshotsEnabled = pilotFeatures?.sharedSnapshotsEnabled ?? true;
+  const sharedShortlistsEnabled =
+    branding.enableSharedShortlists && (pilotFeatures?.sharedShortlistsEnabled ?? true);
+  const shortlistCollaborationEnabled = pilotFeatures?.shortlistCollaborationEnabled ?? true;
+  const sharedCommentsEnabled = branding.enableSharedComments && shortlistCollaborationEnabled;
+  const reviewerDecisionsEnabled =
+    branding.enableReviewerDecisions && shortlistCollaborationEnabled;
 
   async function refreshRecentActivity(sessionId = sessionIdentity.sessionId) {
     if (!sessionId) {
@@ -253,10 +295,71 @@ export default function App() {
 
     const shortlistPayload = await fetchShortlistItems(nextSelected);
     setShortlistItems(shortlistPayload.items);
-    if (branding.enableSharedShortlists) {
+    if (sharedShortlistsEnabled) {
       const shares = await fetchSharedShortlists(nextSelected);
       setSharedShortlists(shares);
     }
+  }
+
+  async function refreshOpsState(preferredPartnerId: string | null = selectedPilotPartnerId) {
+    if (!branding.enableInternalOpsUi) {
+      setOpsSummary(null);
+      setPilotPartners([]);
+      setSelectedPilotPartnerId(null);
+      setPilotLinks([]);
+      setPilotActivity([]);
+      setOpsActions([]);
+      return;
+    }
+
+    setOpsLoading(true);
+    setOpsError(null);
+
+    try {
+      const [summaryPayload, partners] = await Promise.all([
+        fetchOpsSummary(),
+        fetchPilotPartners()
+      ]);
+      setOpsSummary(summaryPayload);
+      setPilotPartners(partners);
+
+      const nextPartnerId =
+        preferredPartnerId && partners.some((entry) => entry.id === preferredPartnerId)
+          ? preferredPartnerId
+          : partners[0]?.id ?? null;
+      setSelectedPilotPartnerId(nextPartnerId);
+
+      if (!nextPartnerId) {
+        setPilotLinks([]);
+        setPilotActivity([]);
+        setOpsActions([]);
+        setDataQualityEvents([]);
+        return;
+      }
+
+      const [links, activity, actions, qualityEvents] = await Promise.all([
+        fetchPilotLinks(nextPartnerId),
+        fetchPilotActivity(nextPartnerId),
+        fetchOpsActions(nextPartnerId),
+        fetchDataQualityEvents({ partnerId: nextPartnerId, limit: 20 })
+      ]);
+      setPilotLinks(links);
+      setPilotActivity(activity);
+      setOpsActions(actions);
+      setDataQualityEvents(qualityEvents);
+    } catch (nextError) {
+      setOpsError(nextError instanceof Error ? nextError.message : "Unable to load pilot operations");
+    } finally {
+      setOpsLoading(false);
+    }
+  }
+
+  async function handleUpdateDataQualityEvent(
+    eventId: string,
+    status: "acknowledged" | "resolved" | "ignored"
+  ) {
+    await updateDataQualityEventStatus(eventId, status);
+    await refreshOpsState(selectedPilotPartnerId);
   }
 
   async function refreshSharedShortlistState(shareId: string) {
@@ -309,11 +412,21 @@ export default function App() {
 
   useEffect(() => {
     const identity = getOrCreateSessionIdentity(localStorageRef);
-    setSessionIdentity(identity);
+    const storedPilotContext = loadPilotContext(localStorageRef);
+    setSessionIdentity({
+      ...identity,
+      partnerId: storedPilotContext?.partnerId ?? identity.partnerId ?? null,
+      pilotLinkId: storedPilotContext?.pilotLinkId ?? identity.pilotLinkId ?? null
+    });
+    setPilotContext(storedPilotContext);
+    setPilotLinkContext(storedPilotContext?.pilotToken ?? null);
     setShowOnboarding(!isOnboardingDismissed(localStorageRef));
     void refreshRecentActivity(identity.sessionId);
     void refreshWorkflowState(identity.sessionId, null);
-    if (branding.enableDemoMode) {
+    if (branding.enableInternalOpsUi) {
+      void refreshOpsState();
+    }
+    if (demoModeEnabled) {
       void fetchDemoScenarios()
         .then(setDemoScenarios)
         .catch(() => setDemoScenarios([]));
@@ -355,9 +468,29 @@ export default function App() {
   useEffect(() => {
     async function loadSnapshotFromUrl() {
       const params = new URLSearchParams(window.location.search);
+      const pilotToken = params.get("pilot");
       const sharedSnapshotId = params.get("sharedSnapshot");
       const sharedShortlistId = params.get("sharedShortlist");
       const snapshotId = params.get("snapshot");
+
+      if (pilotToken && branding.enablePilotLinks) {
+        try {
+          const view = await fetchPilotLink(pilotToken);
+          setPilotContext(view.context);
+          savePilotContext(localStorageRef, view.context);
+          setPilotLinkContext(view.link.token);
+          setSessionIdentity((current) => ({
+            ...current,
+            partnerId: view.context.partnerId,
+            pilotLinkId: view.context.pilotLinkId
+          }));
+          if (branding.enableInternalOpsUi) {
+            await refreshOpsState(view.context.partnerId);
+          }
+        } catch (pilotError) {
+          setError(pilotError instanceof Error ? pilotError.message : "Unable to load pilot context");
+        }
+      }
 
       if (sharedSnapshotId) {
         setBusy(true);
@@ -488,7 +621,7 @@ export default function App() {
   }, [results]);
 
   useEffect(() => {
-    if (!results || activeFeedbackPrompt) {
+    if (!feedbackEnabled || !results || activeFeedbackPrompt) {
       return;
     }
 
@@ -510,9 +643,12 @@ export default function App() {
       markValidationPromptSeen(localStorageRef, "results");
       void trackUiMetric("validation_prompt_view");
     }
-  }, [activeFeedbackPrompt, localStorageRef, results]);
+  }, [activeFeedbackPrompt, feedbackEnabled, localStorageRef, results]);
 
   useEffect(() => {
+    if (!feedbackEnabled) {
+      return;
+    }
     if (
       comparisonIds.length >= 2 &&
       !activeFeedbackPrompt &&
@@ -522,7 +658,7 @@ export default function App() {
       markValidationPromptSeen(localStorageRef, "comparison");
       void trackUiMetric("validation_prompt_view");
     }
-  }, [activeFeedbackPrompt, comparisonIds.length, localStorageRef]);
+  }, [activeFeedbackPrompt, comparisonIds.length, feedbackEnabled, localStorageRef]);
 
   const visibleHomes = useMemo(
     () => (results ? applyResultControls(results.homes, controls) : []),
@@ -1149,6 +1285,80 @@ export default function App() {
     await trackUiMetric("historical_compare_view");
   }
 
+  async function handleCreatePilotPartner(payload: {
+    name: string;
+    slug: string;
+    status: "active" | "paused" | "inactive";
+  }) {
+    try {
+      const created = await createPilotPartner(payload);
+      await refreshOpsState(created.id);
+    } catch (pilotError) {
+      setOpsError(pilotError instanceof Error ? pilotError.message : "Unable to create pilot partner");
+    }
+  }
+
+  async function handleSelectPilotPartner(partnerId: string) {
+    setSelectedPilotPartnerId(partnerId);
+    await refreshOpsState(partnerId);
+  }
+
+  async function handleUpdatePilotPartner(
+    partnerId: string,
+    patch: {
+      status?: "active" | "paused" | "inactive";
+      featureOverrides?: Partial<PilotContext["allowedFeatures"]>;
+    }
+  ) {
+    try {
+      await updatePilotPartner(partnerId, patch);
+      await refreshOpsState(partnerId);
+      if (pilotContext?.partnerId === partnerId && patch.status) {
+        const nextContext = {
+          ...pilotContext,
+          status: patch.status
+        };
+        setPilotContext(nextContext);
+        savePilotContext(localStorageRef, nextContext);
+      }
+    } catch (pilotError) {
+      setOpsError(pilotError instanceof Error ? pilotError.message : "Unable to update pilot partner");
+    }
+  }
+
+  async function handleCreatePilotLink(partnerId: string) {
+    try {
+      const created = await createPilotLink({
+        partnerId
+      });
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(`${window.location.origin}${created.url}`);
+      }
+      await refreshOpsState(partnerId);
+    } catch (pilotError) {
+      setOpsError(pilotError instanceof Error ? pilotError.message : "Unable to create pilot link");
+    }
+  }
+
+  async function handleRevokePilotLink(token: string) {
+    try {
+      const revoked = await revokePilotLink(token);
+      if (pilotContext?.pilotLinkId === revoked.id) {
+        setPilotContext(null);
+        savePilotContext(localStorageRef, null);
+        setPilotLinkContext(null);
+        setSessionIdentity((current) => ({
+          ...current,
+          partnerId: null,
+          pilotLinkId: null
+        }));
+      }
+      await refreshOpsState(revoked.partnerId);
+    } catch (pilotError) {
+      setOpsError(pilotError instanceof Error ? pilotError.message : "Unable to revoke pilot link");
+    }
+  }
+
   async function handlePilotCtaClick() {
     await trackUiMetric("cta_click");
   }
@@ -1291,6 +1501,8 @@ export default function App() {
         </p>
       </section>
 
+      {pilotContext ? <PilotContextBanner context={pilotContext} /> : null}
+
       <section className="content-grid">
         {sharedSnapshotView || sharedShortlistView ? null : (
           <div className="sidebar-stack">
@@ -1309,9 +1521,11 @@ export default function App() {
               />
             </div>
 
-            <div className="panel">
-              <DemoScenarioPanel onLoadScenario={handleLoadScenario} scenarios={demoScenarios} />
-            </div>
+            {demoModeEnabled ? (
+              <div className="panel">
+                <DemoScenarioPanel onLoadScenario={handleLoadScenario} scenarios={demoScenarios} />
+              </div>
+            ) : null}
 
             <div className="panel">
               <RecentActivityPanel
@@ -1341,7 +1555,7 @@ export default function App() {
                   items={shortlistItems}
                   notes={resultNotes.filter((entry) => entry.entityType === "shortlist_item")}
                   onCopyShareLink={handleCopyShortlistShare}
-                  onCreateShare={branding.enableSharedShortlists ? handleCreateShortlistShare : undefined}
+                  onCreateShare={sharedShortlistsEnabled ? handleCreateShortlistShare : undefined}
                   onCreate={handleCreateShortlist}
                   onDelete={handleDeleteShortlist}
                   onDeleteNote={handleDeleteResultNote}
@@ -1363,6 +1577,38 @@ export default function App() {
             <div className="panel">
               <StakeholderNotesPanel note={stakeholderNote} onChange={setStakeholderNote} />
             </div>
+
+            {branding.enableInternalOpsUi ? (
+              <div className="panel">
+                <OpsPanel
+                  actions={opsActions}
+                  activity={pilotActivity}
+                  error={opsError}
+                  links={pilotLinks}
+                  loading={opsLoading}
+                  onUpdateDataQualityEvent={handleUpdateDataQualityEvent}
+                  onCreateLink={handleCreatePilotLink}
+                  onCreatePartner={handleCreatePilotPartner}
+                  onRefresh={() => void refreshOpsState()}
+                  onRevokeLink={handleRevokePilotLink}
+                  onSelectPartner={handleSelectPilotPartner}
+                  onUpdatePartner={handleUpdatePilotPartner}
+                  partners={pilotPartners}
+                  qualityEvents={dataQualityEvents}
+                  selectedPartnerId={selectedPilotPartnerId}
+                  summary={
+                    opsSummary
+                      ? {
+                          summary: opsSummary.summary,
+                          performance: opsSummary.performance,
+                          dataQualitySummary: opsSummary.dataQualitySummary,
+                          errors: opsSummary.errors
+                        }
+                      : null
+                  }
+                />
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -1374,10 +1620,10 @@ export default function App() {
               <SharedShortlistViewPanel
                 collaborationActivity={collaborationActivity}
                 comments={sharedComments}
-                onDeleteComment={branding.enableSharedComments ? handleDeleteSharedComment : undefined}
-                onSaveComment={branding.enableSharedComments ? handleSaveSharedComment : undefined}
+                onDeleteComment={sharedCommentsEnabled ? handleDeleteSharedComment : undefined}
+                onSaveComment={sharedCommentsEnabled ? handleSaveSharedComment : undefined}
                 onSaveDecision={
-                  branding.enableReviewerDecisions ? handleSaveReviewerDecision : undefined
+                  reviewerDecisionsEnabled ? handleSaveReviewerDecision : undefined
                 }
                 reviewerDecisions={reviewerDecisions}
                 sharedView={sharedShortlistView}
@@ -1406,6 +1652,7 @@ export default function App() {
                 savingSnapshot={savingSnapshot}
                 sharingSnapshot={Boolean(sharingSnapshotId && sharingSnapshotId === snapshot?.id)}
                 sharedLink={sharedLink}
+                shareEnabled={sharedSnapshotsEnabled}
                 snapshot={snapshot}
                 readOnly={Boolean(sharedSnapshotView)}
               />

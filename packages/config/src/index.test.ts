@@ -26,4 +26,14 @@ describe("config validation", () => {
     expect(() => getConfig()).toThrowError(ConfigError);
     expect(() => getConfig()).toThrow(/PROVIDER_MODE must be mock, hybrid, or live/);
   });
+
+  it("fails clearly when ops pagination defaults exceed the configured max", () => {
+    process.env.NODE_ENV = "development";
+    process.env.OPS_DEFAULT_PAGE_SIZE = "200";
+    process.env.OPS_MAX_PAGE_SIZE = "20";
+    resetConfigCache();
+
+    expect(() => getConfig()).toThrowError(ConfigError);
+    expect(() => getConfig()).toThrow(/OPS_DEFAULT_PAGE_SIZE must be less than or equal to OPS_MAX_PAGE_SIZE/);
+  });
 });

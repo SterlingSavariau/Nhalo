@@ -1,4 +1,9 @@
-import { DEFAULT_RESULT_LIMIT, getSearchQualityConfig } from "@nhalo/config";
+import {
+  DEFAULT_RESULT_LIMIT,
+  getConfig,
+  getDataQualityConfig,
+  getSearchQualityConfig
+} from "@nhalo/config";
 import { distanceMiles } from "@nhalo/providers";
 import { rankListings } from "@nhalo/scoring";
 import type {
@@ -17,6 +22,7 @@ import type {
   SafetyProvider
 } from "@nhalo/types";
 import { buildExplainability } from "./explainability";
+import { evaluateSearchDataQuality } from "./data-quality";
 import { ApiError } from "./errors";
 import { MetricsCollector } from "./metrics";
 import {
@@ -44,10 +50,12 @@ export interface SearchServiceDependencies {
     listings: number | null;
     safety: number | null;
   }>;
+  getProviderUsage(): import("@nhalo/types").SearchProviderUsage;
 }
 
 export interface SearchExecutionContext {
   sessionId?: string | null;
+  partnerId?: string | null;
   searchDefinitionId?: string | null;
   rerunSourceType?: "definition" | "history" | null;
   rerunSourceId?: string | null;
@@ -125,6 +133,35 @@ function buildReliabilityWarnings(homes: SearchResponse["homes"]): SearchWarning
   }
 
   return [];
+}
+
+function buildPerformanceWarnings(
+  providerUsage: import("@nhalo/types").SearchProviderUsage
+): SearchWarning[] {
+  const warnings: SearchWarning[] = [];
+
+  if (providerUsage.geocoderBudgetExceeded) {
+    warnings.push({
+      code: "GEOCODER_BUDGET_EXCEEDED",
+      message: "Geocoding live fetches hit the configured budget and cache fallback was used when available."
+    });
+  }
+
+  if (providerUsage.listingBudgetExceeded) {
+    warnings.push({
+      code: "LISTING_BUDGET_EXCEEDED",
+      message: "Listing live fetches hit the configured budget and cache fallback was used when available."
+    });
+  }
+
+  if (providerUsage.safetyBudgetExceeded) {
+    warnings.push({
+      code: "SAFETY_BUDGET_EXCEEDED",
+      message: "Safety live fetches hit the configured budget and cache fallback was used when available."
+    });
+  }
+
+  return warnings;
 }
 
 function buildSuggestions(request: SearchRequestInput, totalMatched: number): SearchSuggestion[] {
@@ -266,11 +303,29 @@ export async function runSearch(
   executionContext: SearchExecutionContext = {}
 ): Promise<SearchResponse> {
   const searchQualityConfig = getSearchQualityConfig();
+  const dataQualityConfig = getDataQualityConfig();
+  const performanceConfig = getConfig().performance;
   const startedAt = Date.now();
+  const timings = {
+    geocodeResolutionMs: 0,
+    listingFetchMs: 0,
+    listingNormalizationMs: 0,
+    safetyFetchMs: 0,
+    qualityIntegrityEvaluationMs: 0,
+    deduplicationMs: 0,
+    radiusFilteringMs: 0,
+    comparableSelectionMs: 0,
+    scoringMs: 0,
+    persistenceMs: 0,
+    totalSearchMs: 0
+  };
+
+  let stageStartedAt = Date.now();
   const resolvedLocation = await dependencies.geocoder.geocode(
     request.locationType,
     request.locationValue
   );
+  timings.geocodeResolutionMs = Date.now() - stageStartedAt;
 
   if (!resolvedLocation) {
     const issue = dependencies.geocoder.getLastResolutionIssue?.();
@@ -289,12 +344,15 @@ export async function runSearch(
   }
   const searchOrigin = buildSearchOriginMetadata(resolvedLocation);
 
+  stageStartedAt = Date.now();
   const candidates = await dependencies.listingProvider.fetchListings({
     center: resolvedLocation.center,
     radiusMiles: request.radiusMiles,
     location: resolvedLocation,
     propertyTypes: request.propertyTypes
   });
+  timings.listingFetchMs = Date.now() - stageStartedAt;
+  stageStartedAt = Date.now();
   const normalizationRejections = dependencies.listingProvider.getLastRejectionSummary?.() ?? createEmptyRejectionSummary();
   const candidatesRetrieved =
     candidates.length +
@@ -305,9 +363,15 @@ export async function runSearch(
     normalizationRejections.missingSquareFootage +
     normalizationRejections.unsupportedPropertyType +
     normalizationRejections.normalizationFailures;
+  timings.listingNormalizationMs = Date.now() - stageStartedAt;
 
+  stageStartedAt = Date.now();
   const qualityGate = applyQualityGate(candidates, searchQualityConfig);
+  timings.qualityIntegrityEvaluationMs += Date.now() - stageStartedAt;
+  stageStartedAt = Date.now();
   const deduplicated = deduplicateListings(qualityGate.listings);
+  timings.deduplicationMs = Date.now() - stageStartedAt;
+  stageStartedAt = Date.now();
   const distanceByPropertyId = new Map(
     deduplicated.listings.map((listing) => [
       listing.id,
@@ -317,25 +381,32 @@ export async function runSearch(
   const radiusCandidates = deduplicated.listings.filter(
     (listing) => (distanceByPropertyId.get(listing.id) ?? Number.POSITIVE_INFINITY) <= request.radiusMiles
   );
+  timings.radiusFilteringMs = Date.now() - stageStartedAt;
   const hardFilterResult = applyHardFiltersWithSummary(radiusCandidates, request);
   const marketSnapshot = await resolveMarketSnapshot(
     request,
     radiusCandidates,
     dependencies.marketSnapshotRepository
   );
+  stageStartedAt = Date.now();
   const safetyByPropertyId = await dependencies.safetyProvider.fetchSafetyData(radiusCandidates);
+  timings.safetyFetchMs = Date.now() - stageStartedAt;
   const providerFreshnessHours = await dependencies.getProviderFreshnessHours();
+  const providerUsage = dependencies.getProviderUsage();
   const matchedListings = hardFilterResult.listings;
   const rankedListings = matchedListings
     .map((listing): RankedListing => {
+      const comparableStartedAt = Date.now();
       const comparableSelection = selectComparableListings(
         listing as EnrichedListing,
         radiusCandidates as EnrichedListing[],
         searchQualityConfig
       );
+      timings.comparableSelectionMs += Date.now() - comparableStartedAt;
       dependencies.metrics.recordComparableSelection({
         fallback: comparableSelection.strategyUsed !== "strict"
       });
+      const scoringStartedAt = Date.now();
       const ranked = rankListings([listing], {
         budget: request.budget,
         comparableListings: comparableSelection.listings,
@@ -347,6 +418,7 @@ export async function runSearch(
         weights: request.weights,
         searchOrigin
       })[0];
+      timings.scoringMs += Date.now() - scoringStartedAt;
       const qualityFlags = buildQualityFlags({
         listing: listing as EnrichedListing,
         safetyDataSource: safetyByPropertyId.get(listing.id)?.safetyDataSource ?? null,
@@ -412,7 +484,56 @@ export async function runSearch(
       searchOrigin
     )
   );
-  const homesById = new Map(homes.map((home) => [home.id, home]));
+  stageStartedAt = Date.now();
+  const dataQualityResult = dataQualityConfig.enabled
+    ? evaluateSearchDataQuality({
+        request,
+        sessionId: executionContext.sessionId ?? null,
+        partnerId: executionContext.partnerId ?? null,
+        resolvedLocation,
+        searchOrigin,
+        candidatesRetrieved,
+        normalizationRejections,
+        deduplicatedListings: deduplicated.listings,
+        radiusCandidates,
+        matchedListings,
+        safetyByPropertyId,
+        homes,
+        distanceByPropertyId,
+        dataQualityConfig
+      })
+    : {
+        events: [],
+        byPropertyId: new Map(),
+        integritySummary: {
+          totalEvents: 0,
+          criticalEvents: 0,
+          categories: [],
+          staleTopResults: 0
+        }
+      };
+  timings.qualityIntegrityEvaluationMs += Date.now() - stageStartedAt;
+  const homesWithIntegrity = homes.map((home) => {
+    const integrity = dataQualityResult.byPropertyId.get(home.id);
+    const budgetReasons = [
+      ...(providerUsage.listingBudgetExceeded
+        ? ["Listing live fetch was skipped because the configured provider budget was exceeded."]
+        : []),
+      ...(providerUsage.safetyBudgetExceeded
+        ? ["Safety live fetch was skipped because the configured provider budget was exceeded."]
+        : []),
+      ...(providerUsage.geocoderBudgetExceeded
+        ? ["Search origin resolution used cached data because the configured geocoder budget was exceeded."]
+        : [])
+    ];
+    return {
+      ...home,
+      integrityFlags: integrity?.integrityFlags ?? [],
+      dataWarnings: integrity?.dataWarnings ?? [],
+      degradedReasons: [...(integrity?.degradedReasons ?? []), ...budgetReasons]
+    };
+  });
+  const homesById = new Map(homesWithIntegrity.map((home) => [home.id, home]));
   const combinedRejectionSummary = addRejectionCounts(
     addRejectionCounts(
       addRejectionCounts(normalizationRejections, qualityGate.rejectionSummary),
@@ -433,10 +554,11 @@ export async function runSearch(
   )];
   const warnings = [
     ...buildWarnings(matchedListings.length),
-    ...buildReliabilityWarnings(homes)
+    ...buildReliabilityWarnings(homesWithIntegrity),
+    ...buildPerformanceWarnings(providerUsage)
   ];
   const response: SearchResponse = {
-    homes,
+    homes: homesWithIntegrity,
     appliedFilters: {
       locationType: request.locationType,
       locationValue: request.locationValue,
@@ -471,22 +593,23 @@ export async function runSearch(
       suggestions: buildSuggestions(request, matchedListings.length),
       rejectionSummary: combinedRejectionSummary,
       searchOrigin,
-      mockFallbackUsed: homes.some((home) => (home.qualityFlags ?? []).includes("mockFallbackUsed")),
-      staleDataPresent: homes.some(
+      mockFallbackUsed: homesWithIntegrity.some((home) => (home.qualityFlags ?? []).includes("mockFallbackUsed")),
+      integritySummary: dataQualityResult.integritySummary,
+      staleDataPresent: homesWithIntegrity.some(
         (home) =>
           (home.qualityFlags ?? []).includes("staleListingData") ||
           (home.qualityFlags ?? []).includes("staleSafetyData")
       ),
+      performance: performanceConfig.internalTimingEnabled
+        ? {
+            timingsMs: timings,
+            providerUsage
+          }
+        : undefined,
       sessionId: executionContext.sessionId ?? null
     }
   };
 
-  dependencies.metrics.recordSearch({
-    durationMs: response.metadata.durationMs,
-    candidatesScanned: response.metadata.totalCandidatesScanned,
-    matchesReturned: response.metadata.returnedCount,
-    scores: response.homes.map((home) => home.scores.nhalo)
-  });
   dependencies.metrics.recordListingResultsReturned(response.metadata.returnedCount);
   dependencies.metrics.recordListingQuality({
     failures: qualityGate.qualityFailures,
@@ -506,7 +629,21 @@ export async function runSearch(
     active: qualityGate.activeEligibleCount,
     eligible: qualityGate.listings.length
   });
+  dependencies.metrics.recordDataQualityEvents({
+    events: dataQualityResult.events,
+    totalResults: response.metadata.returnedCount,
+    staleResults: homesWithIntegrity.filter(
+      (home) =>
+        (home.qualityFlags ?? []).includes("staleListingData") ||
+        (home.qualityFlags ?? []).includes("staleSafetyData")
+    ).length,
+    listingCandidates: candidates.length,
+    safetyCandidates: matchedListings.length,
+    geocodeCandidates: resolvedLocation ? 1 : 0,
+    searchCandidates: response.metadata.returnedCount
+  });
 
+  stageStartedAt = Date.now();
   const saveResult = await dependencies.repository.saveSearch({
     request,
     response,
@@ -514,9 +651,11 @@ export async function runSearch(
     listings: radiusCandidates,
     marketSnapshot,
     sessionId: executionContext.sessionId ?? null,
+    partnerId: executionContext.partnerId ?? null,
     searchDefinitionId: executionContext.searchDefinitionId ?? null,
     rerunSourceType: executionContext.rerunSourceType ?? null,
     rerunSourceId: executionContext.rerunSourceId ?? null,
+    qualityEvents: dataQualityResult.events,
     scoredResults: rankedListings.map((ranked) => ({
       propertyId: ranked.listing.id,
       formulaVersion: ranked.scores.formulaVersion,
@@ -525,6 +664,9 @@ export async function runSearch(
       strengths: homesById.get(ranked.listing.id)?.strengths ?? [],
       risks: homesById.get(ranked.listing.id)?.risks ?? [],
       confidenceReasons: homesById.get(ranked.listing.id)?.confidenceReasons ?? [],
+      integrityFlags: homesById.get(ranked.listing.id)?.integrityFlags ?? [],
+      dataWarnings: homesById.get(ranked.listing.id)?.dataWarnings ?? [],
+      degradedReasons: homesById.get(ranked.listing.id)?.degradedReasons ?? [],
       scores: ranked.scores,
       scoreInputs: ranked.scoreInputs,
       weights: request.weights,
@@ -589,6 +731,24 @@ export async function runSearch(
         crimeFetchedAt: (ranked.scoreInputs.crimeFetchedAt as string | null) ?? null
       }
     }))
+  });
+  timings.persistenceMs = Date.now() - stageStartedAt;
+  timings.totalSearchMs = Date.now() - startedAt;
+  response.metadata.durationMs = timings.totalSearchMs;
+  if (performanceConfig.internalTimingEnabled) {
+    response.metadata.performance = {
+      timingsMs: {
+        ...timings
+      },
+      providerUsage
+    };
+  }
+  dependencies.metrics.recordSearch({
+    durationMs: response.metadata.durationMs,
+    candidatesScanned: response.metadata.totalCandidatesScanned,
+    matchesReturned: response.metadata.returnedCount,
+    scores: response.homes.map((home) => home.scores.nhalo),
+    providerUsage
   });
 
   response.metadata.historyRecordId = saveResult.historyRecordId;

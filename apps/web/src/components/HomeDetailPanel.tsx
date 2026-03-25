@@ -149,9 +149,25 @@ export function HomeDetailPanel({
         </div>
       </div>
 
-      {(home.qualityFlags ?? []).length > 0 ? (
+      {(home.dataWarnings ?? []).length > 0 || (home.degradedReasons ?? []).length > 0 ? (
+        <div className="summary-block">
+          <h3>Data warnings</h3>
+          <ul>
+            {[...(home.dataWarnings ?? []), ...(home.degradedReasons ?? [])].map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {(home.qualityFlags ?? []).length > 0 || (home.integrityFlags ?? []).length > 0 ? (
         <div className="chip-row">
           {(home.qualityFlags ?? []).map((flag) => (
+            <span className="chip subdued" key={flag}>
+              {flag}
+            </span>
+          ))}
+          {(home.integrityFlags ?? []).map((flag) => (
             <span className="chip subdued" key={flag}>
               {flag}
             </span>

@@ -6,9 +6,11 @@ import {
   getOrCreateSessionIdentity,
   isOnboardingDismissed,
   isWalkthroughDismissed,
+  loadPilotContext,
   loadStakeholderNote,
   loadUiPreferences,
   markValidationPromptSeen,
+  savePilotContext,
   saveStakeholderNote,
   saveUiPreferences,
   shouldShowValidationPrompt
@@ -114,5 +116,34 @@ describe("local-state", () => {
     dismissWalkthrough(storage, "southfield-family-balance");
 
     expect(isWalkthroughDismissed(storage, "southfield-family-balance")).toBe(true);
+  });
+
+  it("stores pilot context locally without changing the base session id", () => {
+    const storage = createMemoryStorage();
+    const session = getOrCreateSessionIdentity(storage);
+
+    savePilotContext(storage, {
+      partnerId: "partner-1",
+      partnerSlug: "acme-pilot",
+      partnerName: "Acme Pilot",
+      status: "active",
+      pilotLinkId: "pilot-link-1",
+      pilotToken: "pilot-token-1",
+      allowedFeatures: {
+        demoModeEnabled: true,
+        sharedSnapshotsEnabled: false,
+        sharedShortlistsEnabled: true,
+        feedbackEnabled: true,
+        validationPromptsEnabled: true,
+        shortlistCollaborationEnabled: false
+      }
+    });
+
+    const context = loadPilotContext(storage);
+    const nextSession = getOrCreateSessionIdentity(storage);
+
+    expect(context?.partnerSlug).toBe("acme-pilot");
+    expect(context?.pilotToken).toBe("pilot-token-1");
+    expect(nextSession.sessionId).toBe(session.sessionId);
   });
 });

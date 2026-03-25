@@ -14,6 +14,9 @@ export interface BrandingConfig {
   enableSharedShortlists: boolean;
   enableSharedComments: boolean;
   enableReviewerDecisions: boolean;
+  enablePilotOps: boolean;
+  enableInternalOpsUi: boolean;
+  enablePilotLinks: boolean;
   sharedNoIndex: boolean;
 }
 
@@ -47,6 +50,9 @@ export function getBrandingConfig(
     enableSharedShortlists: String(env.VITE_ENABLE_SHARED_SHORTLISTS ?? "true") === "true",
     enableSharedComments: String(env.VITE_ENABLE_SHARED_COMMENTS ?? "true") === "true",
     enableReviewerDecisions: String(env.VITE_ENABLE_REVIEWER_DECISIONS ?? "true") === "true",
+    enablePilotOps: String(env.VITE_ENABLE_PILOT_OPS ?? "false") === "true",
+    enableInternalOpsUi: String(env.VITE_ENABLE_INTERNAL_OPS_UI ?? "false") === "true",
+    enablePilotLinks: String(env.VITE_ENABLE_PILOT_LINKS ?? "false") === "true",
     sharedNoIndex: String(env.VITE_SHARED_NOINDEX ?? "true") === "true"
   };
 }

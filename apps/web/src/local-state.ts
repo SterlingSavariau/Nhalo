@@ -1,5 +1,6 @@
 import { DEFAULT_PROPERTY_TYPES, DEFAULT_WEIGHTS } from "@nhalo/config";
 import type {
+  PilotContext,
   PropertyType,
   SearchRequest,
   SearchWeights,
@@ -13,6 +14,7 @@ const ONBOARDING_KEY = "nhalo.ui.onboarding.dismissed";
 const VALIDATION_PROMPT_KEY = "nhalo.ui.validation.prompts";
 const STAKEHOLDER_NOTES_KEY = "nhalo.ui.stakeholder.notes";
 const WALKTHROUGH_DISMISS_KEY = "nhalo.ui.walkthrough.dismissed";
+const PILOT_CONTEXT_KEY = "nhalo.ui.pilot.context";
 
 export interface UiPreferences {
   preferredSortMode: ResultControlsState["sortMode"];
@@ -56,6 +58,8 @@ export function getOrCreateSessionIdentity(storage: Pick<Storage, "getItem" | "s
   if (existing?.sessionId) {
     return {
       sessionId: existing.sessionId,
+      partnerId: existing.partnerId ?? null,
+      pilotLinkId: existing.pilotLinkId ?? null,
       source: "local_storage"
     };
   }
@@ -67,6 +71,34 @@ export function getOrCreateSessionIdentity(storage: Pick<Storage, "getItem" | "s
     sessionId,
     source: "local_storage"
   };
+}
+
+export function loadPilotContext(storage: Pick<Storage, "getItem"> | null): PilotContext | null {
+  if (!storage) {
+    return null;
+  }
+  return safeParse<PilotContext>(storage.getItem(PILOT_CONTEXT_KEY));
+}
+
+export function savePilotContext(
+  storage: Pick<Storage, "getItem" | "setItem"> | null,
+  context: PilotContext | null
+): void {
+  if (!storage) {
+    return;
+  }
+  if (!context) {
+    storage.setItem(PILOT_CONTEXT_KEY, "null");
+    return;
+  }
+  storage.setItem(PILOT_CONTEXT_KEY, JSON.stringify(context));
+  const session = safeParse<Record<string, unknown>>(storage.getItem(SESSION_KEY)) ?? {};
+  session.partnerId = context.partnerId;
+  session.pilotLinkId = context.pilotLinkId;
+  if (!session.sessionId) {
+    session.sessionId = generateSessionId();
+  }
+  storage.setItem(SESSION_KEY, JSON.stringify(session));
 }
 
 export function loadUiPreferences(storage: Pick<Storage, "getItem"> | null): UiPreferences {

@@ -3,13 +3,19 @@ import { ConfigError, getConfig } from "@nhalo/config";
 import { createPersistenceLayer, type PersistenceLayer } from "@nhalo/db";
 import { DEMO_SEARCH_SCENARIOS, createMockProviders, createProviders } from "@nhalo/providers";
 import type {
+  DataQualitySeverity,
+  DataQualitySourceDomain,
+  DataQualityStatus,
   DemoScenario,
   GeocodeCacheRepository,
   ListingCacheRepository,
   MarketSnapshotRepository,
+  PilotFeatureOverrides,
+  PilotLinkView,
   ProviderStatus,
   SafetySignalCacheRepository,
-  SearchRepository
+  SearchRepository,
+  ValidationEventName
 } from "@nhalo/types";
 import Fastify from "fastify";
 import { ZodError, z } from "zod";
@@ -207,6 +213,54 @@ const reviewerDecisionUpdateSchema = z
     message: "At least one editable field is required"
   });
 
+const pilotPartnerCreateSchema = z.object({
+  name: z.string().trim().min(1),
+  slug: z.string().trim().min(1),
+  status: z.enum(["active", "paused", "inactive"]).optional(),
+  contactLabel: z.string().trim().max(120).optional(),
+  notes: z.string().trim().max(2000).optional(),
+  featureOverrides: z.record(z.string(), z.boolean()).optional()
+});
+
+const pilotPartnerUpdateSchema = z
+  .object({
+    name: z.string().trim().min(1).optional(),
+    status: z.enum(["active", "paused", "inactive"]).optional(),
+    contactLabel: z.string().trim().max(120).nullable().optional(),
+    notes: z.string().trim().max(2000).nullable().optional(),
+    featureOverrides: z.record(z.string(), z.boolean()).optional()
+  })
+  .refine(
+    (payload) =>
+      payload.name !== undefined ||
+      payload.status !== undefined ||
+      payload.contactLabel !== undefined ||
+      payload.notes !== undefined ||
+      payload.featureOverrides !== undefined,
+    {
+      message: "At least one editable field is required"
+    }
+  );
+
+const pilotLinkCreateSchema = z.object({
+  partnerId: z.string().trim().min(1),
+  expiresInDays: z.number().int().positive().max(365).optional(),
+  allowedFeatures: z.record(z.string(), z.boolean()).optional()
+});
+
+const dataQualityStatusUpdateSchema = z.object({
+  status: z.enum(["acknowledged", "resolved", "ignored"])
+});
+
+const PILOT_FEATURE_KEYS = [
+  "demoModeEnabled",
+  "sharedSnapshotsEnabled",
+  "sharedShortlistsEnabled",
+  "feedbackEnabled",
+  "validationPromptsEnabled",
+  "shortlistCollaborationEnabled"
+] as const;
+
 function extractSessionId(request: {
   headers?: Record<string, unknown>;
   query?: Record<string, unknown>;
@@ -222,7 +276,26 @@ function extractSessionId(request: {
   return raw?.trim() ? raw.trim() : null;
 }
 
-function parseLimit(query: Record<string, unknown> | undefined, fallback = 10): number {
+function extractPilotLinkId(request: {
+  headers?: Record<string, unknown>;
+  query?: Record<string, unknown>;
+}, bodyPilotLinkId?: string | null): string | null {
+  const headerValue = request.headers?.["x-nhalo-pilot-link-id"];
+  const queryValue = request.query?.pilot;
+  const raw =
+    (typeof headerValue === "string" ? headerValue : null) ??
+    (typeof queryValue === "string" ? queryValue : null) ??
+    bodyPilotLinkId ??
+    null;
+
+  return raw?.trim() ? raw.trim() : null;
+}
+
+function parseLimit(
+  query: Record<string, unknown> | undefined,
+  fallback = 10,
+  max = 50
+): number {
   const raw = query?.limit;
   const parsed =
     typeof raw === "string"
@@ -235,7 +308,7 @@ function parseLimit(query: Record<string, unknown> | undefined, fallback = 10): 
     return fallback;
   }
 
-  return Math.min(parsed, 50);
+  return Math.min(parsed, max);
 }
 
 function addDaysToNowIso(days: number): string {
@@ -252,6 +325,128 @@ function shareModeAllowsComments(shareMode: "read_only" | "comment_only" | "revi
 
 function shareModeAllowsReviewerDecision(shareMode: "read_only" | "comment_only" | "review_only"): boolean {
   return shareMode === "review_only";
+}
+
+async function resolvePilotContext(
+  repository: SearchRepository,
+  request: { headers?: Record<string, unknown>; query?: Record<string, unknown> },
+  bodyPilotLinkId?: string | null
+) {
+  const pilotToken = extractPilotLinkId(request, bodyPilotLinkId);
+  if (!pilotToken) {
+    return null;
+  }
+
+  const links = await repository.listPilotLinks();
+  const link = links.find((entry) => entry.token === pilotToken) ?? null;
+  if (!link || link.status !== "active") {
+    return null;
+  }
+
+  const partner = await repository.getPilotPartner(link.partnerId);
+  if (!partner) {
+    return null;
+  }
+
+  return {
+    link,
+    partner,
+    context: {
+      partnerId: partner.id,
+      partnerSlug: partner.slug,
+      partnerName: partner.name,
+      status: partner.status,
+      pilotLinkId: link.id,
+      pilotToken: link.token,
+      allowedFeatures: link.allowedFeatures
+    }
+  } satisfies PilotLinkView;
+}
+
+function normalizePilotFeatureOverrides(
+  input?: Record<string, boolean> | null
+): Partial<PilotFeatureOverrides> {
+  const normalized: Partial<PilotFeatureOverrides> = {};
+
+  for (const key of PILOT_FEATURE_KEYS) {
+    if (typeof input?.[key] === "boolean") {
+      normalized[key] = input[key];
+    }
+  }
+
+  return normalized;
+}
+
+function hasPilotOverrideValue(input?: Partial<PilotFeatureOverrides> | null): boolean {
+  return Boolean(input && Object.keys(input).length > 0);
+}
+
+function getEffectivePilotFeatures(
+  config: ReturnType<typeof getConfig>,
+  pilotContext: PilotLinkView | null
+): PilotFeatureOverrides {
+  const overrides = pilotContext?.context.allowedFeatures;
+
+  return {
+    demoModeEnabled: config.validation.enabled
+      && config.validation.demoScenariosEnabled
+      && (overrides?.demoModeEnabled ?? true),
+    sharedSnapshotsEnabled: config.validation.enabled
+      && config.validation.sharedSnapshotsEnabled
+      && (overrides?.sharedSnapshotsEnabled ?? true),
+    sharedShortlistsEnabled: config.workflow.shortlistsEnabled
+      && config.workflow.sharedShortlistsEnabled
+      && (overrides?.sharedShortlistsEnabled ?? true),
+    feedbackEnabled: config.validation.enabled
+      && config.validation.feedbackEnabled
+      && (overrides?.feedbackEnabled ?? true),
+    validationPromptsEnabled: config.validation.enabled
+      && (overrides?.validationPromptsEnabled ?? true),
+    shortlistCollaborationEnabled: config.workflow.sharedShortlistsEnabled
+      && (config.workflow.sharedCommentsEnabled || config.workflow.reviewerDecisionsEnabled)
+      && (overrides?.shortlistCollaborationEnabled ?? true)
+  };
+}
+
+function featureDisabledForPilot(feature: string): ApiError {
+  return new ApiError(403, "PILOT_FEATURE_DISABLED", `${feature} is disabled for this pilot context.`);
+}
+
+function withPilotPayload(
+  payload: Record<string, unknown> | null | undefined,
+  pilotContext: PilotLinkView | null
+): Record<string, unknown> | null | undefined {
+  if (!pilotContext) {
+    return payload;
+  }
+
+  return {
+    ...(payload ?? {}),
+    partnerId: pilotContext.partner.id,
+    partnerSlug: pilotContext.partner.slug,
+    partnerName: pilotContext.partner.name,
+    pilotLinkId: pilotContext.link.id,
+    pilotLinkToken: pilotContext.link.token
+  };
+}
+
+async function recordValidationEventWithPilot(
+  repository: SearchRepository,
+  event: {
+    eventName: ValidationEventName;
+    sessionId?: string | null;
+    snapshotId?: string | null;
+    historyRecordId?: string | null;
+    searchDefinitionId?: string | null;
+    demoScenarioId?: string | null;
+    payload?: Record<string, unknown> | null;
+  },
+  pilotContext: PilotLinkView | null
+): Promise<void> {
+  await repository.recordValidationEvent({
+    ...event,
+    payload: withPilotPayload(event.payload, pilotContext) ?? null
+  });
 }
 
 export interface AppDependencies {
@@ -511,6 +706,9 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     const startedAt =
       ((request as RequestWithId & Record<PropertyKey, unknown>)[REQUEST_STARTED_AT] as number | undefined) ??
       Date.now();
+    if (request.method === "GET") {
+      metrics.recordEndpointRead((request.routeOptions?.url as string | undefined) ?? request.url);
+    }
     logger.info({
       message: "Request completed",
       requestId: request.id,
@@ -633,9 +831,14 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
 
   app.get("/metrics", async () => metrics.snapshot());
 
-  app.get("/validation/demo-scenarios", async () => {
+  app.get("/validation/demo-scenarios", async (request) => {
     if (!config.validation.enabled || !config.validation.demoScenariosEnabled) {
       throw featureDisabled("Demo scenarios");
+    }
+
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    if (!getEffectivePilotFeatures(config, pilotContext).demoModeEnabled) {
+      throw featureDisabledForPilot("Demo scenarios");
     }
 
     return {
@@ -651,6 +854,567 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     const summary = await persistence.searchRepository.getValidationSummary();
     metrics.recordValidationSummaryRead();
     return summary;
+  });
+
+  app.post("/ops/pilots", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const payload = pilotPartnerCreateSchema.parse(request.body);
+    const featureOverrides = normalizePilotFeatureOverrides(payload.featureOverrides);
+    const partner = await persistence.searchRepository.createPilotPartner({
+      name: payload.name,
+      slug: payload.slug,
+      status: payload.status,
+      contactLabel: payload.contactLabel ?? null,
+      notes: payload.notes ?? null,
+      featureOverrides
+    });
+
+    await persistence.searchRepository.recordOpsAction({
+      actionType: "pilot_partner_created",
+      targetType: "pilot_partner",
+      targetId: partner.id,
+      partnerId: partner.id,
+      result: "success",
+      details: {
+        slug: partner.slug,
+        status: partner.status
+      }
+    });
+
+    metrics.recordPilotPartnerCreate();
+    if (hasPilotOverrideValue(featureOverrides)) {
+      metrics.recordPartnerFeatureOverride();
+    }
+
+    return reply.status(201).send(partner);
+  });
+
+  app.get("/ops/pilots", async () => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const partners = await persistence.searchRepository.listPilotPartners();
+    return { partners };
+  });
+
+  app.get("/ops/pilots/:partnerId", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const params = request.params as { partnerId?: string };
+    const partnerId = params.partnerId?.trim();
+
+    if (!partnerId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid partner id", [
+          { field: "partnerId", message: "partnerId is required" }
+        ])
+      );
+    }
+
+    const partner = await persistence.searchRepository.getPilotPartner(partnerId);
+    if (!partner) {
+      return reply.status(404).send(
+        buildErrorPayload("PILOT_PARTNER_NOT_FOUND", "No pilot partner was found for this id.")
+      );
+    }
+
+    const [links, actions, usage] = await Promise.all([
+      persistence.searchRepository.listPilotLinks(partner.id),
+      persistence.searchRepository.listOpsActions({
+        partnerId: partner.id,
+        limit: parseLimit(
+          undefined,
+          config.performance.opsDefaultPageSize,
+          config.performance.opsMaxPageSize
+        )
+      }),
+      persistence.searchRepository.getPartnerUsageSummary(partner.id)
+    ]);
+
+    return {
+      partner,
+      links,
+      actions,
+      usage: usage[0] ?? null
+    };
+  });
+
+  app.patch("/ops/pilots/:partnerId", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const params = request.params as { partnerId?: string };
+    const partnerId = params.partnerId?.trim();
+    const payload = pilotPartnerUpdateSchema.parse(request.body);
+
+    if (!partnerId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid partner id", [
+          { field: "partnerId", message: "partnerId is required" }
+        ])
+      );
+    }
+
+    const featureOverrides = payload.featureOverrides
+      ? normalizePilotFeatureOverrides(payload.featureOverrides)
+      : undefined;
+    const updated = await persistence.searchRepository.updatePilotPartner(partnerId, {
+      name: payload.name,
+      status: payload.status,
+      contactLabel: payload.contactLabel,
+      notes: payload.notes,
+      featureOverrides
+    });
+
+    if (!updated) {
+      await persistence.searchRepository.recordOpsAction({
+        actionType: "pilot_partner_updated",
+        targetType: "pilot_partner",
+        targetId: partnerId,
+        partnerId,
+        result: "not_found"
+      });
+      return reply.status(404).send(
+        buildErrorPayload("PILOT_PARTNER_NOT_FOUND", "No pilot partner was found for this id.")
+      );
+    }
+
+    await persistence.searchRepository.recordOpsAction({
+      actionType: "pilot_partner_updated",
+      targetType: "pilot_partner",
+      targetId: updated.id,
+      partnerId: updated.id,
+      result: "success",
+      details: {
+        status: updated.status,
+        hasFeatureOverrides: hasPilotOverrideValue(featureOverrides)
+      }
+    });
+
+    await persistence.searchRepository.recordValidationEvent({
+      eventName: "partner_updated",
+      payload: {
+        partnerId: updated.id,
+        partnerSlug: updated.slug,
+        status: updated.status
+      }
+    });
+
+    if (hasPilotOverrideValue(featureOverrides)) {
+      metrics.recordPartnerFeatureOverride();
+    }
+
+    return updated;
+  });
+
+  app.get("/pilot/links", async (request) => {
+    if (!config.ops.pilotOpsEnabled || !config.ops.pilotLinksEnabled) {
+      throw featureDisabled("Pilot links");
+    }
+
+    const query = request.query as Record<string, unknown> | undefined;
+    const partnerId = typeof query?.partnerId === "string" ? query.partnerId.trim() : undefined;
+    const links = await persistence.searchRepository.listPilotLinks(partnerId);
+    return { links };
+  });
+
+  app.post("/pilot/links", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled || !config.ops.pilotLinksEnabled) {
+      throw featureDisabled("Pilot links");
+    }
+
+    const payload = pilotLinkCreateSchema.parse(request.body);
+    const partner = await persistence.searchRepository.getPilotPartner(payload.partnerId);
+
+    if (!partner) {
+      await persistence.searchRepository.recordOpsAction({
+        actionType: "pilot_link_created",
+        targetType: "pilot_link",
+        targetId: payload.partnerId,
+        partnerId: payload.partnerId,
+        result: "not_found"
+      });
+      return reply.status(404).send(
+        buildErrorPayload("PILOT_PARTNER_NOT_FOUND", "No pilot partner was found for this id.")
+      );
+    }
+
+    const allowedFeatures = normalizePilotFeatureOverrides(payload.allowedFeatures);
+    const link = await persistence.searchRepository.createPilotLink({
+      partnerId: payload.partnerId,
+      expiresAt:
+        payload.expiresInDays && payload.expiresInDays > 0
+          ? addDaysToNowIso(payload.expiresInDays)
+          : addDaysToNowIso(30),
+      allowedFeatures
+    });
+
+    await persistence.searchRepository.recordOpsAction({
+      actionType: "pilot_link_created",
+      targetType: "pilot_link",
+      targetId: link.id,
+      partnerId: partner.id,
+      result: "success",
+      details: {
+        expiresAt: link.expiresAt,
+        status: link.status
+      }
+    });
+
+    await persistence.searchRepository.recordValidationEvent({
+      eventName: "pilot_link_created",
+      payload: {
+        partnerId: partner.id,
+        partnerSlug: partner.slug,
+        pilotLinkId: link.id
+      }
+    });
+
+    metrics.recordPilotLinkCreate();
+    if (hasPilotOverrideValue(allowedFeatures)) {
+      metrics.recordPartnerFeatureOverride();
+    }
+
+    return reply.status(201).send({
+      link,
+      url: `/?pilot=${link.token}`
+    });
+  });
+
+  app.get("/pilot/links/:token", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled || !config.ops.pilotLinksEnabled) {
+      throw featureDisabled("Pilot links");
+    }
+
+    const params = request.params as { token?: string };
+    const token = params.token?.trim();
+
+    if (!token) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid pilot link token", [
+          { field: "token", message: "token is required" }
+        ])
+      );
+    }
+
+    const view = await persistence.searchRepository.getPilotLink(token);
+    if (!view) {
+      return reply.status(404).send(
+        buildErrorPayload("PILOT_LINK_NOT_FOUND", "No pilot link was found for this token.")
+      );
+    }
+
+    if (view.link.status === "expired") {
+      return reply.status(410).send(
+        buildErrorPayload("PILOT_LINK_EXPIRED", "This pilot link has expired.")
+      );
+    }
+
+    if (view.link.status === "revoked") {
+      return reply.status(410).send(
+        buildErrorPayload("PILOT_LINK_REVOKED", "This pilot link has been revoked.")
+      );
+    }
+
+    metrics.recordPilotLinkOpen();
+    await persistence.searchRepository.recordValidationEvent({
+      eventName: "pilot_link_opened",
+      payload: {
+        partnerId: view.partner.id,
+        partnerSlug: view.partner.slug,
+        pilotLinkId: view.link.id
+      }
+    });
+
+    return view;
+  });
+
+  app.post("/pilot/links/:token/revoke", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled || !config.ops.pilotLinksEnabled) {
+      throw featureDisabled("Pilot links");
+    }
+
+    const params = request.params as { token?: string };
+    const token = params.token?.trim();
+
+    if (!token) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid pilot link token", [
+          { field: "token", message: "token is required" }
+        ])
+      );
+    }
+
+    const existing = await persistence.searchRepository.getPilotLink(token);
+    const revoked = await persistence.searchRepository.revokePilotLink(token);
+    if (!revoked) {
+      await persistence.searchRepository.recordOpsAction({
+        actionType: "pilot_link_revoked",
+        targetType: "pilot_link",
+        targetId: token,
+        result: "not_found"
+      });
+      return reply.status(404).send(
+        buildErrorPayload("PILOT_LINK_NOT_FOUND", "No pilot link was found for this token.")
+      );
+    }
+
+    await persistence.searchRepository.recordOpsAction({
+      actionType: "pilot_link_revoked",
+      targetType: "pilot_link",
+      targetId: revoked.id,
+      partnerId: revoked.partnerId,
+      result: "success",
+      details: {
+        token,
+        revokedAt: revoked.revokedAt
+      }
+    });
+
+    await persistence.searchRepository.recordValidationEvent({
+      eventName: "pilot_link_revoked",
+      payload: {
+        partnerId: revoked.partnerId,
+        pilotLinkId: revoked.id,
+        previousStatus: existing?.link.status ?? null
+      }
+    });
+
+    metrics.recordPilotLinkRevoke();
+    return { link: revoked };
+  });
+
+  app.get("/ops/pilots/:partnerId/activity", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const params = request.params as { partnerId?: string };
+    const partnerId = params.partnerId?.trim();
+    const query = request.query as Record<string, unknown> | undefined;
+
+    if (!partnerId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid partner id", [
+          { field: "partnerId", message: "partnerId is required" }
+        ])
+      );
+    }
+
+    const activity = await persistence.searchRepository.listPilotActivity({
+      partnerId,
+      limit: parseLimit(query, config.performance.opsDefaultPageSize, config.performance.opsMaxPageSize)
+    });
+    metrics.recordPilotActivityRead();
+    return { activity };
+  });
+
+  app.get("/ops/actions", async (request) => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const query = request.query as Record<string, unknown> | undefined;
+    const partnerId = typeof query?.partnerId === "string" ? query.partnerId.trim() : undefined;
+    const actions = await persistence.searchRepository.listOpsActions({
+      partnerId,
+      limit: parseLimit(query, config.performance.opsDefaultPageSize, config.performance.opsMaxPageSize)
+    });
+
+    return { actions };
+  });
+
+  app.get("/ops/summary", async () => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const [summary, statuses, dataQualitySummary] = await Promise.all([
+      persistence.searchRepository.getOpsSummary(),
+      providers.getStatuses(),
+      persistence.searchRepository.getDataQualitySummary()
+    ]);
+    const metricSnapshot = metrics.snapshot();
+    metrics.recordOpsSummaryRead();
+
+    return {
+      summary: {
+        ...summary,
+        topErrorCategories: Object.entries(metricSnapshot.errorRateByCategory)
+          .map(([category, value]) => ({
+            category,
+            count: value.count
+          }))
+          .filter((entry) => entry.count > 0)
+          .sort((left, right) => right.count - left.count)
+      },
+      performance: config.performance.internalPerfSummaryEnabled
+        ? {
+            averageSearchLatencyMs: metricSnapshot.searchLatencyMs.average,
+            p95SearchLatencyMs: metricSnapshot.searchLatencyP95Ms,
+            providerCallCountByType: metricSnapshot.providerCallCountByType,
+            cacheHitRate: metricSnapshot.cacheHitRate,
+            liveFetchBudgetExhaustionCount: metricSnapshot.liveFetchBudgetExhaustionCount,
+            heavyEndpointReadCounts: metricSnapshot.heavyEndpointReadCounts
+          }
+        : null,
+      dataQualitySummary,
+      errors: metricSnapshot.errorRateByCategory,
+      providers: statuses
+    };
+  });
+
+  app.get("/ops/errors", async () => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const snapshot = metrics.snapshot();
+    metrics.recordOpsErrorView();
+    return {
+      errors: snapshot.errorRateByCategory
+    };
+  });
+
+  app.get("/ops/data-quality", async (request) => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const query = request.query as Record<string, unknown> | undefined;
+    const events = await persistence.searchRepository.listDataQualityEvents({
+      severity:
+        typeof query?.severity === "string"
+          ? (query.severity as DataQualitySeverity)
+          : undefined,
+      sourceDomain:
+        typeof query?.sourceDomain === "string"
+          ? (query.sourceDomain as DataQualitySourceDomain)
+          : undefined,
+      provider: typeof query?.provider === "string" ? query.provider.trim() : undefined,
+      partnerId: typeof query?.partnerId === "string" ? query.partnerId.trim() : undefined,
+      status:
+        typeof query?.status === "string"
+          ? (query.status as "open" | "acknowledged" | "resolved" | "ignored")
+          : undefined,
+      limit: parseLimit(query, config.performance.opsDefaultPageSize, config.performance.opsMaxPageSize)
+    });
+
+    return {
+      events
+    };
+  });
+
+  app.get("/ops/data-quality/summary", async (request) => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const query = request.query as Record<string, unknown> | undefined;
+    const summary = await persistence.searchRepository.getDataQualitySummary({
+      sourceDomain:
+        typeof query?.sourceDomain === "string"
+          ? (query.sourceDomain as DataQualitySourceDomain)
+          : undefined,
+      provider: typeof query?.provider === "string" ? query.provider.trim() : undefined,
+      partnerId: typeof query?.partnerId === "string" ? query.partnerId.trim() : undefined,
+      status:
+        typeof query?.status === "string"
+          ? (query.status as "open" | "acknowledged" | "resolved" | "ignored")
+          : undefined
+    });
+
+    return {
+      summary
+    };
+  });
+
+  app.get("/ops/data-quality/:eventId", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const params = request.params as { eventId?: string };
+    const eventId = params.eventId?.trim();
+    if (!eventId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid data quality event id", [
+          { field: "eventId", message: "eventId is required" }
+        ])
+      );
+    }
+
+    const event = await persistence.searchRepository.getDataQualityEvent(eventId);
+    if (!event) {
+      return reply.status(404).send(
+        buildErrorPayload("VALIDATION_ERROR", "Data quality event not found", [
+          { field: "eventId", message: "No data quality event was found for this id." }
+        ])
+      );
+    }
+
+    return event;
+  });
+
+  app.patch("/ops/data-quality/:eventId", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    const params = request.params as { eventId?: string };
+    const eventId = params.eventId?.trim();
+    const payload = dataQualityStatusUpdateSchema.parse(request.body ?? {});
+
+    if (!eventId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid data quality event id", [
+          { field: "eventId", message: "eventId is required" }
+        ])
+      );
+    }
+
+    const event = await persistence.searchRepository.updateDataQualityEventStatus(eventId, payload.status);
+    if (!event) {
+      return reply.status(404).send(
+        buildErrorPayload("VALIDATION_ERROR", "Data quality event not found", [
+          { field: "eventId", message: "No data quality event was found for this id." }
+        ])
+      );
+    }
+
+    await persistence.searchRepository.recordOpsAction({
+      actionType: `data_quality_${payload.status}`,
+      targetType: "data_quality_event",
+      targetId: eventId,
+      partnerId: event.partnerId ?? null,
+      result: "success",
+      details: {
+        status: payload.status
+      }
+    });
+
+    return event;
+  });
+
+  app.get("/ops/feature-flags", async () => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Pilot operations");
+    }
+
+    return {
+      validation: config.validation,
+      workflow: config.workflow,
+      ops: config.ops,
+      dataQuality: config.dataQuality,
+      performance: config.performance
+    };
   });
 
   app.post("/metrics/events", async (request, reply) => {
@@ -758,13 +1522,18 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Feedback capture");
     }
 
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    if (!getEffectivePilotFeatures(config, pilotContext).feedbackEnabled) {
+      throw featureDisabledForPilot("Feedback capture");
+    }
+
     const payload = feedbackSchema.parse(request.body);
     const sessionId = extractSessionId(request, payload.sessionId ?? null);
     const record = await persistence.searchRepository.createFeedback({
       ...payload,
       sessionId
     });
-    await persistence.searchRepository.recordValidationEvent({
+    await recordValidationEventWithPilot(persistence.searchRepository, {
       eventName: "feedback_submitted",
       sessionId,
       snapshotId: payload.snapshotId ?? null,
@@ -774,7 +1543,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
         category: payload.category,
         value: payload.value
       }
-    });
+    }, pilotContext);
     metrics.recordFeedbackSubmit(payload.value === "positive");
 
     return reply.status(201).send(record);
@@ -794,6 +1563,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
 
     const payload = searchRequestSchema.parse(request.body);
     const sessionId = extractSessionId(request);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
     try {
       const response = await runSearch(
         payload,
@@ -804,14 +1574,16 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
           metrics,
           repository: persistence.searchRepository,
           safetyProvider: providers.safety,
-          getProviderFreshnessHours: () => providers.getFreshnessHours()
+          getProviderFreshnessHours: () => providers.getFreshnessHours(),
+          getProviderUsage: () => providers.getLastProviderUsage()
         },
         {
-          sessionId
+          sessionId,
+          partnerId: pilotContext?.partner.id ?? null
         }
       );
       if (config.validation.enabled) {
-        await persistence.searchRepository.recordValidationEvent({
+        await recordValidationEventWithPilot(persistence.searchRepository, {
           eventName: "search_completed",
           sessionId,
           historyRecordId: response.metadata.historyRecordId ?? null,
@@ -819,7 +1591,31 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
             returnedCount: response.metadata.returnedCount,
             totalMatched: response.metadata.totalMatched
           }
-        });
+        }, pilotContext);
+      }
+      if (pilotContext) {
+        const statuses = await providers.getStatuses();
+        const degraded = statuses.some(
+          (status) =>
+            status.status === "degraded" || status.status === "failing" || status.status === "unavailable"
+        );
+        if (degraded) {
+          metrics.recordProviderDegradedDuringPilot();
+          await persistence.searchRepository.recordValidationEvent({
+            eventName: "provider_degraded_during_pilot",
+            payload: {
+              partnerId: pilotContext.partner.id,
+              partnerSlug: pilotContext.partner.slug,
+              pilotLinkId: pilotContext.link.id,
+              degradedProviders: statuses
+                .filter(
+                  (status) =>
+                    status.status === "degraded" || status.status === "failing" || status.status === "unavailable"
+                )
+                .map((status) => status.provider)
+            }
+          });
+        }
       }
       metrics.recordSearchOutcome(true);
       return response;
@@ -841,11 +1637,13 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     const payload = searchSnapshotPayloadSchema.parse(request.body);
+    const startedAt = Date.now();
     const snapshot = await persistence.searchRepository.createSearchSnapshot({
       ...payload,
       sessionId: extractSessionId(request, payload.sessionId ?? null)
     });
     metrics.recordSnapshotCreated();
+    metrics.recordSnapshotWriteLatency(Date.now() - startedAt);
 
     return reply.status(201).send(snapshot);
   });
@@ -854,8 +1652,12 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     const startedAt = Date.now();
     const query = request.query as Record<string, unknown> | undefined;
     const sessionId = extractSessionId(request);
-    const limit = parseLimit(query);
-    const snapshots = await persistence.searchRepository.listSearchSnapshots(sessionId, limit);
+    const effectiveLimit = parseLimit(
+      query,
+      config.performance.opsDefaultPageSize,
+      config.performance.opsMaxPageSize
+    );
+    const snapshots = await persistence.searchRepository.listSearchSnapshots(sessionId, effectiveLimit);
     metrics.recordSnapshotRead();
     metrics.recordSnapshotReadLatency(Date.now() - startedAt);
 
@@ -906,6 +1708,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shared snapshots");
     }
 
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    if (!getEffectivePilotFeatures(config, pilotContext).sharedSnapshotsEnabled) {
+      throw featureDisabledForPilot("Shared snapshots");
+    }
+
     const params = request.params as { id?: string };
     const snapshotId = params.id?.trim();
     const payload = shareSnapshotSchema.parse(request.body ?? {});
@@ -939,14 +1746,14 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       sessionId,
       expiresAt: expiresInDays > 0 ? addDaysToNowIso(expiresInDays) : null
     });
-    await persistence.searchRepository.recordValidationEvent({
+    await recordValidationEventWithPilot(persistence.searchRepository, {
       eventName: "snapshot_shared",
       sessionId,
       snapshotId,
       payload: {
         shareId: share.shareId
       }
-    });
+    }, pilotContext);
     metrics.recordSharedSnapshotCreate();
 
     return reply.status(201).send({
@@ -959,6 +1766,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   app.get("/shared/snapshots/:shareId", async (request, reply) => {
     if (!config.validation.enabled || !config.validation.sharedSnapshotsEnabled) {
       throw featureDisabled("Shared snapshots");
+    }
+
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    if (!getEffectivePilotFeatures(config, pilotContext).sharedSnapshotsEnabled) {
+      throw featureDisabledForPilot("Shared snapshots");
     }
 
     const params = request.params as { shareId?: string };
@@ -1004,14 +1816,14 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       );
     }
 
-    await persistence.searchRepository.recordValidationEvent({
+    await recordValidationEventWithPilot(persistence.searchRepository, {
       eventName: "snapshot_opened",
       sessionId: sharedView.share.sessionId ?? null,
       snapshotId: sharedView.snapshot.id,
       payload: {
         shareId: sharedView.share.shareId
       }
-    });
+    }, pilotContext);
     metrics.recordSharedSnapshotOpen();
 
     return {
@@ -1139,7 +1951,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   app.get("/search/history", async (request) => {
     const query = request.query as Record<string, unknown> | undefined;
     const sessionId = extractSessionId(request);
-    const limit = parseLimit(query);
+    const limit = parseLimit(
+      query,
+      config.performance.opsDefaultPageSize,
+      config.performance.opsMaxPageSize
+    );
     const history = await persistence.searchRepository.listSearchHistory(sessionId, limit);
     metrics.recordSearchHistoryRead();
 
@@ -1295,6 +2111,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shared shortlists");
     }
 
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    if (!getEffectivePilotFeatures(config, pilotContext).sharedShortlistsEnabled) {
+      throw featureDisabledForPilot("Shared shortlists");
+    }
+
     const params = request.params as { id?: string };
     const shortlistId = params.id?.trim();
     const payload = shortlistShareSchema.parse(request.body ?? {});
@@ -1325,6 +2146,15 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
           : null
     });
 
+    await recordValidationEventWithPilot(persistence.searchRepository, {
+      eventName: "shortlist_shared",
+      sessionId,
+      payload: {
+        shareId: share.shareId,
+        shortlistId: share.shortlistId,
+        shareMode: share.shareMode
+      }
+    }, pilotContext);
     metrics.recordShortlistShareCreate();
     return reply.status(201).send({
       share,
@@ -1389,6 +2219,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shared shortlists");
     }
 
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    if (!getEffectivePilotFeatures(config, pilotContext).sharedShortlistsEnabled) {
+      throw featureDisabledForPilot("Shared shortlists");
+    }
+
     const params = request.params as { shareId?: string };
     const shareId = params.shareId?.trim();
 
@@ -1430,6 +2265,14 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     metrics.recordShortlistShareOpen();
+    await recordValidationEventWithPilot(persistence.searchRepository, {
+      eventName: "shared_shortlist_opened",
+      sessionId: sharedView.share.sessionId ?? null,
+      payload: {
+        shareId: sharedView.share.shareId,
+        shortlistId: sharedView.shortlist.id
+      }
+    }, pilotContext);
     return sharedView;
   });
 
@@ -1554,6 +2397,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shared comments");
     }
 
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    if (!getEffectivePilotFeatures(config, pilotContext).shortlistCollaborationEnabled) {
+      throw featureDisabledForPilot("Shared comments");
+    }
+
     const payload = sharedCommentCreateSchema.parse(request.body);
     const shared = await persistence.searchRepository.getSharedShortlist(payload.shareId);
     if (!shared) {
@@ -1579,6 +2427,14 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     const comment = await persistence.searchRepository.createSharedComment(payload);
+    await recordValidationEventWithPilot(persistence.searchRepository, {
+      eventName: "shared_comment_added",
+      payload: {
+        shareId: payload.shareId,
+        entityId: payload.entityId,
+        commentId: comment.id
+      }
+    }, pilotContext);
     metrics.recordSharedCommentCreate();
     return reply.status(201).send(comment);
   });
@@ -1671,6 +2527,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Reviewer decisions");
     }
 
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    if (!getEffectivePilotFeatures(config, pilotContext).shortlistCollaborationEnabled) {
+      throw featureDisabledForPilot("Reviewer decisions");
+    }
+
     const payload = reviewerDecisionCreateSchema.parse(request.body);
     const shared = await persistence.searchRepository.getSharedShortlist(payload.shareId);
     if (!shared) {
@@ -1705,6 +2566,15 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     } else {
       metrics.recordReviewerDecisionCreate();
     }
+    await recordValidationEventWithPilot(persistence.searchRepository, {
+      eventName: "reviewer_decision_submitted",
+      payload: {
+        shareId: payload.shareId,
+        shortlistItemId: payload.shortlistItemId,
+        decisionId: decision.id,
+        decision: decision.decision
+      }
+    }, pilotContext);
     return reply.status(existing.length > 0 ? 200 : 201).send(decision);
   });
 
@@ -1879,8 +2749,12 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
 
     const query = request.query as Record<string, unknown> | undefined;
     const sessionId = extractSessionId(request);
-    const limit = parseLimit(query, 12);
-    const activity = await persistence.searchRepository.listWorkflowActivity(sessionId, limit);
+    const effectiveLimit = parseLimit(
+      query,
+      config.performance.opsDefaultPageSize,
+      config.performance.opsMaxPageSize
+    );
+    const activity = await persistence.searchRepository.listWorkflowActivity(sessionId, effectiveLimit);
 
     return {
       activity
@@ -1906,7 +2780,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     const activity = await persistence.searchRepository.listCollaborationActivity({
       shareId,
       shortlistId,
-      limit: parseLimit(query, 20)
+      limit: parseLimit(query, config.performance.opsDefaultPageSize, config.performance.opsMaxPageSize)
     });
     metrics.recordCollaborationActivityRead();
 
@@ -1942,6 +2816,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     const sessionId = extractSessionId(request, payload.sessionId ?? definition.sessionId);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
     const response = await runSearch(definition.request, {
       geocoder: providers.geocoder,
       listingProvider: providers.listings,
@@ -1949,9 +2824,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       metrics,
       repository: persistence.searchRepository,
       safetyProvider: providers.safety,
-      getProviderFreshnessHours: () => providers.getFreshnessHours()
+      getProviderFreshnessHours: () => providers.getFreshnessHours(),
+      getProviderUsage: () => providers.getLastProviderUsage()
     }, {
       sessionId,
+      partnerId: pilotContext?.partner.id ?? null,
       searchDefinitionId: definition.id,
       rerunSourceType: "definition",
       rerunSourceId: definition.id
@@ -1962,6 +2839,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     });
 
     if (payload.createSnapshot) {
+      const startedAt = Date.now();
       const snapshot = await persistence.searchRepository.createSearchSnapshot({
         request: definition.request,
         response,
@@ -1981,6 +2859,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
         snapshotId: snapshot.id
       };
       metrics.recordSnapshotCreated();
+      metrics.recordSnapshotWriteLatency(Date.now() - startedAt);
     }
 
     metrics.recordSearchRerun();
@@ -2026,6 +2905,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     const sessionId = extractSessionId(request, payload.sessionId ?? historyRecord.sessionId);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
     const response = await runSearch(historyRecord.request, {
       geocoder: providers.geocoder,
       listingProvider: providers.listings,
@@ -2033,15 +2913,18 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       metrics,
       repository: persistence.searchRepository,
       safetyProvider: providers.safety,
-      getProviderFreshnessHours: () => providers.getFreshnessHours()
+      getProviderFreshnessHours: () => providers.getFreshnessHours(),
+      getProviderUsage: () => providers.getLastProviderUsage()
     }, {
       sessionId,
+      partnerId: pilotContext?.partner.id ?? null,
       searchDefinitionId: historyRecord.searchDefinitionId ?? null,
       rerunSourceType: "history",
       rerunSourceId: historyRecord.id
     });
 
     if (payload.createSnapshot) {
+      const startedAt = Date.now();
       const snapshot = await persistence.searchRepository.createSearchSnapshot({
         request: historyRecord.request,
         response,
@@ -2061,6 +2944,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
         snapshotId: snapshot.id
       };
       metrics.recordSnapshotCreated();
+      metrics.recordSnapshotWriteLatency(Date.now() - startedAt);
     }
 
     metrics.recordSearchRerun();

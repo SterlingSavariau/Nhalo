@@ -64,5 +64,12 @@ describe("POST /search", () => {
     expect(payload.homes[0].scores.overallConfidence).toBeDefined();
     expect(payload.metadata.totalCandidatesScanned).toBeGreaterThanOrEqual(payload.metadata.totalMatched);
     expect(payload.homes[0].scores.nhalo).toBeGreaterThanOrEqual(payload.homes.at(-1).scores.nhalo);
+    expect(payload.metadata.performance?.timingsMs.geocodeResolutionMs).toBeTypeOf("number");
+    expect(payload.metadata.performance?.timingsMs.totalSearchMs).toBeGreaterThanOrEqual(
+      payload.metadata.performance?.timingsMs.persistenceMs ?? 0
+    );
+    expect(payload.metadata.performance?.providerUsage.geocoderCalls).toBe(1);
+    expect(payload.metadata.performance?.providerUsage.listingProviderCalls).toBe(1);
+    expect(payload.metadata.performance?.providerUsage.safetyProviderCalls).toBe(1);
   });
 });

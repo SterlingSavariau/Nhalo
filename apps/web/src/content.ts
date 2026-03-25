@@ -124,6 +124,21 @@ export const COLLABORATION_COPY = {
   activityTitle: "Collaboration activity"
 } as const;
 
+export const PILOT_OPS_COPY = {
+  contextLabel: "Pilot context",
+  internalLabel: "Internal pilot ops",
+  inactiveLabel: "Inactive",
+  pausedLabel: "Paused",
+  activeLabel: "Active",
+  linkWarning: "Pilot links apply partner-scoped presentation and workflow flags only. They do not change ranking logic.",
+  revokedLinkLabel: "This pilot link has been revoked.",
+  expiredLinkLabel: "This pilot link has expired.",
+  opsWarning: "These controls manage pilot packaging and access only. They never mutate stored scores or snapshot payloads.",
+  createPartnerTitle: "Add pilot partner",
+  createLinkAction: "Create pilot link",
+  revokeLinkAction: "Revoke link"
+} as const;
+
 export const DEMO_SCENARIO_COPY: DemoScenario[] = [
   {
     id: "southfield-family-balance",

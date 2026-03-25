@@ -1,6 +1,7 @@
 import type {
   GeocoderProviderMode,
   ListingProviderMode,
+  OpsFeatureConfig,
   PropertyType,
   SafetyProviderMode,
   SearchWeights
@@ -23,8 +24,22 @@ export const DEFAULT_ALLOWED_LISTING_STATUSES = ["active", "coming_soon"] as con
 export const DEFAULT_COMPARABLE_SQFT_TOLERANCE_PERCENT = 25;
 export const DEFAULT_COMPARABLE_BEDROOM_TOLERANCE = 1;
 export const DEFAULT_MIN_COMPARABLE_SAMPLE_SIZE = 5;
+export const DEFAULT_DATA_QUALITY_RULES_ENABLED = true;
+export const DEFAULT_QUALITY_STALE_LISTING_HOURS = 72;
+export const DEFAULT_QUALITY_STALE_SAFETY_HOURS = 168;
+export const DEFAULT_QUALITY_STALE_GEOCODE_HOURS = 720;
+export const DEFAULT_QUALITY_MAX_PRICE_PER_SQFT = 2000;
+export const DEFAULT_QUALITY_LOW_PRECISION_ADDRESS_ALLOWED = false;
 export const DEFAULT_PROVIDER_RETRY_COUNT = 1;
 export const DEFAULT_PROVIDER_RETRY_BACKOFF_MS = 150;
+export const DEFAULT_SEARCH_INTERNAL_TIMING_ENABLED = true;
+export const DEFAULT_PROVIDER_BUDGETS_ENABLED = false;
+export const DEFAULT_LISTING_PROVIDER_MAX_CALLS_PER_MINUTE = 120;
+export const DEFAULT_SAFETY_PROVIDER_MAX_CALLS_PER_MINUTE = 300;
+export const DEFAULT_GEOCODER_PROVIDER_MAX_CALLS_PER_MINUTE = 180;
+export const DEFAULT_OPS_DEFAULT_PAGE_SIZE = 20;
+export const DEFAULT_OPS_MAX_PAGE_SIZE = 100;
+export const DEFAULT_ENABLE_INTERNAL_PERF_SUMMARY = true;
 export const DEFAULT_SNAPSHOT_RETENTION_DAYS = 30;
 export const DEFAULT_SEARCH_HISTORY_RETENTION_DAYS = 30;
 export const DEFAULT_RATE_LIMIT_SEARCH_WINDOW_MS = 60_000;
@@ -35,6 +50,7 @@ export const DEFAULT_RATE_LIMIT_SNAPSHOT_MAX_DEVELOPMENT = 60;
 export const DEFAULT_RATE_LIMIT_SNAPSHOT_MAX_NON_DEVELOPMENT = 20;
 export const DEFAULT_CLEANUP_INTERVAL_MS = 3_600_000;
 export const DEFAULT_SHARE_SNAPSHOT_EXPIRATION_DAYS = 14;
+export const DEFAULT_PILOT_LINK_EXPIRATION_DAYS = 30;
 export const DEFAULT_WEIGHTS: SearchWeights = {
   price: 40,
   size: 30,
@@ -78,10 +94,13 @@ export interface AppConfig {
   rateLimit: RateLimitConfig;
   validation: ValidationConfig;
   workflow: WorkflowConfig;
+  ops: OpsFeatureConfig;
   safety: SafetyConfig;
   listings: ListingConfig;
   geocoder: GeocoderConfig;
   searchQuality: SearchQualityConfig;
+  dataQuality: DataQualityConfig;
+  performance: PerformanceConfig;
 }
 
 export interface ExternalProviderConfig {
@@ -119,6 +138,27 @@ export interface SearchQualityConfig {
   minComparableSampleSize: number;
 }
 
+export interface DataQualityConfig {
+  enabled: boolean;
+  staleListingHours: number;
+  staleSafetyHours: number;
+  staleGeocodeHours: number;
+  maxPricePerSqft: number;
+  minComparableSampleSize: number;
+  lowPrecisionAddressAllowed: boolean;
+}
+
+export interface PerformanceConfig {
+  internalTimingEnabled: boolean;
+  providerBudgetsEnabled: boolean;
+  listingProviderMaxCallsPerMinute: number;
+  safetyProviderMaxCallsPerMinute: number;
+  geocoderProviderMaxCallsPerMinute: number;
+  opsDefaultPageSize: number;
+  opsMaxPageSize: number;
+  internalPerfSummaryEnabled: boolean;
+}
+
 export interface RetentionConfig {
   snapshotRetentionDays: number;
   searchHistoryRetentionDays: number;
@@ -147,6 +187,12 @@ export interface WorkflowConfig {
   sharedShortlistsEnabled: boolean;
   sharedCommentsEnabled: boolean;
   reviewerDecisionsEnabled: boolean;
+}
+
+export interface OpsFeatureConfig {
+  pilotOpsEnabled: boolean;
+  internalOpsUiEnabled: boolean;
+  pilotLinksEnabled: boolean;
 }
 
 let cachedConfig: AppConfig | null = null;
@@ -432,6 +478,48 @@ function validateConfig(config: AppConfig): AppConfig {
     });
   }
 
+  if (config.dataQuality.staleListingHours <= 0) {
+    details.push({
+      field: "QUALITY_STALE_LISTING_HOURS",
+      message: "QUALITY_STALE_LISTING_HOURS must be greater than 0."
+    });
+  }
+
+  if (config.dataQuality.staleSafetyHours <= 0) {
+    details.push({
+      field: "QUALITY_STALE_SAFETY_HOURS",
+      message: "QUALITY_STALE_SAFETY_HOURS must be greater than 0."
+    });
+  }
+
+  if (config.dataQuality.staleGeocodeHours <= 0) {
+    details.push({
+      field: "QUALITY_STALE_GEOCODE_HOURS",
+      message: "QUALITY_STALE_GEOCODE_HOURS must be greater than 0."
+    });
+  }
+
+  if (config.dataQuality.maxPricePerSqft <= 0) {
+    details.push({
+      field: "QUALITY_MAX_PRICE_PER_SQFT",
+      message: "QUALITY_MAX_PRICE_PER_SQFT must be greater than 0."
+    });
+  }
+
+  if (config.performance.opsDefaultPageSize <= 0 || config.performance.opsMaxPageSize <= 0) {
+    details.push({
+      field: "OPS_PAGE_SIZE",
+      message: "OPS_DEFAULT_PAGE_SIZE and OPS_MAX_PAGE_SIZE must be greater than 0."
+    });
+  }
+
+  if (config.performance.opsDefaultPageSize > config.performance.opsMaxPageSize) {
+    details.push({
+      field: "OPS_PAGE_SIZE",
+      message: "OPS_DEFAULT_PAGE_SIZE must be less than or equal to OPS_MAX_PAGE_SIZE."
+    });
+  }
+
   if (details.length > 0) {
     throw new ConfigError("Invalid environment configuration", details);
   }
@@ -528,10 +616,17 @@ export function getConfig(): AppConfig {
       sharedCommentsEnabled: String(process.env.ENABLE_SHARED_COMMENTS ?? "true") === "true",
       reviewerDecisionsEnabled: String(process.env.ENABLE_REVIEWER_DECISIONS ?? "true") === "true"
     },
+    ops: {
+      pilotOpsEnabled: String(process.env.ENABLE_PILOT_OPS ?? "false") === "true",
+      internalOpsUiEnabled: String(process.env.ENABLE_INTERNAL_OPS_UI ?? "false") === "true",
+      pilotLinksEnabled: String(process.env.ENABLE_PILOT_LINKS ?? "false") === "true"
+    },
     safety: getSafetyConfig(),
     listings: getListingConfig(),
     geocoder: getGeocoderConfig(),
-    searchQuality: getSearchQualityConfig()
+    searchQuality: getSearchQualityConfig(),
+    dataQuality: getDataQualityConfig(),
+    performance: getPerformanceConfig()
   });
 
   cachedConfig = config;
@@ -559,6 +654,76 @@ export function getSearchQualityConfig(): SearchQualityConfig {
       process.env.MIN_COMPARABLE_SAMPLE_SIZE,
       DEFAULT_MIN_COMPARABLE_SAMPLE_SIZE
     )
+  };
+}
+
+export function getDataQualityConfig(): DataQualityConfig {
+  return {
+    enabled: String(process.env.DATA_QUALITY_RULES_ENABLED ?? String(DEFAULT_DATA_QUALITY_RULES_ENABLED)) === "true",
+    staleListingHours: parsePositiveInteger(
+      process.env.QUALITY_STALE_LISTING_HOURS,
+      DEFAULT_QUALITY_STALE_LISTING_HOURS
+    ),
+    staleSafetyHours: parsePositiveInteger(
+      process.env.QUALITY_STALE_SAFETY_HOURS,
+      DEFAULT_QUALITY_STALE_SAFETY_HOURS
+    ),
+    staleGeocodeHours: parsePositiveInteger(
+      process.env.QUALITY_STALE_GEOCODE_HOURS,
+      DEFAULT_QUALITY_STALE_GEOCODE_HOURS
+    ),
+    maxPricePerSqft: parsePositiveInteger(
+      process.env.QUALITY_MAX_PRICE_PER_SQFT,
+      DEFAULT_QUALITY_MAX_PRICE_PER_SQFT
+    ),
+    minComparableSampleSize: parsePositiveInteger(
+      process.env.QUALITY_MIN_COMPARABLE_SAMPLE_SIZE,
+      DEFAULT_MIN_COMPARABLE_SAMPLE_SIZE
+    ),
+    lowPrecisionAddressAllowed:
+      String(
+        process.env.QUALITY_LOW_PRECISION_ADDRESS_ALLOWED ??
+          String(DEFAULT_QUALITY_LOW_PRECISION_ADDRESS_ALLOWED)
+      ) === "true"
+  };
+}
+
+export function getPerformanceConfig(): PerformanceConfig {
+  return {
+    internalTimingEnabled:
+      String(
+        process.env.SEARCH_INTERNAL_TIMING_ENABLED ??
+          String(DEFAULT_SEARCH_INTERNAL_TIMING_ENABLED)
+      ) === "true",
+    providerBudgetsEnabled:
+      String(
+        process.env.PROVIDER_BUDGETS_ENABLED ?? String(DEFAULT_PROVIDER_BUDGETS_ENABLED)
+      ) === "true",
+    listingProviderMaxCallsPerMinute: parsePositiveInteger(
+      process.env.LISTING_PROVIDER_MAX_CALLS_PER_MINUTE,
+      DEFAULT_LISTING_PROVIDER_MAX_CALLS_PER_MINUTE
+    ),
+    safetyProviderMaxCallsPerMinute: parsePositiveInteger(
+      process.env.SAFETY_PROVIDER_MAX_CALLS_PER_MINUTE,
+      DEFAULT_SAFETY_PROVIDER_MAX_CALLS_PER_MINUTE
+    ),
+    geocoderProviderMaxCallsPerMinute: parsePositiveInteger(
+      process.env.GEOCODER_PROVIDER_MAX_CALLS_PER_MINUTE,
+      DEFAULT_GEOCODER_PROVIDER_MAX_CALLS_PER_MINUTE
+    ),
+    opsDefaultPageSize: parsePositiveInteger(
+      process.env.OPS_DEFAULT_PAGE_SIZE,
+      DEFAULT_OPS_DEFAULT_PAGE_SIZE
+    ),
+    opsMaxPageSize: parsePositiveInteger(
+      process.env.OPS_MAX_PAGE_SIZE,
+      DEFAULT_OPS_MAX_PAGE_SIZE
+    ),
+    internalPerfSummaryEnabled:
+      String(
+        process.env.ENABLE_INTERNAL_PERF_SUMMARY ??
+          String(DEFAULT_ENABLE_INTERNAL_PERF_SUMMARY)
+      ) === "true"
   };
 }
 

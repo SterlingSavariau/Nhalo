@@ -32,6 +32,7 @@ model Property {
 model SearchRequest {
   id                    String          @id @default(cuid())
   sessionId             String?
+  partnerId             String?
   searchDefinitionId    String?
   rerunSourceType       String?
   rerunSourceId         String?
@@ -62,11 +63,42 @@ model SearchRequest {
   suggestions           Json?
   createdAt             DateTime        @default(now())
   scoreSnapshots        ScoreSnapshot[]
+  dataQualityEvents     DataQualityEvent[]
   feedback              Feedback[]
   validationEvents      ValidationEvent[]
   shortlistItems        ShortlistItem[]  @relation("ShortlistItemSourceHistory")
 
   @@index([sessionId, createdAt])
+  @@index([partnerId, createdAt])
+}
+
+model DataQualityEvent {
+  id             String   @id @default(cuid())
+  ruleId         String
+  sourceDomain   String
+  severity       String
+  category       String
+  message        String
+  targetType     String
+  targetId       String
+  partnerId      String?
+  sessionId      String?
+  provider       String?
+  status         String   @default("open")
+  contextJson    Json?
+  searchRequestId String?
+  triggeredAt    DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  searchRequest  SearchRequest? @relation(fields: [searchRequestId], references: [id], onDelete: SetNull)
+
+  @@index([severity, createdAt])
+  @@index([sourceDomain, createdAt])
+  @@index([provider, createdAt])
+  @@index([partnerId, createdAt])
+  @@index([status, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([searchRequestId, createdAt])
 }
 
 model SearchSnapshot {
@@ -249,6 +281,52 @@ model ReviewerDecision {
   @@index([shareId, updatedAt])
   @@index([shortlistItemId, updatedAt])
   @@unique([shareId, shortlistItemId])
+}
+
+model PilotPartner {
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  status          String
+  contactLabel    String?
+  notes           String?
+  featureOverrides Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  pilotLinks      PilotLink[]
+  opsActions      OpsAction[]
+
+  @@index([status, updatedAt])
+}
+
+model PilotLink {
+  id              String   @id @default(cuid())
+  partnerId       String
+  token           String   @unique
+  allowedFeatures Json
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+  openCount       Int      @default(0)
+  createdAt       DateTime @default(now())
+  partner         PilotPartner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+
+  @@index([partnerId, createdAt])
+  @@index([token, expiresAt, revokedAt])
+}
+
+model OpsAction {
+  id          String   @id @default(cuid())
+  actionType  String
+  targetType  String
+  targetId    String
+  partnerId   String?
+  result      String
+  details     Json?
+  performedAt DateTime @default(now())
+  partner     PilotPartner? @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+
+  @@index([partnerId, performedAt])
+  @@index([targetType, targetId, performedAt])
 }
 
 model ResultNote {

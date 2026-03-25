@@ -44,6 +44,17 @@ export type GeocodePrecision =
   | "centroid"
   | "mock"
   | "none";
+export type DataQualitySourceDomain = "listing" | "safety" | "geocode" | "search";
+export type DataQualitySeverity = "info" | "warn" | "error" | "critical";
+export type DataQualityStatus = "open" | "acknowledged" | "resolved" | "ignored";
+export type DataQualityTargetType =
+  | "listing"
+  | "property"
+  | "provider"
+  | "search"
+  | "search_result"
+  | "geocode"
+  | "safety_signal";
 
 export interface SearchWeights {
   price: number;
@@ -70,7 +81,115 @@ export interface SearchRequest {
 
 export interface SessionIdentity {
   sessionId: string | null;
+  partnerId?: string | null;
+  pilotLinkId?: string | null;
   source: "local_storage" | "header" | "query" | "body" | "none";
+}
+
+export type PilotPartnerStatus = "active" | "paused" | "inactive";
+
+export interface PilotFeatureOverrides {
+  demoModeEnabled: boolean;
+  sharedSnapshotsEnabled: boolean;
+  sharedShortlistsEnabled: boolean;
+  feedbackEnabled: boolean;
+  validationPromptsEnabled: boolean;
+  shortlistCollaborationEnabled: boolean;
+}
+
+export interface PilotPartner {
+  id: string;
+  name: string;
+  slug: string;
+  status: PilotPartnerStatus;
+  contactLabel?: string | null;
+  notes?: string | null;
+  featureOverrides: PilotFeatureOverrides;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PilotContext {
+  partnerId: string;
+  partnerSlug: string;
+  partnerName: string;
+  status: PilotPartnerStatus;
+  pilotLinkId: string;
+  pilotToken: string;
+  allowedFeatures: PilotFeatureOverrides;
+}
+
+export interface PilotLinkRecord {
+  id: string;
+  partnerId: string;
+  token: string;
+  allowedFeatures: PilotFeatureOverrides;
+  createdAt: string;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+  openCount: number;
+  status: "active" | "expired" | "revoked";
+}
+
+export interface PilotLinkView {
+  link: PilotLinkRecord;
+  partner: PilotPartner;
+  context: PilotContext;
+}
+
+export interface OpsActionRecord {
+  id: string;
+  actionType: string;
+  targetType: string;
+  targetId: string;
+  partnerId?: string | null;
+  performedAt: string;
+  result: "success" | "not_found" | "rejected";
+  details?: Record<string, unknown> | null;
+}
+
+export type PilotActivityType =
+  | "pilot_link_created"
+  | "pilot_link_opened"
+  | "pilot_link_revoked"
+  | "partner_updated"
+  | "shared_snapshot_created"
+  | "shared_snapshot_opened"
+  | "shortlist_shared"
+  | "shared_shortlist_opened"
+  | "feedback_submitted"
+  | "shared_comment_added"
+  | "reviewer_decision_submitted"
+  | "empty_state_encountered"
+  | "provider_degraded_during_pilot";
+
+export interface PilotActivityRecord {
+  id: string;
+  partnerId: string;
+  pilotLinkId?: string | null;
+  eventType: PilotActivityType;
+  payload?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface OpsSummary {
+  activePilotPartners: number;
+  pilotLinkCounts: {
+    total: number;
+    active: number;
+    revoked: number;
+    expired: number;
+  };
+  recentSharedSnapshotCount: number;
+  recentShortlistShareCount: number;
+  feedbackCount: number;
+  validationEventCount: number;
+  topErrorCategories: Array<{
+    category: string;
+    count: number;
+  }>;
+  providerDegradationCount: number;
+  partnerUsage: PartnerUsageSummary[];
 }
 
 export interface Coordinates {
@@ -344,6 +463,45 @@ export interface ResultProvenance {
   geocodePrecision: GeocodePrecision;
 }
 
+export interface DataQualityEvent {
+  id: string;
+  ruleId: string;
+  sourceDomain: DataQualitySourceDomain;
+  severity: DataQualitySeverity;
+  category: string;
+  message: string;
+  triggeredAt: string;
+  targetType: DataQualityTargetType;
+  targetId: string;
+  partnerId?: string | null;
+  sessionId?: string | null;
+  provider?: string | null;
+  status: DataQualityStatus;
+  context: Record<string, unknown> | null;
+  searchRequestId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DataQualitySummary {
+  totalEvents: number;
+  openCount: number;
+  acknowledgedCount: number;
+  resolvedCount: number;
+  ignoredCount: number;
+  criticalCount: number;
+  bySeverity: Record<DataQualitySeverity, number>;
+  byDomain: Record<DataQualitySourceDomain, number>;
+  byCategory: Array<{
+    category: string;
+    count: number;
+  }>;
+  byProvider: Array<{
+    provider: string;
+    count: number;
+  }>;
+}
+
 export interface ScoredHome {
   id: string;
   address: string;
@@ -365,6 +523,9 @@ export interface ScoredHome {
   distanceMiles?: number;
   insideRequestedRadius?: boolean;
   qualityFlags?: string[];
+  integrityFlags?: string[];
+  dataWarnings?: string[];
+  degradedReasons?: string[];
   strengths?: string[];
   risks?: string[];
   confidenceReasons?: string[];
@@ -406,9 +567,68 @@ export interface SearchMetadata {
   searchOrigin?: SearchOriginMetadata;
   mockFallbackUsed?: boolean;
   staleDataPresent?: boolean;
+  integritySummary?: {
+    totalEvents: number;
+    criticalEvents: number;
+    categories: string[];
+    staleTopResults: number;
+  };
+  performance?: SearchExecutionProfile;
   historyRecordId?: string | null;
   sessionId?: string | null;
   rerunResultMetadata?: RerunResultMetadata | null;
+}
+
+export interface SearchExecutionTimings {
+  geocodeResolutionMs: number;
+  listingFetchMs: number;
+  listingNormalizationMs: number;
+  safetyFetchMs: number;
+  qualityIntegrityEvaluationMs: number;
+  deduplicationMs: number;
+  radiusFilteringMs: number;
+  comparableSelectionMs: number;
+  scoringMs: number;
+  persistenceMs: number;
+  totalSearchMs: number;
+}
+
+export interface SearchProviderUsage {
+  geocoderCalls: number;
+  listingProviderCalls: number;
+  safetyProviderCalls: number;
+  geocoderCacheHits: number;
+  listingCacheHits: number;
+  safetyCacheHits: number;
+  geocoderLiveFetches: number;
+  listingLiveFetches: number;
+  safetyLiveFetches: number;
+  geocoderRetriesUsed: number;
+  listingRetriesUsed: number;
+  safetyRetriesUsed: number;
+  geocoderStaleFallbacks: number;
+  listingStaleFallbacks: number;
+  safetyStaleFallbacks: number;
+  geocoderBudgetExceeded: boolean;
+  listingBudgetExceeded: boolean;
+  safetyBudgetExceeded: boolean;
+}
+
+export interface SearchExecutionProfile {
+  timingsMs: SearchExecutionTimings;
+  providerUsage: SearchProviderUsage;
+}
+
+export interface PartnerUsageSummary {
+  partnerId: string;
+  partnerName?: string | null;
+  searches: number;
+  liveProviderCalls: number;
+  cacheHitRate: number;
+  sharedSnapshotCreates: number;
+  sharedSnapshotOpens: number;
+  qualityEventCount: number;
+  pilotLinkOpens: number;
 }
 
 export interface SearchResponse {
@@ -713,6 +933,7 @@ export type ValidationEventName =
   | "suggestion_used"
   | "demo_scenario_started"
   | "restore_used"
+  | PilotActivityType
   | WorkflowActivityType
   | CollaborationActivityType;
 
@@ -786,6 +1007,10 @@ export interface ValidationSummary {
     shortlistId: string;
     opens: number;
   }>;
+  topPilotPartners?: Array<{
+    partnerId: string;
+    count: number;
+  }>;
 }
 
 export interface WorkflowFeatureConfig {
@@ -795,6 +1020,12 @@ export interface WorkflowFeatureConfig {
   sharedShortlistsEnabled?: boolean;
   sharedCommentsEnabled?: boolean;
   reviewerDecisionsEnabled?: boolean;
+}
+
+export interface OpsFeatureConfig {
+  pilotOpsEnabled: boolean;
+  internalOpsUiEnabled: boolean;
+  pilotLinksEnabled: boolean;
 }
 
 export interface DemoScenario {
@@ -846,6 +1077,9 @@ export interface PersistedSearchResult {
   qualityGateDecision?: string | null;
   rankingTieBreakInputs?: Record<string, unknown> | null;
   resultQualityFlags?: string[];
+  integrityFlags?: string[];
+  dataWarnings?: string[];
+  degradedReasons?: string[];
 }
 
 export interface SearchPersistenceInput {
@@ -856,9 +1090,11 @@ export interface SearchPersistenceInput {
   listings: ListingRecord[];
   marketSnapshot: MarketSnapshot;
   sessionId?: string | null;
+  partnerId?: string | null;
   searchDefinitionId?: string | null;
   rerunSourceType?: "definition" | "history" | null;
   rerunSourceId?: string | null;
+  qualityEvents?: Array<Omit<DataQualityEvent, "id" | "createdAt" | "updatedAt">>;
 }
 
 export interface SearchRepository {
@@ -907,6 +1143,34 @@ export interface SearchRepository {
   listSharedShortlists(shortlistId: string): Promise<SharedShortlist[]>;
   getSharedShortlist(shareId: string): Promise<SharedShortlistView | null>;
   revokeSharedShortlist(shareId: string): Promise<SharedShortlist | null>;
+  createPilotPartner(payload: {
+    name: string;
+    slug: string;
+    status?: PilotPartnerStatus;
+    contactLabel?: string | null;
+    notes?: string | null;
+    featureOverrides?: Partial<PilotFeatureOverrides>;
+  }): Promise<PilotPartner>;
+  listPilotPartners(): Promise<PilotPartner[]>;
+  getPilotPartner(id: string): Promise<PilotPartner | null>;
+  updatePilotPartner(
+    id: string,
+    patch: {
+      name?: string;
+      status?: PilotPartnerStatus;
+      contactLabel?: string | null;
+      notes?: string | null;
+      featureOverrides?: Partial<PilotFeatureOverrides>;
+    }
+  ): Promise<PilotPartner | null>;
+  createPilotLink(payload: {
+    partnerId: string;
+    expiresAt?: string | null;
+    allowedFeatures?: Partial<PilotFeatureOverrides>;
+  }): Promise<PilotLinkRecord>;
+  listPilotLinks(partnerId?: string): Promise<PilotLinkRecord[]>;
+  getPilotLink(token: string): Promise<PilotLinkView | null>;
+  revokePilotLink(token: string): Promise<PilotLinkRecord | null>;
   createFeedback(payload: {
     sessionId?: string | null;
     snapshotId?: string | null;
@@ -1005,6 +1269,46 @@ export interface SearchRepository {
     shortlistId?: string;
     limit?: number;
   }): Promise<CollaborationActivityRecord[]>;
+  recordOpsAction(payload: {
+    actionType: string;
+    targetType: string;
+    targetId: string;
+    partnerId?: string | null;
+    result: OpsActionRecord["result"];
+    details?: Record<string, unknown> | null;
+  }): Promise<OpsActionRecord>;
+  listOpsActions(filters?: {
+    partnerId?: string;
+    limit?: number;
+  }): Promise<OpsActionRecord[]>;
+  listPilotActivity(filters?: {
+    partnerId: string;
+    limit?: number;
+  }): Promise<PilotActivityRecord[]>;
+  getOpsSummary(): Promise<OpsSummary>;
+  listDataQualityEvents(filters?: {
+    severity?: DataQualitySeverity;
+    sourceDomain?: DataQualitySourceDomain;
+    provider?: string;
+    partnerId?: string;
+    status?: DataQualityStatus;
+    targetId?: string;
+    searchRequestId?: string;
+    limit?: number;
+  }): Promise<DataQualityEvent[]>;
+  getDataQualityEvent(id: string): Promise<DataQualityEvent | null>;
+  updateDataQualityEventStatus(
+    id: string,
+    status: DataQualityStatus
+  ): Promise<DataQualityEvent | null>;
+  getDataQualitySummary(filters?: {
+    severity?: DataQualitySeverity;
+    sourceDomain?: DataQualitySourceDomain;
+    provider?: string;
+    partnerId?: string;
+    status?: DataQualityStatus;
+  }): Promise<DataQualitySummary>;
+  getPartnerUsageSummary(partnerId?: string): Promise<PartnerUsageSummary[]>;
   recordValidationEvent(payload: {
     eventName: ValidationEventName;
     sessionId?: string | null;
@@ -1128,6 +1432,12 @@ export interface ScoreAuditRecord {
     rejectionContext?: Record<string, number> | null;
     rankingTieBreakInputs?: Record<string, unknown> | null;
     resultQualityFlags?: string[];
+  };
+  dataQuality?: {
+    integrityFlags?: string[];
+    dataWarnings?: string[];
+    degradedReasons?: string[];
+    events?: DataQualityEvent[];
   };
 }
 
@@ -1312,6 +1622,15 @@ export interface SearchMetrics {
   reviewerDecisionUpdateCount: number;
   collaborationActivityReadCount: number;
   expiredShareOpenCount: number;
+  pilotPartnerCreateCount: number;
+  pilotLinkCreateCount: number;
+  pilotLinkOpenCount: number;
+  pilotLinkRevokeCount: number;
+  opsSummaryReadCount: number;
+  opsErrorViewCount: number;
+  partnerFeatureOverrideCount: number;
+  pilotActivityReadCount: number;
+  providerDegradedDuringPilotCount: number;
   recentActivityPanelViewCount: number;
   savedSearchPinCount: number;
   onboardingViewCount: number;
@@ -1339,6 +1658,49 @@ export interface SearchMetrics {
   validationPromptResponseCount: number;
   sharedSnapshotExpiredCount: number;
   validationSummaryReadCount: number;
+  dataQualityEventCount: number;
+  integrityIncidentOpenCount: number;
+  integrityIncidentResolvedCount: number;
+  safetyQualityFailureRate: {
+    failures: number;
+    totalCandidates: number;
+    rate: number;
+  };
+  geocodeQualityFailureRate: {
+    failures: number;
+    totalCandidates: number;
+    rate: number;
+  };
+  searchIntegrityFailureRate: {
+    failures: number;
+    totalCandidates: number;
+    rate: number;
+  };
+  staleDataResultRate: {
+    staleResults: number;
+    totalResults: number;
+    rate: number;
+  };
+  providerDriftEventCount: number;
+  qualityRuleTriggerCountByCategory: Record<string, number>;
+  criticalQualityEventCount: number;
+  searchLatencyP95Ms: number;
+  providerCallCountByType: {
+    geocoder: number;
+    listing: number;
+    safety: number;
+  };
+  liveFetchBudgetExhaustionCount: {
+    geocoder: number;
+    listing: number;
+    safety: number;
+  };
+  snapshotWriteLatency: {
+    count: number;
+    average: number;
+    last: number | null;
+  };
+  heavyEndpointReadCounts: Record<string, number>;
   searchSuccessRate: {
     successes: number;
     failures: number;

@@ -1,4 +1,5 @@
 import {
+  DEFAULT_PILOT_LINK_EXPIRATION_DAYS,
   DEFAULT_GEOCODE_CACHE_TTL_HOURS,
   DEFAULT_GEOCODE_STALE_TTL_HOURS,
   DEFAULT_LISTING_CACHE_TTL_HOURS,
@@ -10,6 +11,9 @@ import {
 import type {
   CollaborationActivityRecord,
   CollaborationRole,
+  DataQualityEvent,
+  DataQualityStatus,
+  DataQualitySummary,
   FeedbackRecord,
   GeocodeCacheRecord,
   GeocodeCacheRepository,
@@ -22,6 +26,15 @@ import type {
   ListingRecord,
   MarketSnapshot,
   MarketSnapshotRepository,
+  OpsActionRecord,
+  OpsSummary,
+  PartnerUsageSummary,
+  PilotActivityRecord,
+  PilotFeatureOverrides,
+  PilotLinkRecord,
+  PilotLinkView,
+  PilotPartner,
+  PilotPartnerStatus,
   ResultNote,
   SafetySignalCacheRecord,
   SafetySignalCacheRepository,
@@ -97,6 +110,19 @@ type StoredResultNote = ResultNote;
 type StoredSharedShortlist = SharedShortlist;
 type StoredSharedComment = SharedComment;
 type StoredReviewerDecision = ReviewerDecision;
+type StoredPilotPartner = PilotPartner;
+type StoredPilotLink = PilotLinkRecord;
+type StoredOpsAction = OpsActionRecord;
+type StoredDataQualityEvent = DataQualityEvent;
+
+const DEFAULT_PILOT_FEATURES: PilotFeatureOverrides = {
+  demoModeEnabled: false,
+  sharedSnapshotsEnabled: false,
+  sharedShortlistsEnabled: false,
+  feedbackEnabled: false,
+  validationPromptsEnabled: false,
+  shortlistCollaborationEnabled: false
+};
 
 function sharedSnapshotStatus(record: StoredSharedSnapshot): SharedSnapshotRecord["status"] {
   if (record.revokedAt) {
@@ -126,6 +152,25 @@ function roleForShareMode(mode: ShareMode): CollaborationRole {
     case "review_only":
       return "reviewer";
   }
+}
+
+function mergePilotFeatures(
+  overrides?: Partial<PilotFeatureOverrides> | null
+): PilotFeatureOverrides {
+  return {
+    ...DEFAULT_PILOT_FEATURES,
+    ...(overrides ?? {})
+  };
+}
+
+function pilotLinkStatus(record: StoredPilotLink): PilotLinkRecord["status"] {
+  if (record.revokedAt) {
+    return "revoked";
+  }
+  if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) {
+    return "expired";
+  }
+  return "active";
 }
 
 function buildSnapshotValidationMetadata(options: {
@@ -182,7 +227,105 @@ function buildHistoryValidationMetadata(options: {
   };
 }
 
-function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
+function summarizePartnerUsage(options: {
+  searches: Array<{
+    partnerId: string | null;
+    performance?: SearchPersistenceInput["response"]["metadata"]["performance"];
+  }>;
+  partners: PilotPartner[];
+  validationEvents: ValidationEventRecord[];
+  dataQualityEvents: DataQualityEvent[];
+  partnerId?: string;
+}): PartnerUsageSummary[] {
+  const summaryByPartner = new Map<string, PartnerUsageSummary>();
+
+  const ensurePartner = (id: string): PartnerUsageSummary => {
+    const existing = summaryByPartner.get(id);
+    if (existing) {
+      return existing;
+    }
+
+    const partner = options.partners.find((entry) => entry.id === id);
+    const created: PartnerUsageSummary = {
+      partnerId: id,
+      partnerName: partner?.name ?? null,
+      searches: 0,
+      liveProviderCalls: 0,
+      cacheHitRate: 0,
+      sharedSnapshotCreates: 0,
+      sharedSnapshotOpens: 0,
+      qualityEventCount: 0,
+      pilotLinkOpens: 0
+    };
+    summaryByPartner.set(id, created);
+    return created;
+  };
+
+  const cacheStats = new Map<string, { hits: number; total: number }>();
+
+  for (const search of options.searches) {
+    if (!search.partnerId) {
+      continue;
+    }
+    const summary = ensurePartner(search.partnerId);
+    summary.searches += 1;
+    const usage = search.performance?.providerUsage;
+    if (usage) {
+      summary.liveProviderCalls +=
+        usage.geocoderLiveFetches + usage.listingLiveFetches + usage.safetyLiveFetches;
+      const stats = cacheStats.get(search.partnerId) ?? { hits: 0, total: 0 };
+      stats.hits += usage.geocoderCacheHits + usage.listingCacheHits + usage.safetyCacheHits;
+      stats.total += usage.geocoderCalls + usage.listingProviderCalls + usage.safetyProviderCalls;
+      cacheStats.set(search.partnerId, stats);
+    }
+  }
+
+  for (const event of options.validationEvents) {
+    const payloadPartnerId =
+      typeof event.payload?.partnerId === "string" ? event.payload.partnerId : null;
+    if (!payloadPartnerId) {
+      continue;
+    }
+    const summary = ensurePartner(payloadPartnerId);
+    if (event.eventName === "snapshot_shared") {
+      summary.sharedSnapshotCreates += 1;
+    }
+    if (event.eventName === "snapshot_opened") {
+      summary.sharedSnapshotOpens += 1;
+    }
+    if (event.eventName === "pilot_link_opened") {
+      summary.pilotLinkOpens += 1;
+    }
+  }
+
+  for (const event of options.dataQualityEvents) {
+    if (!event.partnerId) {
+      continue;
+    }
+    const summary = ensurePartner(event.partnerId);
+    summary.qualityEventCount += 1;
+  }
+
+  const summaries = [...summaryByPartner.values()].map((summary) => {
+    const stats = cacheStats.get(summary.partnerId) ?? { hits: 0, total: 0 };
+    return {
+      ...summary,
+      cacheHitRate:
+        stats.total === 0 ? 0 : Number((stats.hits / stats.total).toFixed(4))
+    };
+  });
+
+  const filtered = options.partnerId
+    ? summaries.filter((entry) => entry.partnerId === options.partnerId)
+    : summaries;
+
+  return filtered.sort((left, right) => right.searches - left.searches);
+}
+
+function toAuditRecord(
+  snapshot: StoredSnapshot,
+  qualityEvents: StoredDataQualityEvent[] = []
+): ScoreAuditRecord {
   const explainability =
     (snapshot.scoreInputs.explainability as ScoreAuditRecord["explainability"] | undefined) ??
     undefined;
@@ -190,6 +333,9 @@ function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
   const risks = (snapshot.scoreInputs.risks as string[] | undefined) ?? [];
   const confidenceReasons =
     (snapshot.scoreInputs.confidenceReasons as string[] | undefined) ?? [];
+  const integrityFlags = (snapshot.scoreInputs.integrityFlags as string[] | undefined) ?? [];
+  const dataWarnings = (snapshot.scoreInputs.dataWarnings as string[] | undefined) ?? [];
+  const degradedReasons = (snapshot.scoreInputs.degradedReasons as string[] | undefined) ?? [];
 
   return {
     propertyId: snapshot.propertyId,
@@ -230,6 +376,12 @@ function toAuditRecord(snapshot: StoredSnapshot): ScoreAuditRecord {
         (snapshot.scoreInputs.rankingTieBreakInputs as Record<string, unknown> | null | undefined) ?? null,
       resultQualityFlags:
         (snapshot.scoreInputs.resultQualityFlags as string[] | undefined) ?? []
+    },
+    dataQuality: {
+      integrityFlags,
+      dataWarnings,
+      degradedReasons,
+      events: clone(qualityEvents)
     }
   };
 }
@@ -369,6 +521,116 @@ function toCollaborationActivity(event: StoredValidationEvent): CollaborationAct
   };
 }
 
+function filterDataQualityEvents(
+  events: StoredDataQualityEvent[],
+  filters?: {
+    severity?: DataQualityEvent["severity"];
+    sourceDomain?: DataQualityEvent["sourceDomain"];
+    provider?: string;
+    partnerId?: string;
+    status?: DataQualityStatus;
+    targetId?: string;
+    searchRequestId?: string;
+    limit?: number;
+  }
+): StoredDataQualityEvent[] {
+  const filtered = events.filter((event) => {
+    if (filters?.severity && event.severity !== filters.severity) {
+      return false;
+    }
+    if (filters?.sourceDomain && event.sourceDomain !== filters.sourceDomain) {
+      return false;
+    }
+    if (filters?.provider && event.provider !== filters.provider) {
+      return false;
+    }
+    if (filters?.partnerId && event.partnerId !== filters.partnerId) {
+      return false;
+    }
+    if (filters?.status && event.status !== filters.status) {
+      return false;
+    }
+    if (filters?.targetId && event.targetId !== filters.targetId) {
+      return false;
+    }
+    if (filters?.searchRequestId && event.searchRequestId !== filters.searchRequestId) {
+      return false;
+    }
+    return true;
+  });
+
+  filtered.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+  if (filters?.limit) {
+    return filtered.slice(0, filters.limit);
+  }
+
+  return filtered;
+}
+
+function summarizeDataQualityEvents(events: StoredDataQualityEvent[]): DataQualitySummary {
+  const bySeverity: DataQualitySummary["bySeverity"] = {
+    info: 0,
+    warn: 0,
+    error: 0,
+    critical: 0
+  };
+  const byDomain: DataQualitySummary["byDomain"] = {
+    listing: 0,
+    safety: 0,
+    geocode: 0,
+    search: 0
+  };
+  const categoryCounts = new Map<string, number>();
+  const providerCounts = new Map<string, number>();
+
+  let openCount = 0;
+  let acknowledgedCount = 0;
+  let resolvedCount = 0;
+  let ignoredCount = 0;
+  let criticalCount = 0;
+
+  for (const event of events) {
+    bySeverity[event.severity] += 1;
+    byDomain[event.sourceDomain] += 1;
+    categoryCounts.set(event.category, (categoryCounts.get(event.category) ?? 0) + 1);
+    if (event.provider) {
+      providerCounts.set(event.provider, (providerCounts.get(event.provider) ?? 0) + 1);
+    }
+
+    if (event.status === "open") {
+      openCount += 1;
+    } else if (event.status === "acknowledged") {
+      acknowledgedCount += 1;
+    } else if (event.status === "resolved") {
+      resolvedCount += 1;
+    } else if (event.status === "ignored") {
+      ignoredCount += 1;
+    }
+
+    if (event.severity === "critical") {
+      criticalCount += 1;
+    }
+  }
+
+  return {
+    totalEvents: events.length,
+    openCount,
+    acknowledgedCount,
+    resolvedCount,
+    ignoredCount,
+    criticalCount,
+    bySeverity,
+    byDomain,
+    byCategory: [...categoryCounts.entries()]
+      .map(([category, count]) => ({ category, count }))
+      .sort((left, right) => right.count - left.count),
+    byProvider: [...providerCounts.entries()]
+      .map(([provider, count]) => ({ provider, count }))
+      .sort((left, right) => right.count - left.count)
+  };
+}
+
 export class InMemorySearchRepository implements SearchRepository {
   public readonly searches: StoredSearch[] = [];
   public readonly scoreSnapshots: StoredSnapshot[] = [];
@@ -381,11 +643,16 @@ export class InMemorySearchRepository implements SearchRepository {
   public readonly sharedShortlists: StoredSharedShortlist[] = [];
   public readonly sharedComments: StoredSharedComment[] = [];
   public readonly reviewerDecisions: StoredReviewerDecision[] = [];
+  public readonly pilotPartners: StoredPilotPartner[] = [];
+  public readonly pilotLinks: StoredPilotLink[] = [];
+  public readonly opsActions: StoredOpsAction[] = [];
   public readonly feedbackRecords: StoredFeedback[] = [];
   public readonly validationEvents: StoredValidationEvent[] = [];
+  public readonly dataQualityEvents: StoredDataQualityEvent[] = [];
 
   async saveSearch(payload: SearchPersistenceInput): Promise<{ historyRecordId: string | null }> {
     const historyRecordId = createId("history");
+    const searchRequestId = createId("search");
     this.searches.push({
       id: historyRecordId,
       payload: clone(payload),
@@ -394,7 +661,7 @@ export class InMemorySearchRepository implements SearchRepository {
 
     for (const result of payload.scoredResults) {
       this.scoreSnapshots.push({
-        searchRequestId: createId("search"),
+        searchRequestId,
         propertyId: result.propertyId,
         formulaVersion: result.formulaVersion,
         explanation: result.explanation,
@@ -411,7 +678,10 @@ export class InMemorySearchRepository implements SearchRepository {
           explainability: result.explainability,
           strengths: result.strengths ?? [],
           risks: result.risks ?? [],
-          confidenceReasons: result.confidenceReasons ?? []
+          confidenceReasons: result.confidenceReasons ?? [],
+          integrityFlags: result.integrityFlags ?? [],
+          dataWarnings: result.dataWarnings ?? [],
+          degradedReasons: result.degradedReasons ?? []
         },
         createdAt: result.computedAt,
         safetyProvenance: {
@@ -440,6 +710,18 @@ export class InMemorySearchRepository implements SearchRepository {
       });
     }
 
+    for (const event of payload.qualityEvents ?? []) {
+      const timestamp = event.triggeredAt ?? new Date().toISOString();
+      this.dataQualityEvents.push({
+        id: createId("dq"),
+        ...clone(event),
+        searchRequestId,
+        triggeredAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+    }
+
     return { historyRecordId };
   }
 
@@ -448,7 +730,62 @@ export class InMemorySearchRepository implements SearchRepository {
       .filter((entry) => entry.propertyId === propertyId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
 
-    return snapshot ? toAuditRecord(snapshot) : null;
+    if (!snapshot) {
+      return null;
+    }
+
+    const qualityEvents = this.dataQualityEvents.filter(
+      (event) =>
+        event.searchRequestId === snapshot.searchRequestId &&
+        (event.targetId === propertyId ||
+          event.targetId === snapshot.propertyId ||
+          event.targetType === "search" ||
+          event.targetType === "search_result")
+    );
+
+    return toAuditRecord(snapshot, qualityEvents);
+  }
+
+  async listDataQualityEvents(filters?: {
+    severity?: DataQualityEvent["severity"];
+    sourceDomain?: DataQualityEvent["sourceDomain"];
+    provider?: string;
+    partnerId?: string;
+    status?: DataQualityStatus;
+    targetId?: string;
+    searchRequestId?: string;
+    limit?: number;
+  }): Promise<DataQualityEvent[]> {
+    return filterDataQualityEvents(this.dataQualityEvents, filters).map((event) => clone(event));
+  }
+
+  async getDataQualityEvent(id: string): Promise<DataQualityEvent | null> {
+    const event = this.dataQualityEvents.find((entry) => entry.id === id) ?? null;
+    return event ? clone(event) : null;
+  }
+
+  async updateDataQualityEventStatus(
+    id: string,
+    status: DataQualityStatus
+  ): Promise<DataQualityEvent | null> {
+    const event = this.dataQualityEvents.find((entry) => entry.id === id) ?? null;
+    if (!event) {
+      return null;
+    }
+
+    event.status = status;
+    event.updatedAt = new Date().toISOString();
+    return clone(event);
+  }
+
+  async getDataQualitySummary(filters?: {
+    severity?: DataQualityEvent["severity"];
+    sourceDomain?: DataQualityEvent["sourceDomain"];
+    provider?: string;
+    partnerId?: string;
+    status?: DataQualityStatus;
+  }): Promise<DataQualitySummary> {
+    return summarizeDataQualityEvents(filterDataQualityEvents(this.dataQualityEvents, filters));
   }
 
   async createSearchSnapshot(payload: {
@@ -1205,6 +1542,152 @@ export class InMemorySearchRepository implements SearchRepository {
     return mapStoredSharedShortlist(shared);
   }
 
+  async createPilotPartner(payload: {
+    name: string;
+    slug: string;
+    status?: PilotPartnerStatus;
+    contactLabel?: string | null;
+    notes?: string | null;
+    featureOverrides?: Partial<PilotFeatureOverrides>;
+  }): Promise<PilotPartner> {
+    const now = new Date().toISOString();
+    const partner: PilotPartner = {
+      id: createId("pilot-partner"),
+      name: payload.name,
+      slug: payload.slug,
+      status: payload.status ?? "active",
+      contactLabel: payload.contactLabel ?? null,
+      notes: payload.notes ?? null,
+      featureOverrides: mergePilotFeatures(payload.featureOverrides),
+      createdAt: now,
+      updatedAt: now
+    };
+    this.pilotPartners.push(partner);
+    return clone(partner);
+  }
+
+  async listPilotPartners(): Promise<PilotPartner[]> {
+    return this.pilotPartners
+      .slice()
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map((entry) => clone(entry));
+  }
+
+  async getPilotPartner(id: string): Promise<PilotPartner | null> {
+    const partner = this.pilotPartners.find((entry) => entry.id === id) ?? null;
+    return partner ? clone(partner) : null;
+  }
+
+  async updatePilotPartner(
+    id: string,
+    patch: {
+      name?: string;
+      status?: PilotPartnerStatus;
+      contactLabel?: string | null;
+      notes?: string | null;
+      featureOverrides?: Partial<PilotFeatureOverrides>;
+    }
+  ): Promise<PilotPartner | null> {
+    const partner = this.pilotPartners.find((entry) => entry.id === id);
+    if (!partner) {
+      return null;
+    }
+    if (patch.name !== undefined) partner.name = patch.name;
+    if (patch.status !== undefined) partner.status = patch.status;
+    if (patch.contactLabel !== undefined) partner.contactLabel = patch.contactLabel;
+    if (patch.notes !== undefined) partner.notes = patch.notes;
+    if (patch.featureOverrides !== undefined) {
+      partner.featureOverrides = mergePilotFeatures({
+        ...partner.featureOverrides,
+        ...patch.featureOverrides
+      });
+    }
+    partner.updatedAt = new Date().toISOString();
+    return clone(partner);
+  }
+
+  async createPilotLink(payload: {
+    partnerId: string;
+    expiresAt?: string | null;
+    allowedFeatures?: Partial<PilotFeatureOverrides>;
+  }): Promise<PilotLinkRecord> {
+    const partner = this.pilotPartners.find((entry) => entry.id === payload.partnerId);
+    if (!partner) {
+      throw new Error("Pilot partner not found");
+    }
+    const record: PilotLinkRecord = {
+      id: createId("pilot-link"),
+      partnerId: payload.partnerId,
+      token: createId("pilot"),
+      allowedFeatures: mergePilotFeatures({
+        ...partner.featureOverrides,
+        ...payload.allowedFeatures
+      }),
+      createdAt: new Date().toISOString(),
+      expiresAt:
+        payload.expiresAt ??
+        new Date(Date.now() + DEFAULT_PILOT_LINK_EXPIRATION_DAYS * 86_400_000).toISOString(),
+      revokedAt: null,
+      openCount: 0,
+      status: "active"
+    };
+    this.pilotLinks.push(record);
+    return clone(record);
+  }
+
+  async listPilotLinks(partnerId?: string): Promise<PilotLinkRecord[]> {
+    return this.pilotLinks
+      .filter((entry) => (partnerId ? entry.partnerId === partnerId : true))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((entry) =>
+        clone({
+          ...entry,
+          status: pilotLinkStatus(entry)
+        })
+      );
+  }
+
+  async getPilotLink(token: string): Promise<PilotLinkView | null> {
+    const link = this.pilotLinks.find((entry) => entry.token === token) ?? null;
+    if (!link) {
+      return null;
+    }
+    link.status = pilotLinkStatus(link);
+    const partner = this.pilotPartners.find((entry) => entry.id === link.partnerId) ?? null;
+    if (!partner) {
+      return null;
+    }
+    if (link.status === "active") {
+      link.openCount += 1;
+    }
+    return {
+      link: clone({
+        ...link,
+        status: pilotLinkStatus(link)
+      }),
+      partner: clone(partner),
+      context: {
+        partnerId: partner.id,
+        partnerSlug: partner.slug,
+        partnerName: partner.name,
+        status: partner.status,
+        pilotLinkId: link.id,
+        pilotToken: link.token,
+        allowedFeatures: clone(link.allowedFeatures)
+      }
+    };
+  }
+
+  async revokePilotLink(token: string): Promise<PilotLinkRecord | null> {
+    const link = this.pilotLinks.find((entry) => entry.token === token);
+    if (!link) {
+      return null;
+    }
+    link.revokedAt = new Date().toISOString();
+    link.status = "revoked";
+    return clone(link);
+  }
+
   async createSharedComment(payload: {
     shareId: string;
     entityType: SharedCommentEntityType;
@@ -1463,6 +1946,110 @@ export class InMemorySearchRepository implements SearchRepository {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .slice(0, filters.limit ?? 20)
       .map((entry) => clone(entry));
+  }
+
+  async recordOpsAction(payload: {
+    actionType: string;
+    targetType: string;
+    targetId: string;
+    partnerId?: string | null;
+    result: OpsActionRecord["result"];
+    details?: Record<string, unknown> | null;
+  }): Promise<OpsActionRecord> {
+    const record: OpsActionRecord = {
+      id: createId("ops-action"),
+      actionType: payload.actionType,
+      targetType: payload.targetType,
+      targetId: payload.targetId,
+      partnerId: payload.partnerId ?? null,
+      performedAt: new Date().toISOString(),
+      result: payload.result,
+      details: payload.details ?? null
+    };
+    this.opsActions.push(record);
+    return clone(record);
+  }
+
+  async listOpsActions(filters?: {
+    partnerId?: string;
+    limit?: number;
+  }): Promise<OpsActionRecord[]> {
+    return this.opsActions
+      .filter((entry) => (filters?.partnerId ? entry.partnerId === filters.partnerId : true))
+      .sort((left, right) => right.performedAt.localeCompare(left.performedAt))
+      .slice(0, filters?.limit ?? 20)
+      .map((entry) => clone(entry));
+  }
+
+  async listPilotActivity(filters: {
+    partnerId: string;
+    limit?: number;
+  }): Promise<PilotActivityRecord[]> {
+    return this.validationEvents
+      .filter((entry) => entry.payload?.partnerId === filters.partnerId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, filters.limit ?? 20)
+      .map((entry) => ({
+        id: entry.id,
+        partnerId: filters.partnerId,
+        pilotLinkId: (entry.payload?.pilotLinkId as string | null | undefined) ?? null,
+        eventType: entry.eventName as PilotActivityRecord["eventType"],
+        payload: entry.payload ?? null,
+        createdAt: entry.createdAt
+      }));
+  }
+
+  async getOpsSummary(): Promise<OpsSummary> {
+    const now = Date.now();
+    const linkCounts = {
+      total: this.pilotLinks.length,
+      active: this.pilotLinks.filter((entry) => pilotLinkStatus(entry) === "active").length,
+      revoked: this.pilotLinks.filter((entry) => pilotLinkStatus(entry) === "revoked").length,
+      expired: this.pilotLinks.filter((entry) => pilotLinkStatus(entry) === "expired").length
+    };
+    const recentWindowMs = 7 * 86_400_000;
+    return {
+      activePilotPartners: this.pilotPartners.filter((entry) => entry.status === "active").length,
+      pilotLinkCounts: linkCounts,
+      recentSharedSnapshotCount: this.validationEvents.filter(
+        (entry) =>
+          entry.eventName === "snapshot_shared" &&
+          now - new Date(entry.createdAt).getTime() <= recentWindowMs
+      ).length,
+      recentShortlistShareCount: this.validationEvents.filter(
+        (entry) =>
+          entry.eventName === "shortlist_shared" &&
+          now - new Date(entry.createdAt).getTime() <= recentWindowMs
+      ).length,
+      feedbackCount: this.feedbackRecords.length,
+      validationEventCount: this.validationEvents.length,
+      topErrorCategories: [],
+      providerDegradationCount: this.validationEvents.filter(
+        (entry) => entry.eventName === "provider_degraded_during_pilot"
+      ).length,
+      partnerUsage: summarizePartnerUsage({
+        searches: this.searches.map((entry) => ({
+          partnerId: entry.payload.partnerId ?? null,
+          performance: entry.payload.response.metadata.performance
+        })),
+        partners: this.pilotPartners,
+        validationEvents: this.validationEvents,
+        dataQualityEvents: this.dataQualityEvents
+      })
+    };
+  }
+
+  async getPartnerUsageSummary(partnerId?: string): Promise<PartnerUsageSummary[]> {
+    return summarizePartnerUsage({
+      searches: this.searches.map((entry) => ({
+        partnerId: entry.payload.partnerId ?? null,
+        performance: entry.payload.response.metadata.performance
+      })),
+      partners: this.pilotPartners,
+      validationEvents: this.validationEvents,
+      dataQualityEvents: this.dataQualityEvents,
+      partnerId
+    });
   }
 
   async createFeedback(payload: {
@@ -1880,6 +2467,22 @@ type PrismaClientLike = {
     update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     delete(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   };
+  pilotPartner: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
+  pilotLink: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
+  opsAction: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+  };
   sharedSnapshotLink: {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
@@ -1898,6 +2501,12 @@ type PrismaClientLike = {
     count?(args: Record<string, unknown>): Promise<number>;
     groupBy?(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
     findMany?(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+  };
+  dataQualityEvent: {
+    createMany?(args: Record<string, unknown>): Promise<unknown>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   };
   marketSnapshot: {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -1919,6 +2528,28 @@ type PrismaClientLike = {
     deleteMany?(args: Record<string, unknown>): Promise<{ count: number }>;
   };
 };
+
+function mapPrismaDataQualityEvent(record: Record<string, unknown>): DataQualityEvent {
+  return {
+    id: record.id as string,
+    ruleId: record.ruleId as string,
+    sourceDomain: record.sourceDomain as DataQualityEvent["sourceDomain"],
+    severity: record.severity as DataQualityEvent["severity"],
+    category: record.category as string,
+    message: record.message as string,
+    triggeredAt: (record.triggeredAt as Date).toISOString(),
+    targetType: record.targetType as DataQualityEvent["targetType"],
+    targetId: record.targetId as string,
+    partnerId: (record.partnerId as string | null) ?? null,
+    sessionId: (record.sessionId as string | null) ?? null,
+    provider: (record.provider as string | null) ?? null,
+    status: record.status as DataQualityStatus,
+    context: (record.contextJson as Record<string, unknown> | null) ?? null,
+    searchRequestId: (record.searchRequestId as string | null) ?? null,
+    createdAt: (record.createdAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
 
 function mapPrismaSearchDefinition(record: Record<string, unknown>): SearchDefinition {
   return {
@@ -2020,6 +2651,51 @@ function mapPrismaReviewerDecision(record: Record<string, unknown>): ReviewerDec
     note: (record.note as string | null) ?? null,
     createdAt: (record.createdAt as Date).toISOString(),
     updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaPilotPartner(record: Record<string, unknown>): PilotPartner {
+  return {
+    id: record.id as string,
+    name: record.name as string,
+    slug: record.slug as string,
+    status: record.status as PilotPartnerStatus,
+    contactLabel: (record.contactLabel as string | null) ?? null,
+    notes: (record.notes as string | null) ?? null,
+    featureOverrides: mergePilotFeatures(record.featureOverrides as Partial<PilotFeatureOverrides> | null),
+    createdAt: (record.createdAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaPilotLink(record: Record<string, unknown>): PilotLinkRecord {
+  const base: PilotLinkRecord = {
+    id: record.id as string,
+    partnerId: record.partnerId as string,
+    token: record.token as string,
+    allowedFeatures: mergePilotFeatures(record.allowedFeatures as Partial<PilotFeatureOverrides> | null),
+    createdAt: (record.createdAt as Date).toISOString(),
+    expiresAt: record.expiresAt ? (record.expiresAt as Date).toISOString() : null,
+    revokedAt: record.revokedAt ? (record.revokedAt as Date).toISOString() : null,
+    openCount: Number(record.openCount ?? 0),
+    status: "active"
+  };
+  return {
+    ...base,
+    status: pilotLinkStatus(base)
+  };
+}
+
+function mapPrismaOpsAction(record: Record<string, unknown>): OpsActionRecord {
+  return {
+    id: record.id as string,
+    actionType: record.actionType as string,
+    targetType: record.targetType as string,
+    targetId: record.targetId as string,
+    partnerId: (record.partnerId as string | null) ?? null,
+    performedAt: (record.performedAt as Date).toISOString(),
+    result: record.result as OpsActionRecord["result"],
+    details: (record.details as Record<string, unknown> | null) ?? null
   };
 }
 
@@ -2135,7 +2811,10 @@ function mapPrismaValidationEvent(record: Record<string, unknown>): ValidationEv
   };
 }
 
-function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord {
+function mapPrismaAuditRecord(
+  record: Record<string, unknown>,
+  qualityEvents: DataQualityEvent[] = []
+): ScoreAuditRecord {
   const searchRequest = (record.searchRequest as Record<string, unknown> | undefined) ?? {};
   const weights = ((searchRequest as { weights?: ScoreAuditRecord["weights"] }).weights ??
     {
@@ -2249,6 +2928,12 @@ function mapPrismaAuditRecord(record: Record<string, unknown>): ScoreAuditRecord
       rankingTieBreakInputs:
         (scoreInputs.rankingTieBreakInputs as Record<string, unknown> | null | undefined) ?? null,
       resultQualityFlags: (scoreInputs.resultQualityFlags as string[] | undefined) ?? []
+    },
+    dataQuality: {
+      integrityFlags: (scoreInputs.integrityFlags as string[] | undefined) ?? [],
+      dataWarnings: (scoreInputs.dataWarnings as string[] | undefined) ?? [],
+      degradedReasons: (scoreInputs.degradedReasons as string[] | undefined) ?? [],
+      events: clone(qualityEvents)
     }
   };
 }
@@ -2262,6 +2947,7 @@ export class PrismaSearchRepository implements SearchRepository {
     const createdSearch = await this.client.searchRequest.create({
       data: {
         sessionId: payload.sessionId ?? null,
+        partnerId: payload.partnerId ?? null,
         searchDefinitionId: payload.searchDefinitionId ?? null,
         rerunSourceType: payload.rerunSourceType ?? null,
         rerunSourceId: payload.rerunSourceId ?? null,
@@ -2335,9 +3021,33 @@ export class PrismaSearchRepository implements SearchRepository {
             explainability: result.explainability,
             strengths: result.strengths ?? [],
             risks: result.risks ?? [],
-            confidenceReasons: result.confidenceReasons ?? []
+            confidenceReasons: result.confidenceReasons ?? [],
+            integrityFlags: result.integrityFlags ?? [],
+            dataWarnings: result.dataWarnings ?? [],
+            degradedReasons: result.degradedReasons ?? []
           },
           createdAt: new Date(result.computedAt)
+        }))
+      });
+    }
+
+    if (payload.qualityEvents?.length && this.client.dataQualityEvent.createMany) {
+      await this.client.dataQualityEvent.createMany({
+        data: payload.qualityEvents.map((event) => ({
+          ruleId: event.ruleId,
+          sourceDomain: event.sourceDomain,
+          severity: event.severity,
+          category: event.category,
+          message: event.message,
+          targetType: event.targetType,
+          targetId: event.targetId,
+          partnerId: event.partnerId ?? null,
+          sessionId: event.sessionId ?? null,
+          provider: event.provider ?? null,
+          status: event.status,
+          contextJson: event.context ?? null,
+          searchRequestId: createdSearch.id,
+          triggeredAt: new Date(event.triggeredAt)
         }))
       });
     }
@@ -2376,7 +3086,102 @@ export class PrismaSearchRepository implements SearchRepository {
       }
     });
 
-    return record ? mapPrismaAuditRecord(record) : null;
+    if (!record) {
+      return null;
+    }
+
+    const qualityEvents = await this.client.dataQualityEvent.findMany({
+      where: {
+        searchRequestId: record.searchRequestId,
+        OR: [
+          { targetId: propertyId },
+          { targetId: record.propertyId },
+          { targetType: "search" },
+          { targetType: "search_result" }
+        ]
+      },
+      orderBy: {
+        createdAt: "desc"
+      }
+    });
+
+    return mapPrismaAuditRecord(record, qualityEvents.map((event) => mapPrismaDataQualityEvent(event)));
+  }
+
+  async listDataQualityEvents(filters?: {
+    severity?: DataQualityEvent["severity"];
+    sourceDomain?: DataQualityEvent["sourceDomain"];
+    provider?: string;
+    partnerId?: string;
+    status?: DataQualityStatus;
+    targetId?: string;
+    searchRequestId?: string;
+    limit?: number;
+  }): Promise<DataQualityEvent[]> {
+    const records = await this.client.dataQualityEvent.findMany({
+      where: {
+        ...(filters?.severity ? { severity: filters.severity } : {}),
+        ...(filters?.sourceDomain ? { sourceDomain: filters.sourceDomain } : {}),
+        ...(filters?.provider ? { provider: filters.provider } : {}),
+        ...(filters?.partnerId ? { partnerId: filters.partnerId } : {}),
+        ...(filters?.status ? { status: filters.status } : {}),
+        ...(filters?.targetId ? { targetId: filters.targetId } : {}),
+        ...(filters?.searchRequestId ? { searchRequestId: filters.searchRequestId } : {})
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      take: filters?.limit
+    });
+
+    return records.map((record) => mapPrismaDataQualityEvent(record));
+  }
+
+  async getDataQualityEvent(id: string): Promise<DataQualityEvent | null> {
+    const record = await this.client.dataQualityEvent.findUnique({
+      where: {
+        id
+      }
+    });
+
+    return record ? mapPrismaDataQualityEvent(record) : null;
+  }
+
+  async updateDataQualityEventStatus(
+    id: string,
+    status: DataQualityStatus
+  ): Promise<DataQualityEvent | null> {
+    const existing = await this.client.dataQualityEvent.findUnique({
+      where: {
+        id
+      }
+    });
+
+    if (!existing) {
+      return null;
+    }
+
+    const updated = await this.client.dataQualityEvent.update({
+      where: {
+        id
+      },
+      data: {
+        status
+      }
+    });
+
+    return mapPrismaDataQualityEvent(updated);
+  }
+
+  async getDataQualitySummary(filters?: {
+    severity?: DataQualityEvent["severity"];
+    sourceDomain?: DataQualityEvent["sourceDomain"];
+    provider?: string;
+    partnerId?: string;
+    status?: DataQualityStatus;
+  }): Promise<DataQualitySummary> {
+    const events = await this.listDataQualityEvents(filters);
+    return summarizeDataQualityEvents(events);
   }
 
   async createSearchSnapshot(payload: {
@@ -3318,6 +4123,177 @@ export class PrismaSearchRepository implements SearchRepository {
     };
   }
 
+  async createPilotPartner(payload: {
+    name: string;
+    slug: string;
+    status?: PilotPartnerStatus;
+    contactLabel?: string | null;
+    notes?: string | null;
+    featureOverrides?: Partial<PilotFeatureOverrides>;
+  }): Promise<PilotPartner> {
+    const record = await this.client.pilotPartner.create({
+      data: {
+        name: payload.name,
+        slug: payload.slug,
+        status: payload.status ?? "active",
+        contactLabel: payload.contactLabel ?? null,
+        notes: payload.notes ?? null,
+        featureOverrides: mergePilotFeatures(payload.featureOverrides)
+      }
+    });
+    return mapPrismaPilotPartner(record);
+  }
+
+  async listPilotPartners(): Promise<PilotPartner[]> {
+    const records = await this.client.pilotPartner.findMany({
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+    return records.map((record) => mapPrismaPilotPartner(record));
+  }
+
+  async getPilotPartner(id: string): Promise<PilotPartner | null> {
+    const record = await this.client.pilotPartner.findUnique({
+      where: { id }
+    });
+    return record ? mapPrismaPilotPartner(record) : null;
+  }
+
+  async updatePilotPartner(
+    id: string,
+    patch: {
+      name?: string;
+      status?: PilotPartnerStatus;
+      contactLabel?: string | null;
+      notes?: string | null;
+      featureOverrides?: Partial<PilotFeatureOverrides>;
+    }
+  ): Promise<PilotPartner | null> {
+    const existing = await this.getPilotPartner(id);
+    if (!existing) {
+      return null;
+    }
+    const record = await this.client.pilotPartner.update({
+      where: { id },
+      data: {
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.contactLabel !== undefined ? { contactLabel: patch.contactLabel } : {}),
+        ...(patch.notes !== undefined ? { notes: patch.notes } : {}),
+        ...(patch.featureOverrides !== undefined
+          ? {
+              featureOverrides: mergePilotFeatures({
+                ...existing.featureOverrides,
+                ...patch.featureOverrides
+              })
+            }
+          : {})
+      }
+    });
+    return mapPrismaPilotPartner(record);
+  }
+
+  async createPilotLink(payload: {
+    partnerId: string;
+    expiresAt?: string | null;
+    allowedFeatures?: Partial<PilotFeatureOverrides>;
+  }): Promise<PilotLinkRecord> {
+    const partner = await this.getPilotPartner(payload.partnerId);
+    if (!partner) {
+      throw new Error("Pilot partner not found");
+    }
+    const record = await this.client.pilotLink.create({
+      data: {
+        partnerId: payload.partnerId,
+        token: createId("pilot"),
+        allowedFeatures: mergePilotFeatures({
+          ...partner.featureOverrides,
+          ...payload.allowedFeatures
+        }),
+        expiresAt: payload.expiresAt ? new Date(payload.expiresAt) : null
+      }
+    });
+    return mapPrismaPilotLink(record);
+  }
+
+  async listPilotLinks(partnerId?: string): Promise<PilotLinkRecord[]> {
+    const records = await this.client.pilotLink.findMany({
+      where: partnerId ? { partnerId } : undefined,
+      orderBy: {
+        createdAt: "desc"
+      }
+    });
+    return records.map((record) => mapPrismaPilotLink(record));
+  }
+
+  async getPilotLink(token: string): Promise<PilotLinkView | null> {
+    const record = await this.client.pilotLink.findUnique({
+      where: { token }
+    });
+    if (!record) {
+      return null;
+    }
+    const link = mapPrismaPilotLink(record);
+    const partner = await this.getPilotPartner(link.partnerId);
+    if (!partner) {
+      return null;
+    }
+    if (link.status === "active") {
+      const updated = await this.client.pilotLink.update({
+        where: { token },
+        data: {
+          openCount: {
+            increment: 1
+          }
+        }
+      });
+      const mapped = mapPrismaPilotLink(updated);
+      return {
+        link: mapped,
+        partner,
+        context: {
+          partnerId: partner.id,
+          partnerSlug: partner.slug,
+          partnerName: partner.name,
+          status: partner.status,
+          pilotLinkId: mapped.id,
+          pilotToken: mapped.token,
+          allowedFeatures: mapped.allowedFeatures
+        }
+      };
+    }
+    return {
+      link,
+      partner,
+      context: {
+        partnerId: partner.id,
+        partnerSlug: partner.slug,
+        partnerName: partner.name,
+        status: partner.status,
+        pilotLinkId: link.id,
+        pilotToken: link.token,
+        allowedFeatures: link.allowedFeatures
+      }
+    };
+  }
+
+  async revokePilotLink(token: string): Promise<PilotLinkRecord | null> {
+    const existing = await this.client.pilotLink.findUnique({
+      where: { token }
+    });
+    if (!existing) {
+      return null;
+    }
+    const record = await this.client.pilotLink.update({
+      where: { token },
+      data: {
+        revokedAt: new Date()
+      }
+    });
+    return mapPrismaPilotLink(record);
+  }
+
   async createSharedComment(payload: {
     shareId: string;
     entityType: SharedCommentEntityType;
@@ -3593,6 +4569,164 @@ export class PrismaSearchRepository implements SearchRepository {
       .map((record) => toCollaborationActivity(mapPrismaValidationEvent(record)))
       .filter((record): record is CollaborationActivityRecord => Boolean(record))
       .filter((record) => (filters.shortlistId ? record.shortlistId === filters.shortlistId : true));
+  }
+
+  async recordOpsAction(payload: {
+    actionType: string;
+    targetType: string;
+    targetId: string;
+    partnerId?: string | null;
+    result: OpsActionRecord["result"];
+    details?: Record<string, unknown> | null;
+  }): Promise<OpsActionRecord> {
+    const record = await this.client.opsAction.create({
+      data: {
+        actionType: payload.actionType,
+        targetType: payload.targetType,
+        targetId: payload.targetId,
+        partnerId: payload.partnerId ?? null,
+        result: payload.result,
+        details: payload.details ?? null
+      }
+    });
+    return mapPrismaOpsAction(record);
+  }
+
+  async listOpsActions(filters?: {
+    partnerId?: string;
+    limit?: number;
+  }): Promise<OpsActionRecord[]> {
+    const records = await this.client.opsAction.findMany({
+      where: filters?.partnerId ? { partnerId: filters.partnerId } : undefined,
+      orderBy: {
+        performedAt: "desc"
+      },
+      take: filters?.limit ?? 20
+    });
+    return records.map((record) => mapPrismaOpsAction(record));
+  }
+
+  async listPilotActivity(filters: {
+    partnerId: string;
+    limit?: number;
+  }): Promise<PilotActivityRecord[]> {
+    const records = await this.client.validationEvent.findMany?.({
+      where: {
+        payload: {
+          path: ["partnerId"],
+          equals: filters.partnerId
+        }
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      take: filters.limit ?? 20
+    });
+
+    return (records ?? []).map((record) => {
+      const event = mapPrismaValidationEvent(record);
+      return {
+        id: event.id,
+        partnerId: filters.partnerId,
+        pilotLinkId: (event.payload?.pilotLinkId as string | null | undefined) ?? null,
+        eventType: event.eventName as PilotActivityRecord["eventType"],
+        payload: event.payload ?? null,
+        createdAt: event.createdAt
+      };
+    });
+  }
+
+  async getOpsSummary(): Promise<OpsSummary> {
+    const [partners, links, feedbackCount, events] = await Promise.all([
+      this.client.pilotPartner.findMany({}),
+      this.client.pilotLink.findMany({}),
+      this.client.feedback.count?.({}) ?? 0,
+      this.client.validationEvent.findMany?.({
+        select: {
+          eventName: true
+        }
+      }) ?? []
+    ]);
+
+    return {
+      activePilotPartners: partners.filter((entry) => entry.status === "active").length,
+      pilotLinkCounts: {
+        total: links.length,
+        active: links.filter((entry) => pilotLinkStatus(mapPrismaPilotLink(entry)) === "active").length,
+        revoked: links.filter((entry) => pilotLinkStatus(mapPrismaPilotLink(entry)) === "revoked").length,
+        expired: links.filter((entry) => pilotLinkStatus(mapPrismaPilotLink(entry)) === "expired").length
+      },
+      recentSharedSnapshotCount: events.filter((entry) => entry.eventName === "snapshot_shared").length,
+      recentShortlistShareCount: events.filter((entry) => entry.eventName === "shortlist_shared").length,
+      feedbackCount,
+      validationEventCount: events.length,
+      topErrorCategories: [],
+      providerDegradationCount: events.filter((entry) => entry.eventName === "provider_degraded_during_pilot").length,
+      partnerUsage: await this.getPartnerUsageSummary()
+    };
+  }
+
+  async getPartnerUsageSummary(partnerId?: string): Promise<PartnerUsageSummary[]> {
+    const [partners, searches, validationEvents, dataQualityEvents] = await Promise.all([
+      this.client.pilotPartner.findMany({
+        where: partnerId ? { id: partnerId } : undefined
+      }),
+      this.client.searchRequest.findMany({
+        where: partnerId ? { partnerId } : undefined,
+        select: {
+          partnerId: true,
+          warnings: true,
+          suggestions: true
+        }
+      }),
+      this.client.validationEvent.findMany({
+        select: {
+          eventName: true,
+          payload: true,
+          createdAt: true,
+          id: true
+        }
+      }),
+      this.client.dataQualityEvent.findMany({
+        where: partnerId ? { partnerId } : undefined,
+        select: {
+          id: true,
+          ruleId: true,
+          sourceDomain: true,
+          severity: true,
+          category: true,
+          message: true,
+          targetType: true,
+          targetId: true,
+          partnerId: true,
+          sessionId: true,
+          provider: true,
+          status: true,
+          contextJson: true,
+          searchRequestId: true,
+          triggeredAt: true,
+          createdAt: true,
+          updatedAt: true
+        }
+      })
+    ]);
+
+    return summarizePartnerUsage({
+      searches: searches.map((entry) => ({
+        partnerId: (entry.partnerId as string | null) ?? null,
+        performance: undefined
+      })),
+      partners: partners.map((entry) => mapPrismaPilotPartner(entry)),
+      validationEvents: validationEvents
+        .map((entry) => mapPrismaValidationEvent(entry))
+        .filter((entry) =>
+          partnerId
+            ? (typeof entry.payload?.partnerId === "string" ? entry.payload.partnerId : null) === partnerId
+            : true
+        ),
+      dataQualityEvents: dataQualityEvents.map((entry) => mapPrismaDataQualityEvent(entry)),
+      partnerId
+    });
   }
 
   async createFeedback(payload: {

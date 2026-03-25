@@ -1,12 +1,24 @@
 import type {
   CollaborationActivityRecord,
+  DataQualityEvent,
+  DataQualitySummary,
   DemoScenario,
   FeedbackCategory,
   FeedbackRecord,
+  OpsActionRecord,
+  OpsSummary,
+  PilotContext,
+  PilotFeatureOverrides,
+  PilotLinkRecord,
+  PilotLinkView,
+  PilotPartner,
+  PilotPartnerStatus,
+  PilotActivityRecord,
   ReviewerDecision,
   ReviewerDecisionValue,
   ResultNote,
   ScoreAuditRecord,
+  SearchMetrics,
   SharedComment,
   SharedShortlist,
   SharedShortlistView,
@@ -24,9 +36,17 @@ import type {
 } from "@nhalo/types";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+let activePilotLinkId: string | null = null;
 
 function buildSessionHeaders(sessionId?: string | null): Record<string, string> {
-  return sessionId ? { "x-nhalo-session-id": sessionId } : {};
+  return {
+    ...(sessionId ? { "x-nhalo-session-id": sessionId } : {}),
+    ...(activePilotLinkId ? { "x-nhalo-pilot-link-id": activePilotLinkId } : {})
+  };
+}
+
+export function setPilotLinkContext(pilotLinkId: string | null): void {
+  activePilotLinkId = pilotLinkId;
 }
 
 export async function searchHomes(payload: SearchRequest, sessionId?: string | null): Promise<SearchResponse> {
@@ -803,6 +823,240 @@ export async function fetchValidationSummary(): Promise<ValidationSummary> {
   }
 
   return response.json();
+}
+
+export async function createPilotPartner(payload: {
+  name: string;
+  slug: string;
+  status?: PilotPartnerStatus;
+  contactLabel?: string | null;
+  notes?: string | null;
+  featureOverrides?: Partial<PilotFeatureOverrides>;
+}): Promise<PilotPartner> {
+  const response = await fetch(`${API_BASE_URL}/ops/pilots`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Pilot partner creation failed");
+  }
+  return response.json();
+}
+
+export async function fetchPilotPartners(): Promise<PilotPartner[]> {
+  const response = await fetch(`${API_BASE_URL}/ops/pilots`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Pilot partner fetch failed");
+  }
+  const payload = await response.json();
+  return payload.partners;
+}
+
+export async function fetchPilotLinks(partnerId?: string): Promise<PilotLinkRecord[]> {
+  const params = new URLSearchParams();
+  if (partnerId) {
+    params.set("partnerId", partnerId);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/pilot/links?${params.toString()}`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Pilot link fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.links;
+}
+
+export async function updatePilotPartner(
+  id: string,
+  patch: {
+    name?: string;
+    status?: PilotPartnerStatus;
+    contactLabel?: string | null;
+    notes?: string | null;
+    featureOverrides?: Partial<PilotFeatureOverrides>;
+  }
+): Promise<PilotPartner> {
+  const response = await fetch(`${API_BASE_URL}/ops/pilots/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Pilot partner update failed");
+  }
+  return response.json();
+}
+
+export async function createPilotLink(payload: {
+  partnerId: string;
+  expiresInDays?: number;
+  allowedFeatures?: Partial<PilotFeatureOverrides>;
+}): Promise<{ link: PilotLinkRecord; url: string }> {
+  const response = await fetch(`${API_BASE_URL}/pilot/links`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Pilot link creation failed");
+  }
+  return response.json();
+}
+
+export async function fetchPilotLink(token: string): Promise<PilotLinkView> {
+  const response = await fetch(`${API_BASE_URL}/pilot/links/${token}`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Pilot link fetch failed");
+  }
+  return response.json();
+}
+
+export async function revokePilotLink(token: string): Promise<PilotLinkRecord> {
+  const response = await fetch(`${API_BASE_URL}/pilot/links/${token}/revoke`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Pilot link revoke failed");
+  }
+  const payload = await response.json();
+  return payload.link;
+}
+
+export async function fetchOpsSummary(): Promise<{
+  summary: OpsSummary;
+  performance: {
+    averageSearchLatencyMs: number;
+    p95SearchLatencyMs: number;
+    providerCallCountByType: SearchMetrics["providerCallCountByType"];
+    cacheHitRate: SearchMetrics["cacheHitRate"];
+    liveFetchBudgetExhaustionCount: SearchMetrics["liveFetchBudgetExhaustionCount"];
+    heavyEndpointReadCounts: SearchMetrics["heavyEndpointReadCounts"];
+  } | null;
+  dataQualitySummary: DataQualitySummary;
+  errors: SearchMetrics["errorRateByCategory"];
+  providers: unknown[];
+}> {
+  const response = await fetch(`${API_BASE_URL}/ops/summary`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Ops summary fetch failed");
+  }
+  return response.json();
+}
+
+export async function fetchDataQualitySummary(): Promise<DataQualitySummary> {
+  const response = await fetch(`${API_BASE_URL}/ops/data-quality/summary`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Data quality summary fetch failed");
+  }
+  const payload = await response.json();
+  return payload.summary;
+}
+
+export async function fetchDataQualityEvents(filters?: {
+  severity?: DataQualityEvent["severity"];
+  sourceDomain?: DataQualityEvent["sourceDomain"];
+  provider?: string;
+  partnerId?: string;
+  status?: DataQualityEvent["status"];
+  limit?: number;
+}): Promise<DataQualityEvent[]> {
+  const params = new URLSearchParams();
+  if (filters?.severity) {
+    params.set("severity", filters.severity);
+  }
+  if (filters?.sourceDomain) {
+    params.set("sourceDomain", filters.sourceDomain);
+  }
+  if (filters?.provider) {
+    params.set("provider", filters.provider);
+  }
+  if (filters?.partnerId) {
+    params.set("partnerId", filters.partnerId);
+  }
+  if (filters?.status) {
+    params.set("status", filters.status);
+  }
+  if (filters?.limit) {
+    params.set("limit", String(filters.limit));
+  }
+  const query = params.toString();
+  const response = await fetch(`${API_BASE_URL}/ops/data-quality${query ? `?${query}` : ""}`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Data quality events fetch failed");
+  }
+  const payload = await response.json();
+  return payload.events;
+}
+
+export async function updateDataQualityEventStatus(
+  eventId: string,
+  status: "acknowledged" | "resolved" | "ignored"
+): Promise<DataQualityEvent> {
+  const response = await fetch(`${API_BASE_URL}/ops/data-quality/${eventId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ status })
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Data quality event update failed");
+  }
+  return response.json();
+}
+
+export async function fetchOpsErrors(): Promise<{
+  errors: SearchMetrics["errorRateByCategory"];
+}> {
+  const response = await fetch(`${API_BASE_URL}/ops/errors`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Ops errors fetch failed");
+  }
+  return response.json();
+}
+
+export async function fetchPilotActivity(partnerId: string): Promise<PilotActivityRecord[]> {
+  const response = await fetch(`${API_BASE_URL}/ops/pilots/${partnerId}/activity`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Pilot activity fetch failed");
+  }
+  const payload = await response.json();
+  return payload.activity;
+}
+
+export async function fetchOpsActions(partnerId?: string): Promise<OpsActionRecord[]> {
+  const params = new URLSearchParams();
+  if (partnerId) {
+    params.set("partnerId", partnerId);
+  }
+  const response = await fetch(`${API_BASE_URL}/ops/actions?${params.toString()}`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Ops actions fetch failed");
+  }
+  const payload = await response.json();
+  return payload.actions;
 }
 
 export async function rerunSearchDefinition(

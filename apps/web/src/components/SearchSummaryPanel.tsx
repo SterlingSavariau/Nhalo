@@ -6,6 +6,7 @@ interface SearchSummaryPanelProps {
   snapshot: SearchSnapshotRecord | null;
   sharingSnapshot: boolean;
   sharedLink: string | null;
+  shareEnabled?: boolean;
   readOnly?: boolean;
   onSaveSnapshot(): void;
   onShareSnapshot(): void;
@@ -25,6 +26,7 @@ export function SearchSummaryPanel({
   snapshot,
   sharingSnapshot,
   sharedLink,
+  shareEnabled = true,
   readOnly = false,
   onSaveSnapshot,
   onShareSnapshot
@@ -48,7 +50,7 @@ export function SearchSummaryPanel({
             </button>
             <button
               className="ghost-button"
-              disabled={!snapshot || sharingSnapshot}
+              disabled={!shareEnabled || !snapshot || sharingSnapshot}
               onClick={onShareSnapshot}
               type="button"
             >

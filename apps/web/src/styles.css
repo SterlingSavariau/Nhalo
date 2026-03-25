@@ -32,6 +32,19 @@ textarea {
   margin: 0 auto 1.5rem;
 }
 
+.pilot-context-banner {
+  max-width: 90rem;
+  margin: 0 auto 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 1rem;
+  border: 1px solid rgba(212, 180, 131, 0.2);
+  border-radius: 1.25rem;
+  padding: 1rem 1.2rem;
+  background: rgba(212, 180, 131, 0.08);
+}
+
 .eyebrow,
 .section-label,
 .result-rank {
@@ -330,6 +343,19 @@ textarea {
   flex-wrap: wrap;
 }
 
+.status-chip {
+  border: 1px solid rgba(212, 180, 131, 0.18);
+  border-radius: 999px;
+  padding: 0.4rem 0.75rem;
+  background: rgba(255, 248, 235, 0.05);
+  font-size: 0.84rem;
+}
+
+.status-chip.medium {
+  background: rgba(234, 204, 109, 0.12);
+  border-color: rgba(234, 204, 109, 0.28);
+}
+
 .status-pill {
   border: 1px solid rgba(212, 180, 131, 0.18);
   border-radius: 999px;
@@ -360,6 +386,67 @@ textarea {
 .controls-panel h3,
 .audit-section h4 {
   margin-bottom: 0.35rem;
+}
+
+.ops-panel,
+.ops-create-form,
+.ops-list,
+.ops-detail,
+.ops-subsection {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.ops-columns {
+  display: grid;
+  grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.ops-list-item,
+.ops-record {
+  width: 100%;
+  display: grid;
+  gap: 0.35rem;
+  text-align: left;
+  border: 1px solid rgba(212, 180, 131, 0.12);
+  border-radius: 1rem;
+  padding: 0.85rem;
+  background: rgba(255, 248, 235, 0.03);
+}
+
+.ops-list-item {
+  cursor: pointer;
+}
+
+.ops-list-item.active {
+  border-color: rgba(240, 210, 154, 0.34);
+  background: rgba(212, 180, 131, 0.08);
+}
+
+.ops-record {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.primary-button {
+  border: none;
+  border-radius: 999px;
+  padding: 0.8rem 1.1rem;
+  background: #d4b483;
+  color: #151a17;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.search-field {
+  display: grid;
+  gap: 0.35rem;
 }
 
 .headline-score {
@@ -561,8 +648,13 @@ a {
   .metadata-row,
   .result-header,
   .summary-header,
-  .comparison-card-header {
+  .comparison-card-header,
+  .pilot-context-banner {
     flex-direction: column;
+  }
+
+  .ops-columns {
+    grid-template-columns: 1fr;
   }
 
   .headline-score {

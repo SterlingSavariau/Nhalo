@@ -1,4 +1,4 @@
-import type { SearchMetrics } from "@nhalo/types";
+import type { DataQualityEvent, SearchMetrics, SearchProviderUsage } from "@nhalo/types";
 
 type NumericSeries = {
   count: number;
@@ -42,6 +42,7 @@ function average(series: NumericSeries): number {
 
 export class MetricsCollector {
   private readonly searchLatency = createSeries();
+  private readonly searchLatencySamples: number[] = [];
   private readonly candidatesScanned = createSeries();
   private readonly matchesReturned = createSeries();
   private readonly scores = createSeries();
@@ -104,6 +105,8 @@ export class MetricsCollector {
   private readonly snapshotCreates = { count: 0 };
   private readonly snapshotReads = { count: 0 };
   private readonly snapshotReadLatency = createSeries();
+  private readonly snapshotWriteLatency = createSeries();
+  private readonly endpointReads = new Map<string, number>();
   private readonly comparisonViews = { count: 0 };
   private readonly auditViews = { count: 0 };
   private readonly explainabilityRenders = { count: 0 };
@@ -127,6 +130,15 @@ export class MetricsCollector {
   private readonly reviewerDecisionUpdates = { count: 0 };
   private readonly collaborationActivityReads = { count: 0 };
   private readonly expiredShareOpens = { count: 0 };
+  private readonly pilotPartnerCreates = { count: 0 };
+  private readonly pilotLinkCreates = { count: 0 };
+  private readonly pilotLinkOpens = { count: 0 };
+  private readonly pilotLinkRevokes = { count: 0 };
+  private readonly opsSummaryReads = { count: 0 };
+  private readonly opsErrorViews = { count: 0 };
+  private readonly partnerFeatureOverrides = { count: 0 };
+  private readonly pilotActivityReads = { count: 0 };
+  private readonly providerDegradedDuringPilot = { count: 0 };
   private readonly noteCreates = { count: 0 };
   private readonly noteUpdates = { count: 0 };
   private readonly noteDeletes = { count: 0 };
@@ -165,6 +177,16 @@ export class MetricsCollector {
     requests: 0,
     timeouts: 0
   };
+  private readonly providerCallCounts = {
+    geocoder: 0,
+    listing: 0,
+    safety: 0
+  };
+  private readonly liveFetchBudgetExhaustion = {
+    geocoder: 0,
+    listing: 0,
+    safety: 0
+  };
   private readonly errorCounts = {
     VALIDATION_ERROR: 0,
     PROVIDER_ERROR: 0,
@@ -172,19 +194,54 @@ export class MetricsCollector {
     CONFIG_ERROR: 0,
     INTERNAL_ERROR: 0
   };
+  private readonly dataQuality = {
+    totalEvents: 0,
+    openCount: 0,
+    resolvedCount: 0,
+    listingFailures: 0,
+    listingCandidates: 0,
+    safetyFailures: 0,
+    safetyCandidates: 0,
+    geocodeFailures: 0,
+    geocodeCandidates: 0,
+    searchFailures: 0,
+    searchCandidates: 0,
+    staleResults: 0,
+    totalResults: 0,
+    providerDriftEvents: 0,
+    criticalEvents: 0,
+    categoryCounts: new Map<string, number>()
+  };
 
   recordSearch(payload: {
     durationMs: number;
     candidatesScanned: number;
     matchesReturned: number;
     scores: number[];
+    providerUsage?: SearchProviderUsage;
   }): void {
     recordSeries(this.searchLatency, payload.durationMs);
+    this.searchLatencySamples.push(payload.durationMs);
     recordSeries(this.candidatesScanned, payload.candidatesScanned);
     recordSeries(this.matchesReturned, payload.matchesReturned);
 
     for (const score of payload.scores) {
       recordSeries(this.scores, score);
+    }
+
+    if (payload.providerUsage) {
+      this.providerCallCounts.geocoder += payload.providerUsage.geocoderCalls;
+      this.providerCallCounts.listing += payload.providerUsage.listingProviderCalls;
+      this.providerCallCounts.safety += payload.providerUsage.safetyProviderCalls;
+      if (payload.providerUsage.geocoderBudgetExceeded) {
+        this.liveFetchBudgetExhaustion.geocoder += 1;
+      }
+      if (payload.providerUsage.listingBudgetExceeded) {
+        this.liveFetchBudgetExhaustion.listing += 1;
+      }
+      if (payload.providerUsage.safetyBudgetExceeded) {
+        this.liveFetchBudgetExhaustion.safety += 1;
+      }
     }
   }
 
@@ -318,6 +375,14 @@ export class MetricsCollector {
     recordSeries(this.snapshotReadLatency, durationMs);
   }
 
+  recordSnapshotWriteLatency(durationMs: number): void {
+    recordSeries(this.snapshotWriteLatency, durationMs);
+  }
+
+  recordEndpointRead(endpoint: string): void {
+    this.endpointReads.set(endpoint, (this.endpointReads.get(endpoint) ?? 0) + 1);
+  }
+
   recordComparisonView(): void {
     this.comparisonViews.count += 1;
   }
@@ -408,6 +473,42 @@ export class MetricsCollector {
 
   recordExpiredShareOpen(): void {
     this.expiredShareOpens.count += 1;
+  }
+
+  recordPilotPartnerCreate(): void {
+    this.pilotPartnerCreates.count += 1;
+  }
+
+  recordPilotLinkCreate(): void {
+    this.pilotLinkCreates.count += 1;
+  }
+
+  recordPilotLinkOpen(): void {
+    this.pilotLinkOpens.count += 1;
+  }
+
+  recordPilotLinkRevoke(): void {
+    this.pilotLinkRevokes.count += 1;
+  }
+
+  recordOpsSummaryRead(): void {
+    this.opsSummaryReads.count += 1;
+  }
+
+  recordOpsErrorView(): void {
+    this.opsErrorViews.count += 1;
+  }
+
+  recordPartnerFeatureOverride(): void {
+    this.partnerFeatureOverrides.count += 1;
+  }
+
+  recordPilotActivityRead(): void {
+    this.pilotActivityReads.count += 1;
+  }
+
+  recordProviderDegradedDuringPilot(): void {
+    this.providerDegradedDuringPilot.count += 1;
   }
 
   recordNoteCreate(): void {
@@ -533,6 +634,53 @@ export class MetricsCollector {
     this.errorCounts[category] += 1;
   }
 
+  recordDataQualityEvents(payload: {
+    events: Array<Omit<DataQualityEvent, "id" | "createdAt" | "updatedAt" | "searchRequestId">>;
+    totalResults: number;
+    staleResults: number;
+    listingCandidates: number;
+    safetyCandidates: number;
+    geocodeCandidates: number;
+    searchCandidates: number;
+  }): void {
+    this.dataQuality.totalEvents += payload.events.length;
+    this.dataQuality.totalResults += payload.totalResults;
+    this.dataQuality.staleResults += payload.staleResults;
+    this.dataQuality.listingCandidates += payload.listingCandidates;
+    this.dataQuality.safetyCandidates += payload.safetyCandidates;
+    this.dataQuality.geocodeCandidates += payload.geocodeCandidates;
+    this.dataQuality.searchCandidates += payload.searchCandidates;
+
+    for (const event of payload.events) {
+      if (event.status === "open") {
+        this.dataQuality.openCount += 1;
+      }
+      if (event.status === "resolved") {
+        this.dataQuality.resolvedCount += 1;
+      }
+      if (event.severity === "critical") {
+        this.dataQuality.criticalEvents += 1;
+      }
+      if (event.category.startsWith("provider_drift")) {
+        this.dataQuality.providerDriftEvents += 1;
+      }
+      this.dataQuality.categoryCounts.set(
+        event.category,
+        (this.dataQuality.categoryCounts.get(event.category) ?? 0) + 1
+      );
+
+      if (event.sourceDomain === "listing") {
+        this.dataQuality.listingFailures += 1;
+      } else if (event.sourceDomain === "safety") {
+        this.dataQuality.safetyFailures += 1;
+      } else if (event.sourceDomain === "geocode") {
+        this.dataQuality.geocodeFailures += 1;
+      } else if (event.sourceDomain === "search") {
+        this.dataQuality.searchFailures += 1;
+      }
+    }
+  }
+
   recordSafetyResolution(payload: {
     source: "live" | "cached_live" | "stale_cached_live" | "mock" | "none";
     cacheHit: boolean;
@@ -579,6 +727,16 @@ export class MetricsCollector {
       average: entry ? average(entry.latency) : 0,
       last: entry?.latency.last ?? null
     };
+  }
+
+  private percentile(values: number[], ratio: number): number {
+    if (values.length === 0) {
+      return 0;
+    }
+
+    const sorted = [...values].sort((left, right) => left - right);
+    const index = Math.max(0, Math.ceil(sorted.length * ratio) - 1);
+    return sorted[index] ?? 0;
   }
 
   snapshot(): SearchMetrics {
@@ -892,6 +1050,15 @@ export class MetricsCollector {
       reviewerDecisionUpdateCount: this.reviewerDecisionUpdates.count,
       collaborationActivityReadCount: this.collaborationActivityReads.count,
       expiredShareOpenCount: this.expiredShareOpens.count,
+      pilotPartnerCreateCount: this.pilotPartnerCreates.count,
+      pilotLinkCreateCount: this.pilotLinkCreates.count,
+      pilotLinkOpenCount: this.pilotLinkOpens.count,
+      pilotLinkRevokeCount: this.pilotLinkRevokes.count,
+      opsSummaryReadCount: this.opsSummaryReads.count,
+      opsErrorViewCount: this.opsErrorViews.count,
+      partnerFeatureOverrideCount: this.partnerFeatureOverrides.count,
+      pilotActivityReadCount: this.pilotActivityReads.count,
+      providerDegradedDuringPilotCount: this.providerDegradedDuringPilot.count,
       noteCreateCount: this.noteCreates.count,
       noteUpdateCount: this.noteUpdates.count,
       noteDeleteCount: this.noteDeletes.count,
@@ -927,6 +1094,61 @@ export class MetricsCollector {
       validationPromptResponseCount: this.validationPromptResponses.count,
       sharedSnapshotExpiredCount: this.sharedSnapshotExpired.count,
       validationSummaryReadCount: this.validationSummaryReads.count,
+      dataQualityEventCount: this.dataQuality.totalEvents,
+      integrityIncidentOpenCount: this.dataQuality.openCount,
+      integrityIncidentResolvedCount: this.dataQuality.resolvedCount,
+      safetyQualityFailureRate: {
+        failures: this.dataQuality.safetyFailures,
+        totalCandidates: this.dataQuality.safetyCandidates,
+        rate:
+          this.dataQuality.safetyCandidates === 0
+            ? 0
+            : Number((this.dataQuality.safetyFailures / this.dataQuality.safetyCandidates).toFixed(4))
+      },
+      geocodeQualityFailureRate: {
+        failures: this.dataQuality.geocodeFailures,
+        totalCandidates: this.dataQuality.geocodeCandidates,
+        rate:
+          this.dataQuality.geocodeCandidates === 0
+            ? 0
+            : Number((this.dataQuality.geocodeFailures / this.dataQuality.geocodeCandidates).toFixed(4))
+      },
+      searchIntegrityFailureRate: {
+        failures: this.dataQuality.searchFailures,
+        totalCandidates: this.dataQuality.searchCandidates,
+        rate:
+          this.dataQuality.searchCandidates === 0
+            ? 0
+            : Number((this.dataQuality.searchFailures / this.dataQuality.searchCandidates).toFixed(4))
+      },
+      staleDataResultRate: {
+        staleResults: this.dataQuality.staleResults,
+        totalResults: this.dataQuality.totalResults,
+        rate:
+          this.dataQuality.totalResults === 0
+            ? 0
+            : Number((this.dataQuality.staleResults / this.dataQuality.totalResults).toFixed(4))
+      },
+      providerDriftEventCount: this.dataQuality.providerDriftEvents,
+      qualityRuleTriggerCountByCategory: Object.fromEntries(this.dataQuality.categoryCounts.entries()),
+      criticalQualityEventCount: this.dataQuality.criticalEvents,
+      searchLatencyP95Ms: this.percentile(this.searchLatencySamples, 0.95),
+      providerCallCountByType: {
+        geocoder: this.providerCallCounts.geocoder,
+        listing: this.providerCallCounts.listing,
+        safety: this.providerCallCounts.safety
+      },
+      liveFetchBudgetExhaustionCount: {
+        geocoder: this.liveFetchBudgetExhaustion.geocoder,
+        listing: this.liveFetchBudgetExhaustion.listing,
+        safety: this.liveFetchBudgetExhaustion.safety
+      },
+      snapshotWriteLatency: {
+        count: this.snapshotWriteLatency.count,
+        average: average(this.snapshotWriteLatency),
+        last: this.snapshotWriteLatency.last
+      },
+      heavyEndpointReadCounts: Object.fromEntries(this.endpointReads.entries()),
       scoreDistribution: {
         count: this.scores.count,
         average: average(this.scores),
