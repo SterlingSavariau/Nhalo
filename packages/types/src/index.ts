@@ -975,6 +975,81 @@ export interface OfferReadinessRecommendation {
   nextSteps: string[];
 }
 
+export type NegotiationStatus =
+  | "NOT_STARTED"
+  | "DRAFTING_OFFER"
+  | "OFFER_MADE"
+  | "COUNTER_RECEIVED"
+  | "BUYER_REVIEWING"
+  | "COUNTER_SENT"
+  | "ACCEPTED"
+  | "REJECTED"
+  | "WITHDRAWN"
+  | "EXPIRED";
+
+export type NegotiationEventType =
+  | "NEGOTIATION_STARTED"
+  | "INITIAL_OFFER_SET"
+  | "OFFER_SUBMITTED"
+  | "SELLER_COUNTER_RECEIVED"
+  | "BUYER_COUNTER_SENT"
+  | "BUYER_ACCEPTED"
+  | "BUYER_REJECTED"
+  | "SELLER_ACCEPTED"
+  | "SELLER_REJECTED"
+  | "NEGOTIATION_WITHDRAWN"
+  | "NEGOTIATION_EXPIRED"
+  | "NOTE_ADDED";
+
+export type NegotiationGuidanceRiskLevel = "low" | "medium" | "high";
+
+export interface NegotiationGuidance {
+  headline: string;
+  riskLevel: NegotiationGuidanceRiskLevel;
+  nextSteps: string[];
+  flags: string[];
+}
+
+export interface NegotiationRecord {
+  id: string;
+  propertyId: string;
+  shortlistId?: string | null;
+  offerReadinessId?: string | null;
+  status: NegotiationStatus;
+  initialOfferPrice: number;
+  currentOfferPrice: number;
+  sellerCounterPrice?: number | null;
+  buyerWalkAwayPrice?: number | null;
+  roundNumber: number;
+  guidance: NegotiationGuidance;
+  lastActionAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NegotiationEvent {
+  id: string;
+  negotiationRecordId: string;
+  type: NegotiationEventType;
+  label: string;
+  details?: string | null;
+  createdAt: string;
+}
+
+export interface NegotiationSummary {
+  propertyId: string;
+  shortlistId?: string | null;
+  status: NegotiationStatus;
+  currentOfferPrice: number;
+  sellerCounterPrice?: number | null;
+  buyerWalkAwayPrice?: number | null;
+  roundNumber: number;
+  lastActionAt: string;
+  keyRisks: string[];
+  nextSteps: string[];
+  guidance: NegotiationGuidance;
+}
+
 export interface Shortlist {
   id: string;
   sessionId: string | null;
@@ -1093,6 +1168,13 @@ export type WorkflowActivityType =
   | "offer_readiness_created"
   | "offer_readiness_updated"
   | "offer_status_changed"
+  | "negotiation_started"
+  | "offer_submitted"
+  | "counter_received"
+  | "counter_sent"
+  | "negotiation_accepted"
+  | "negotiation_rejected"
+  | "negotiation_withdrawn"
   | "note_created"
   | "note_updated"
   | "note_deleted"
@@ -1105,6 +1187,7 @@ export interface WorkflowActivityRecord {
   shortlistId?: string | null;
   shortlistItemId?: string | null;
   offerReadinessId?: string | null;
+  negotiationRecordId?: string | null;
   noteId?: string | null;
   payload?: Record<string, unknown> | null;
   createdAt: string;
@@ -1529,6 +1612,42 @@ export interface SearchRepository {
     propertyId: string,
     shortlistId?: string
   ): Promise<OfferReadinessRecommendation | null>;
+  createNegotiation(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    offerReadinessId?: string | null;
+    status?: NegotiationStatus;
+    initialOfferPrice: number;
+    currentOfferPrice?: number;
+    sellerCounterPrice?: number | null;
+    buyerWalkAwayPrice?: number | null;
+    roundNumber?: number;
+  }): Promise<NegotiationRecord | null>;
+  listNegotiations(shortlistId: string): Promise<NegotiationRecord[]>;
+  getNegotiation(propertyId: string, shortlistId?: string): Promise<NegotiationRecord | null>;
+  updateNegotiation(
+    id: string,
+    patch: {
+      status?: NegotiationStatus;
+      currentOfferPrice?: number;
+      sellerCounterPrice?: number | null;
+      buyerWalkAwayPrice?: number | null;
+      roundNumber?: number;
+    }
+  ): Promise<NegotiationRecord | null>;
+  createNegotiationEvent(
+    negotiationRecordId: string,
+    payload: {
+      type: NegotiationEventType;
+      label: string;
+      details?: string | null;
+    }
+  ): Promise<NegotiationEvent | null>;
+  listNegotiationEvents(negotiationRecordId: string): Promise<NegotiationEvent[]>;
+  getNegotiationSummary(
+    propertyId: string,
+    shortlistId?: string
+  ): Promise<NegotiationSummary | null>;
   updateShortlistItem(
     shortlistId: string,
     itemId: string,
@@ -1936,6 +2055,13 @@ export interface SearchMetrics {
   noteDeleteCount: number;
   reviewStateChangeCount: number;
   historicalCompareViewCount: number;
+  negotiationCreateCount: number;
+  negotiationEventCreateCount: number;
+  negotiationStatusChangeCount: number;
+  negotiationAcceptCount: number;
+  negotiationRejectCount: number;
+  negotiationWithdrawCount: number;
+  negotiationSummaryViewCount: number;
   shortlistShareCreateCount: number;
   shortlistShareOpenCount: number;
   shortlistShareRevokeCount: number;

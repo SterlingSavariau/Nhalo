@@ -6,6 +6,9 @@ import type {
   FeedbackCategory,
   FeedbackRecord,
   GoLiveCheckSummary,
+  NegotiationEvent,
+  NegotiationRecord,
+  NegotiationSummary,
   OfferReadiness,
   OfferReadinessRecommendation,
   OpsActionRecord,
@@ -419,12 +422,136 @@ export async function fetchShortlistItems(id: string): Promise<{
   shortlist: Shortlist;
   items: ShortlistItem[];
   offerReadiness: OfferReadiness[];
+  negotiations: NegotiationRecord[];
 }> {
   const response = await fetch(`${API_BASE_URL}/shortlists/${id}/items`);
 
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error?.message ?? "Shortlist items fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function createNegotiation(payload: {
+  propertyId: string;
+  shortlistId?: string | null;
+  offerReadinessId?: string | null;
+  status?: NegotiationRecord["status"];
+  initialOfferPrice: number;
+  currentOfferPrice?: number;
+  sellerCounterPrice?: number | null;
+  buyerWalkAwayPrice?: number | null;
+  roundNumber?: number;
+}): Promise<NegotiationRecord> {
+  const response = await fetch(`${API_BASE_URL}/negotiations`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Negotiation creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchNegotiation(
+  propertyId: string,
+  shortlistId?: string
+): Promise<NegotiationRecord> {
+  const query = shortlistId ? `?shortlistId=${encodeURIComponent(shortlistId)}` : "";
+  const response = await fetch(`${API_BASE_URL}/negotiations/${encodeURIComponent(propertyId)}${query}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Negotiation fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function updateNegotiation(
+  id: string,
+  patch: {
+    status?: NegotiationRecord["status"];
+    currentOfferPrice?: number;
+    sellerCounterPrice?: number | null;
+    buyerWalkAwayPrice?: number | null;
+    roundNumber?: number;
+  }
+): Promise<NegotiationRecord> {
+  const response = await fetch(`${API_BASE_URL}/negotiations/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Negotiation update failed");
+  }
+
+  return response.json();
+}
+
+export async function createNegotiationEvent(
+  negotiationId: string,
+  payload: {
+    type: NegotiationEvent["type"];
+    label: string;
+    details?: string | null;
+  }
+): Promise<NegotiationEvent> {
+  const response = await fetch(`${API_BASE_URL}/negotiations/${encodeURIComponent(negotiationId)}/events`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Negotiation event creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchNegotiationEvents(
+  negotiationId: string
+): Promise<NegotiationEvent[]> {
+  const response = await fetch(`${API_BASE_URL}/negotiations/${encodeURIComponent(negotiationId)}/events`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Negotiation events fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.events;
+}
+
+export async function fetchNegotiationSummary(
+  propertyId: string,
+  shortlistId?: string
+): Promise<NegotiationSummary> {
+  const query = shortlistId ? `?shortlistId=${encodeURIComponent(shortlistId)}` : "";
+  const response = await fetch(
+    `${API_BASE_URL}/negotiations/${encodeURIComponent(propertyId)}/summary${query}`
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Negotiation summary fetch failed");
   }
 
   return response.json();

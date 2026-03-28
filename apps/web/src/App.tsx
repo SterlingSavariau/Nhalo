@@ -4,6 +4,8 @@ import type {
   DemoScenario,
   FeedbackRecord,
   HistoricalComparisonPayload,
+  NegotiationEvent,
+  NegotiationRecord,
   OfferReadiness,
   OpsActionRecord,
   PilotActivityRecord,
@@ -32,6 +34,8 @@ import { DEFAULT_WEIGHTS } from "@nhalo/config";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addShortlistItem,
+  createNegotiation,
+  createNegotiationEvent,
   createOfferReadiness,
   createPilotLink,
   createPilotPartner,
@@ -51,6 +55,7 @@ import {
   fetchCollaborationActivity,
   fetchDataQualityEvents,
   fetchDemoScenarios,
+  fetchNegotiationEvents,
   fetchOpsActions,
   fetchOpsSummary,
   fetchPilotActivity,
@@ -81,6 +86,7 @@ import {
   trackUiMetric,
   revokeSharedShortlist,
   updateDataQualityEventStatus,
+  updateNegotiation,
   updateOfferReadiness,
   updateResultNote,
   updateReviewerDecision,
@@ -186,6 +192,10 @@ export default function App() {
   const [selectedShortlistId, setSelectedShortlistId] = useState<string | null>(null);
   const [shortlistItems, setShortlistItems] = useState<ShortlistItem[]>([]);
   const [offerReadiness, setOfferReadiness] = useState<OfferReadiness[]>([]);
+  const [negotiations, setNegotiations] = useState<NegotiationRecord[]>([]);
+  const [negotiationEventsByRecordId, setNegotiationEventsByRecordId] = useState<
+    Record<string, NegotiationEvent[]>
+  >({});
   const [resultNotes, setResultNotes] = useState<ResultNote[]>([]);
   const [workflowActivity, setWorkflowActivity] = useState<WorkflowActivityRecord[]>([]);
   const [sharedComments, setSharedComments] = useState<SharedComment[]>([]);
@@ -271,6 +281,8 @@ export default function App() {
       setSharedShortlists([]);
       setShortlistItems([]);
       setOfferReadiness([]);
+      setNegotiations([]);
+      setNegotiationEventsByRecordId({});
       setResultNotes([]);
       setWorkflowActivity([]);
       setSelectedShortlistId(null);
@@ -298,12 +310,28 @@ export default function App() {
       setSharedShortlists([]);
       setShortlistItems([]);
       setOfferReadiness([]);
+      setNegotiations([]);
+      setNegotiationEventsByRecordId({});
       return;
     }
 
     const shortlistPayload = await fetchShortlistItems(nextSelected);
     setShortlistItems(shortlistPayload.items);
     setOfferReadiness(shortlistPayload.offerReadiness ?? []);
+    setNegotiations(shortlistPayload.negotiations ?? []);
+    if ((shortlistPayload.negotiations ?? []).length > 0) {
+      const eventPayloads = await Promise.all(
+        shortlistPayload.negotiations.map(async (entry) => ({
+          id: entry.id,
+          events: await fetchNegotiationEvents(entry.id).catch(() => [])
+        }))
+      );
+      setNegotiationEventsByRecordId(
+        Object.fromEntries(eventPayloads.map((entry) => [entry.id, entry.events]))
+      );
+    } else {
+      setNegotiationEventsByRecordId({});
+    }
     if (sharedShortlistsEnabled) {
       const shares = await fetchSharedShortlists(nextSelected);
       setSharedShortlists(shares);
@@ -711,6 +739,13 @@ export default function App() {
     }
     return map;
   }, [offerReadiness]);
+  const negotiationsByPropertyId = useMemo(() => {
+    const map = new Map<string, NegotiationRecord>();
+    for (const entry of negotiations) {
+      map.set(entry.propertyId, entry);
+    }
+    return map;
+  }, [negotiations]);
 
   const selectedHomeNoteContext = useMemo(() => {
     if (!selectedHome) {
@@ -1167,6 +1202,20 @@ export default function App() {
       const payload = await fetchShortlistItems(shortlistId);
       setShortlistItems(payload.items);
       setOfferReadiness(payload.offerReadiness ?? []);
+      setNegotiations(payload.negotiations ?? []);
+      if ((payload.negotiations ?? []).length > 0) {
+        const eventPayloads = await Promise.all(
+          payload.negotiations.map(async (entry) => ({
+            id: entry.id,
+            events: await fetchNegotiationEvents(entry.id).catch(() => [])
+          }))
+        );
+        setNegotiationEventsByRecordId(
+          Object.fromEntries(eventPayloads.map((entry) => [entry.id, entry.events]))
+        );
+      } else {
+        setNegotiationEventsByRecordId({});
+      }
     } catch (workflowError) {
       setError(workflowError instanceof Error ? workflowError.message : "Unable to load shortlist");
     }
@@ -1291,6 +1340,63 @@ export default function App() {
     } catch (workflowError) {
       setError(
         workflowError instanceof Error ? workflowError.message : "Unable to update offer readiness"
+      );
+    }
+  }
+
+  async function handleCreateNegotiation(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    offerReadinessId?: string | null;
+    status?: NegotiationRecord["status"];
+    initialOfferPrice: number;
+    currentOfferPrice?: number;
+    buyerWalkAwayPrice?: number | null;
+  }) {
+    try {
+      await createNegotiation(payload);
+      await refreshWorkflowState(sessionIdentity.sessionId, payload.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to start negotiation tracking"
+      );
+    }
+  }
+
+  async function handleUpdateNegotiation(
+    id: string,
+    patch: {
+      status?: NegotiationRecord["status"];
+      currentOfferPrice?: number;
+      sellerCounterPrice?: number | null;
+      buyerWalkAwayPrice?: number | null;
+      roundNumber?: number;
+    }
+  ) {
+    try {
+      const record = await updateNegotiation(id, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to update negotiation"
+      );
+    }
+  }
+
+  async function handleAddNegotiationEvent(
+    negotiationId: string,
+    payload: {
+      type: NegotiationEvent["type"];
+      label: string;
+      details?: string | null;
+    }
+  ) {
+    try {
+      await createNegotiationEvent(negotiationId, payload);
+      await refreshWorkflowState(sessionIdentity.sessionId, selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to append negotiation event"
       );
     }
   }
@@ -1641,8 +1747,12 @@ export default function App() {
                   historicalCompareEnabled={branding.enableHistoricalCompare}
                   items={shortlistItems}
                   offerReadiness={offerReadiness}
+                  negotiations={negotiations}
+                  negotiationEventsByRecordId={negotiationEventsByRecordId}
                   notes={resultNotes.filter((entry) => entry.entityType === "shortlist_item")}
+                  onAddNegotiationEvent={handleAddNegotiationEvent}
                   onCopyShareLink={handleCopyShortlistShare}
+                  onCreateNegotiation={handleCreateNegotiation}
                   onCreateOfferReadiness={handleCreateOfferReadiness}
                   onCreateShare={sharedShortlistsEnabled ? handleCreateShortlistShare : undefined}
                   onCreate={handleCreateShortlist}
@@ -1655,6 +1765,7 @@ export default function App() {
                   onSaveNote={handleSaveResultNote}
                   onSelect={handleSelectShortlist}
                   onTogglePinned={handleToggleShortlistPinned}
+                  onUpdateNegotiation={handleUpdateNegotiation}
                   onUpdateOfferReadiness={handleUpdateOfferReadiness}
                   selectedShortlistId={selectedShortlistId}
                   sharedShortlists={sharedShortlists}
@@ -1838,15 +1949,30 @@ export default function App() {
         allHomes={results?.homes ?? []}
         home={selectedHome}
         note={selectedHomeNote}
+        negotiation={
+          selectedHome
+            ? negotiationsByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id) ?? null
+            : null
+        }
+        negotiationEvents={
+          selectedHome
+            ? negotiationEventsByRecordId[
+                negotiationsByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id)?.id ?? ""
+              ] ?? []
+            : []
+        }
         offerReadiness={
           selectedHome
             ? offerReadinessByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id) ?? null
             : null
         }
         noteEnabled={branding.enableResultNotes && Boolean(selectedHomeNoteContext)}
+        onAddNegotiationEvent={handleAddNegotiationEvent}
         onClose={() => setSelectedHomeId(null)}
+        onCreateNegotiation={handleCreateNegotiation}
         onDeleteNote={handleDeleteSelectedHomeNote}
         onSaveNote={handleSaveSelectedHomeNote}
+        onUpdateNegotiation={handleUpdateNegotiation}
         onViewAudit={handleViewAudit}
       />
 

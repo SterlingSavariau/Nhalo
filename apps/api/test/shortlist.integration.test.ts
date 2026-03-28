@@ -532,4 +532,180 @@ describe("shortlist workflow", () => {
         })
     ).toBe(true);
   });
+
+  it("creates negotiation tracking records, stores timeline events, and returns deterministic summaries", async () => {
+    const createShortlistResponse = await app.inject({
+      method: "POST",
+      url: "/shortlists",
+      headers: {
+        "x-nhalo-session-id": sessionId
+      },
+      payload: {
+        title: "Negotiation shortlist"
+      }
+    });
+    expect(createShortlistResponse.statusCode).toBe(201);
+    const shortlist = createShortlistResponse.json();
+
+    const addItemResponse = await app.inject({
+      method: "POST",
+      url: `/shortlists/${shortlist.id}/items`,
+      payload: {
+        canonicalPropertyId: capturedHome.canonicalPropertyId,
+        capturedHome
+      }
+    });
+    expect(addItemResponse.statusCode).toBe(201);
+
+    const readinessResponse = await app.inject({
+      method: "POST",
+      url: "/offer-readiness",
+      payload: {
+        shortlistId: shortlist.id,
+        propertyId: capturedHome.canonicalPropertyId,
+        financingReadiness: "cash_ready",
+        propertyFitConfidence: "high",
+        riskToleranceAlignment: "aligned",
+        riskLevel: "balanced",
+        userConfirmed: true
+      }
+    });
+    expect(readinessResponse.statusCode).toBe(201);
+    const offerReadiness = readinessResponse.json();
+
+    const createNegotiationResponse = await app.inject({
+      method: "POST",
+      url: "/negotiations",
+      payload: {
+        propertyId: capturedHome.canonicalPropertyId,
+        shortlistId: shortlist.id,
+        offerReadinessId: offerReadiness.id,
+        status: "DRAFTING_OFFER",
+        initialOfferPrice: 389000,
+        currentOfferPrice: 389000,
+        buyerWalkAwayPrice: 400000
+      }
+    });
+    expect(createNegotiationResponse.statusCode).toBe(201);
+    const negotiation = createNegotiationResponse.json();
+    expect(negotiation.status).toBe("DRAFTING_OFFER");
+    expect(negotiation.guidance.nextSteps).toContain("Submit the offer when ready");
+
+    const getNegotiationResponse = await app.inject({
+      method: "GET",
+      url: `/negotiations/${capturedHome.canonicalPropertyId}?shortlistId=${shortlist.id}`
+    });
+    expect(getNegotiationResponse.statusCode).toBe(200);
+    expect(getNegotiationResponse.json().id).toBe(negotiation.id);
+
+    const offerMadeResponse = await app.inject({
+      method: "PATCH",
+      url: `/negotiations/${negotiation.id}`,
+      payload: {
+        status: "OFFER_MADE",
+        currentOfferPrice: 392000,
+        roundNumber: 1
+      }
+    });
+    expect(offerMadeResponse.statusCode).toBe(200);
+    expect(offerMadeResponse.json().status).toBe("OFFER_MADE");
+
+    const sellerCounterEventResponse = await app.inject({
+      method: "POST",
+      url: `/negotiations/${negotiation.id}/events`,
+      payload: {
+        type: "SELLER_COUNTER_RECEIVED",
+        label: "Seller counter received",
+        details: "Seller counter recorded at $398,000."
+      }
+    });
+    expect(sellerCounterEventResponse.statusCode).toBe(201);
+
+    const counterReceivedResponse = await app.inject({
+      method: "PATCH",
+      url: `/negotiations/${negotiation.id}`,
+      payload: {
+        status: "COUNTER_RECEIVED",
+        sellerCounterPrice: 398000,
+        roundNumber: 2
+      }
+    });
+    expect(counterReceivedResponse.statusCode).toBe(200);
+    const updatedNegotiation = counterReceivedResponse.json();
+    expect(updatedNegotiation.status).toBe("COUNTER_RECEIVED");
+    expect(updatedNegotiation.roundNumber).toBe(2);
+    expect(updatedNegotiation.guidance.flags).toContain(
+      "Seller counter is close to the recommended offer range."
+    );
+
+    const eventsResponse = await app.inject({
+      method: "GET",
+      url: `/negotiations/${negotiation.id}/events`
+    });
+    expect(eventsResponse.statusCode).toBe(200);
+    expect(eventsResponse.json().events.length).toBeGreaterThanOrEqual(3);
+
+    const summaryResponse = await app.inject({
+      method: "GET",
+      url: `/negotiations/${capturedHome.canonicalPropertyId}/summary?shortlistId=${shortlist.id}`
+    });
+    expect(summaryResponse.statusCode).toBe(200);
+    expect(summaryResponse.json().status).toBe("COUNTER_RECEIVED");
+    expect(summaryResponse.json().buyerWalkAwayPrice).toBe(400000);
+    expect(summaryResponse.json().nextSteps).toContain("Review the seller counter");
+
+    const shortlistItemsResponse = await app.inject({
+      method: "GET",
+      url: `/shortlists/${shortlist.id}/items`
+    });
+    expect(shortlistItemsResponse.statusCode).toBe(200);
+    expect(shortlistItemsResponse.json().negotiations).toHaveLength(1);
+    expect(shortlistItemsResponse.json().negotiations[0].id).toBe(negotiation.id);
+
+    const workflowActivityResponse = await app.inject({
+      method: "GET",
+      url: "/workflow/activity?limit=30",
+      headers: {
+        "x-nhalo-session-id": sessionId
+      }
+    });
+    expect(workflowActivityResponse.statusCode).toBe(200);
+    expect(
+      workflowActivityResponse
+        .json()
+        .activity.some(
+          (entry: { eventType: string; negotiationRecordId?: string | null }) =>
+            entry.eventType === "negotiation_started" &&
+            entry.negotiationRecordId === negotiation.id
+        )
+    ).toBe(true);
+    expect(
+      workflowActivityResponse
+        .json()
+        .activity.some(
+          (entry: { eventType: string; negotiationRecordId?: string | null }) =>
+            entry.eventType === "offer_submitted" &&
+            entry.negotiationRecordId === negotiation.id
+        )
+    ).toBe(true);
+    expect(
+      workflowActivityResponse
+        .json()
+        .activity.some(
+          (entry: { eventType: string; negotiationRecordId?: string | null }) =>
+            entry.eventType === "counter_received" &&
+            entry.negotiationRecordId === negotiation.id
+        )
+    ).toBe(true);
+
+    const metricsResponse = await app.inject({
+      method: "GET",
+      url: "/metrics"
+    });
+    const metricsPayload = metricsResponse.json();
+    expect(metricsPayload.negotiationCreateCount).toBeGreaterThanOrEqual(1);
+    expect(metricsPayload.negotiationEventCreateCount).toBeGreaterThanOrEqual(1);
+    expect(metricsPayload.negotiationStatusChangeCount).toBeGreaterThanOrEqual(2);
+    expect(metricsPayload.negotiationSummaryViewCount).toBeGreaterThanOrEqual(1);
+  });
 });

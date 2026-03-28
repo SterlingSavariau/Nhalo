@@ -120,6 +120,13 @@ export class MetricsCollector {
   private readonly shortlistItemAdds = { count: 0 };
   private readonly shortlistItemRemoves = { count: 0 };
   private readonly shortlistViews = { count: 0 };
+  private readonly negotiationCreates = { count: 0 };
+  private readonly negotiationEventCreates = { count: 0 };
+  private readonly negotiationStatusChanges = { count: 0 };
+  private readonly negotiationAccepts = { count: 0 };
+  private readonly negotiationRejects = { count: 0 };
+  private readonly negotiationWithdraws = { count: 0 };
+  private readonly negotiationSummaryViews = { count: 0 };
   private readonly shortlistShareCreates = { count: 0 };
   private readonly shortlistShareOpens = { count: 0 };
   private readonly shortlistShareRevokes = { count: 0 };
@@ -475,6 +482,34 @@ export class MetricsCollector {
 
   recordShortlistView(): void {
     this.shortlistViews.count += 1;
+  }
+
+  recordNegotiationCreate(): void {
+    this.negotiationCreates.count += 1;
+  }
+
+  recordNegotiationEventCreate(): void {
+    this.negotiationEventCreates.count += 1;
+  }
+
+  recordNegotiationStatusChange(): void {
+    this.negotiationStatusChanges.count += 1;
+  }
+
+  recordNegotiationAccept(): void {
+    this.negotiationAccepts.count += 1;
+  }
+
+  recordNegotiationReject(): void {
+    this.negotiationRejects.count += 1;
+  }
+
+  recordNegotiationWithdraw(): void {
+    this.negotiationWithdraws.count += 1;
+  }
+
+  recordNegotiationSummaryView(): void {
+    this.negotiationSummaryViews.count += 1;
   }
 
   recordShortlistShareCreate(): void {
@@ -1217,6 +1252,13 @@ export class MetricsCollector {
       shortlistItemAddCount: this.shortlistItemAdds.count,
       shortlistItemRemoveCount: this.shortlistItemRemoves.count,
       shortlistViewCount: this.shortlistViews.count,
+      negotiationCreateCount: this.negotiationCreates.count,
+      negotiationEventCreateCount: this.negotiationEventCreates.count,
+      negotiationStatusChangeCount: this.negotiationStatusChanges.count,
+      negotiationAcceptCount: this.negotiationAccepts.count,
+      negotiationRejectCount: this.negotiationRejects.count,
+      negotiationWithdrawCount: this.negotiationWithdraws.count,
+      negotiationSummaryViewCount: this.negotiationSummaryViews.count,
       shortlistShareCreateCount: this.shortlistShareCreates.count,
       shortlistShareOpenCount: this.shortlistShareOpens.count,
       shortlistShareRevokeCount: this.shortlistShareRevokes.count,

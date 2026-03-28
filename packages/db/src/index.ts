@@ -23,6 +23,11 @@ import type {
   HistoricalComparisonPayload,
   ListingCacheRecord,
   ListingCacheRepository,
+  NegotiationEvent,
+  NegotiationEventType,
+  NegotiationRecord,
+  NegotiationStatus,
+  NegotiationSummary,
   OfferFinancingReadiness,
   OfferPropertyFitConfidence,
   OfferReadiness,
@@ -77,6 +82,7 @@ import {
   evaluateOfferReadiness,
   toOfferReadinessRecommendation
 } from "./offer-readiness";
+import { evaluateNegotiation, toNegotiationSummary } from "./negotiation";
 
 function randomToken(length = 32): string {
   let token = "";
@@ -147,6 +153,8 @@ type StoredSharedShortlist = SharedShortlist;
 type StoredSharedComment = SharedComment;
 type StoredReviewerDecision = ReviewerDecision;
 type StoredOfferReadiness = OfferReadiness;
+type StoredNegotiationRecord = NegotiationRecord;
+type StoredNegotiationEvent = NegotiationEvent;
 type StoredPilotPartner = PilotPartner;
 type StoredPilotLink = PilotLinkRecord;
 type StoredOpsAction = OpsActionRecord;
@@ -833,6 +841,14 @@ function mapStoredOfferReadiness(record: StoredOfferReadiness): OfferReadiness {
   return clone(record);
 }
 
+function mapStoredNegotiation(record: StoredNegotiationRecord): NegotiationRecord {
+  return clone(record);
+}
+
+function mapStoredNegotiationEvent(record: StoredNegotiationEvent): NegotiationEvent {
+  return clone(record);
+}
+
 function mapStoredResultNote(note: StoredResultNote): ResultNote {
   return clone(note);
 }
@@ -863,6 +879,13 @@ function workflowEventNames(): WorkflowActivityRecord["eventType"][] {
     "offer_readiness_created",
     "offer_readiness_updated",
     "offer_status_changed",
+    "negotiation_started",
+    "offer_submitted",
+    "counter_received",
+    "counter_sent",
+    "negotiation_accepted",
+    "negotiation_rejected",
+    "negotiation_withdrawn",
     "note_created",
     "note_updated",
     "note_deleted",
@@ -896,6 +919,8 @@ function toWorkflowActivity(event: StoredValidationEvent): WorkflowActivityRecor
     shortlistId: (event.payload?.shortlistId as string | null | undefined) ?? null,
     shortlistItemId: (event.payload?.shortlistItemId as string | null | undefined) ?? null,
     offerReadinessId: (event.payload?.offerReadinessId as string | null | undefined) ?? null,
+    negotiationRecordId:
+      (event.payload?.negotiationRecordId as string | null | undefined) ?? null,
     noteId: (event.payload?.noteId as string | null | undefined) ?? null,
     payload: event.payload ?? null,
     createdAt: event.createdAt
@@ -1039,6 +1064,8 @@ export class InMemorySearchRepository implements SearchRepository {
   public readonly shortlists: StoredShortlist[] = [];
   public readonly shortlistItems: StoredShortlistItem[] = [];
   public readonly offerReadinessRecords: StoredOfferReadiness[] = [];
+  public readonly negotiations: StoredNegotiationRecord[] = [];
+  public readonly negotiationEvents: StoredNegotiationEvent[] = [];
   public readonly resultNotes: StoredResultNote[] = [];
   public readonly sharedSnapshots: StoredSharedSnapshot[] = [];
   public readonly sharedShortlists: StoredSharedShortlist[] = [];
@@ -1515,6 +1542,21 @@ export class InMemorySearchRepository implements SearchRepository {
       this.offerReadinessRecords.length,
       ...this.offerReadinessRecords.filter((entry) => entry.shortlistId !== id)
     );
+    const removedNegotiationIds = this.negotiations
+      .filter((entry) => entry.shortlistId === id)
+      .map((entry) => entry.id);
+    this.negotiations.splice(
+      0,
+      this.negotiations.length,
+      ...this.negotiations.filter((entry) => entry.shortlistId !== id)
+    );
+    this.negotiationEvents.splice(
+      0,
+      this.negotiationEvents.length,
+      ...this.negotiationEvents.filter(
+        (entry) => !removedNegotiationIds.includes(entry.negotiationRecordId)
+      )
+    );
     this.resultNotes.splice(
       0,
       this.resultNotes.length,
@@ -1751,6 +1793,235 @@ export class InMemorySearchRepository implements SearchRepository {
     return record ? toOfferReadinessRecommendation(record) : null;
   }
 
+  async createNegotiation(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    offerReadinessId?: string | null;
+    status?: NegotiationStatus;
+    initialOfferPrice: number;
+    currentOfferPrice?: number;
+    sellerCounterPrice?: number | null;
+    buyerWalkAwayPrice?: number | null;
+    roundNumber?: number;
+  }): Promise<NegotiationRecord | null> {
+    const offerReadiness = payload.offerReadinessId
+      ? this.offerReadinessRecords.find((entry) => entry.id === payload.offerReadinessId) ?? null
+      : this.offerReadinessRecords.find(
+          (entry) =>
+            entry.propertyId === payload.propertyId &&
+            (!payload.shortlistId || entry.shortlistId === payload.shortlistId)
+        ) ?? null;
+    const shortlistId = payload.shortlistId ?? offerReadiness?.shortlistId ?? null;
+    const shortlist = shortlistId
+      ? this.shortlists.find((entry) => entry.id === shortlistId) ?? null
+      : null;
+
+    const existing = this.negotiations.find(
+      (entry) =>
+        entry.propertyId === payload.propertyId &&
+        (entry.shortlistId ?? null) === shortlistId
+    );
+    if (existing) {
+      return mapStoredNegotiation(existing);
+    }
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateNegotiation({
+      propertyId: payload.propertyId,
+      shortlistId,
+      offerReadinessId: payload.offerReadinessId ?? offerReadiness?.id ?? null,
+      initialOfferPrice: payload.initialOfferPrice,
+      offerReadiness,
+      now,
+      patch: {
+        status: payload.status,
+        currentOfferPrice: payload.currentOfferPrice,
+        sellerCounterPrice: payload.sellerCounterPrice,
+        buyerWalkAwayPrice: payload.buyerWalkAwayPrice,
+        roundNumber: payload.roundNumber
+      }
+    });
+
+    const record: NegotiationRecord = {
+      id: createId("negotiation"),
+      ...evaluation,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.negotiations.push(record);
+
+    const startedEvent: NegotiationEvent = {
+      id: createId("negotiation-event"),
+      negotiationRecordId: record.id,
+      type: "NEGOTIATION_STARTED",
+      label: "Negotiation started",
+      details: null,
+      createdAt: now
+    };
+    const initialOfferEvent: NegotiationEvent = {
+      id: createId("negotiation-event"),
+      negotiationRecordId: record.id,
+      type: "INITIAL_OFFER_SET",
+      label: "Initial offer set",
+      details: `Initial offer recorded at ${record.initialOfferPrice.toLocaleString("en-US", {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 0
+      })}.`,
+      createdAt: now
+    };
+    this.negotiationEvents.push(startedEvent, initialOfferEvent);
+
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "negotiation_started",
+      sessionId: shortlist?.sessionId ?? null,
+      payload: {
+        shortlistId,
+        offerReadinessId: record.offerReadinessId,
+        negotiationRecordId: record.id,
+        propertyId: record.propertyId,
+        status: record.status
+      },
+      createdAt: now
+    });
+
+    return mapStoredNegotiation(record);
+  }
+
+  async listNegotiations(shortlistId: string): Promise<NegotiationRecord[]> {
+    return this.negotiations
+      .filter((entry) => entry.shortlistId === shortlistId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map((entry) => mapStoredNegotiation(entry));
+  }
+
+  async getNegotiation(propertyId: string, shortlistId?: string): Promise<NegotiationRecord | null> {
+    const record =
+      this.negotiations
+        .filter(
+          (entry) => entry.propertyId === propertyId && (!shortlistId || entry.shortlistId === shortlistId)
+        )
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
+
+    return record ? mapStoredNegotiation(record) : null;
+  }
+
+  async updateNegotiation(
+    id: string,
+    patch: {
+      status?: NegotiationStatus;
+      currentOfferPrice?: number;
+      sellerCounterPrice?: number | null;
+      buyerWalkAwayPrice?: number | null;
+      roundNumber?: number;
+    }
+  ): Promise<NegotiationRecord | null> {
+    const record = this.negotiations.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const offerReadiness =
+      (record.offerReadinessId
+        ? this.offerReadinessRecords.find((entry) => entry.id === record.offerReadinessId)
+        : null) ?? null;
+    const now = new Date().toISOString();
+    const previousStatus = record.status;
+    const evaluation = evaluateNegotiation({
+      propertyId: record.propertyId,
+      shortlistId: record.shortlistId ?? null,
+      offerReadinessId: record.offerReadinessId ?? null,
+      initialOfferPrice: record.initialOfferPrice,
+      current: record,
+      offerReadiness,
+      now,
+      patch
+    });
+
+    Object.assign(record, evaluation, {
+      updatedAt: now
+    });
+
+    const sessionId =
+      (record.shortlistId
+        ? this.shortlists.find((entry) => entry.id === record.shortlistId)?.sessionId
+        : null) ?? null;
+
+    const statusEventMap: Partial<Record<NegotiationStatus, WorkflowActivityRecord["eventType"]>> = {
+      OFFER_MADE: "offer_submitted",
+      COUNTER_RECEIVED: "counter_received",
+      COUNTER_SENT: "counter_sent",
+      ACCEPTED: "negotiation_accepted",
+      REJECTED: "negotiation_rejected",
+      WITHDRAWN: "negotiation_withdrawn"
+    };
+
+    if (previousStatus !== record.status && statusEventMap[record.status]) {
+      this.validationEvents.push({
+        id: createId("workflow"),
+        eventName: statusEventMap[record.status]!,
+        sessionId,
+        payload: {
+          shortlistId: record.shortlistId,
+          offerReadinessId: record.offerReadinessId,
+          negotiationRecordId: record.id,
+          propertyId: record.propertyId,
+          fromStatus: previousStatus,
+          toStatus: record.status
+        },
+        createdAt: now
+      });
+    }
+
+    return mapStoredNegotiation(record);
+  }
+
+  async createNegotiationEvent(
+    negotiationRecordId: string,
+    payload: {
+      type: NegotiationEventType;
+      label: string;
+      details?: string | null;
+    }
+  ): Promise<NegotiationEvent | null> {
+    const record = this.negotiations.find((entry) => entry.id === negotiationRecordId);
+    if (!record) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    record.lastActionAt = now;
+    record.updatedAt = now;
+
+    const event: NegotiationEvent = {
+      id: createId("negotiation-event"),
+      negotiationRecordId,
+      type: payload.type,
+      label: payload.label,
+      details: payload.details ?? null,
+      createdAt: now
+    };
+    this.negotiationEvents.push(event);
+
+    return mapStoredNegotiationEvent(event);
+  }
+
+  async listNegotiationEvents(negotiationRecordId: string): Promise<NegotiationEvent[]> {
+    return this.negotiationEvents
+      .filter((entry) => entry.negotiationRecordId === negotiationRecordId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((entry) => mapStoredNegotiationEvent(entry));
+  }
+
+  async getNegotiationSummary(
+    propertyId: string,
+    shortlistId?: string
+  ): Promise<NegotiationSummary | null> {
+    const record = await this.getNegotiation(propertyId, shortlistId);
+    return record ? toNegotiationSummary(record) : null;
+  }
+
   async updateShortlistItem(
     shortlistId: string,
     itemId: string,
@@ -1802,6 +2073,24 @@ export class InMemorySearchRepository implements SearchRepository {
       0,
       this.offerReadinessRecords.length,
       ...this.offerReadinessRecords.filter((entry) => entry.shortlistItemId !== item.id)
+    );
+    const removedNegotiationIds = this.negotiations
+      .filter((entry) => entry.shortlistId === shortlistId && entry.propertyId === item.canonicalPropertyId)
+      .map((entry) => entry.id);
+    this.negotiations.splice(
+      0,
+      this.negotiations.length,
+      ...this.negotiations.filter(
+        (entry) =>
+          !(entry.shortlistId === shortlistId && entry.propertyId === item.canonicalPropertyId)
+      )
+    );
+    this.negotiationEvents.splice(
+      0,
+      this.negotiationEvents.length,
+      ...this.negotiationEvents.filter(
+        (entry) => !removedNegotiationIds.includes(entry.negotiationRecordId)
+      )
     );
     this.validationEvents.push({
       id: createId("workflow"),
@@ -3052,6 +3341,18 @@ type PrismaClientLike = {
     findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
     update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   };
+  negotiationRecord: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    delete(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
+  negotiationEvent: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+  };
   resultNote: {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
@@ -3231,6 +3532,41 @@ function mapPrismaOfferReadiness(record: Record<string, unknown>): OfferReadines
     lastEvaluatedAt: (record.lastEvaluatedAt as Date).toISOString(),
     createdAt: (record.createdAt as Date).toISOString(),
     updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaNegotiation(record: Record<string, unknown>): NegotiationRecord {
+  return {
+    id: record.id as string,
+    propertyId: record.propertyId as string,
+    shortlistId: (record.shortlistId as string | null) ?? null,
+    offerReadinessId: (record.offerReadinessId as string | null) ?? null,
+    status: record.status as NegotiationStatus,
+    initialOfferPrice: Number(record.initialOfferPrice ?? 0),
+    currentOfferPrice: Number(record.currentOfferPrice ?? 0),
+    sellerCounterPrice: (record.sellerCounterPrice as number | null) ?? null,
+    buyerWalkAwayPrice: (record.buyerWalkAwayPrice as number | null) ?? null,
+    roundNumber: Number(record.roundNumber ?? 1),
+    guidance: {
+      headline: record.guidanceHeadline as string,
+      riskLevel: record.guidanceRiskLevel as NegotiationRecord["guidance"]["riskLevel"],
+      flags: clone((record.guidanceFlagsJson as string[] | null) ?? []),
+      nextSteps: clone((record.guidanceNextStepsJson as string[] | null) ?? [])
+    },
+    lastActionAt: (record.lastActionAt as Date).toISOString(),
+    createdAt: (record.createdAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaNegotiationEvent(record: Record<string, unknown>): NegotiationEvent {
+  return {
+    id: record.id as string,
+    negotiationRecordId: record.negotiationRecordId as string,
+    type: record.type as NegotiationEventType,
+    label: record.label as string,
+    details: (record.details as string | null) ?? null,
+    createdAt: (record.createdAt as Date).toISOString()
   };
 }
 
@@ -4551,6 +4887,288 @@ export class PrismaSearchRepository implements SearchRepository {
     return record ? toOfferReadinessRecommendation(record) : null;
   }
 
+  async createNegotiation(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    offerReadinessId?: string | null;
+    status?: NegotiationStatus;
+    initialOfferPrice: number;
+    currentOfferPrice?: number;
+    sellerCounterPrice?: number | null;
+    buyerWalkAwayPrice?: number | null;
+    roundNumber?: number;
+  }): Promise<NegotiationRecord | null> {
+    const offerReadinessRecord = payload.offerReadinessId
+      ? await this.client.offerReadiness.findUnique({
+          where: {
+            id: payload.offerReadinessId
+          }
+        })
+      : await this.client.offerReadiness.findFirst({
+          where: {
+            propertyId: payload.propertyId,
+            ...(payload.shortlistId ? { shortlistId: payload.shortlistId } : {})
+          }
+        });
+    const offerReadiness = offerReadinessRecord ? mapPrismaOfferReadiness(offerReadinessRecord) : null;
+    const shortlistId = payload.shortlistId ?? offerReadiness?.shortlistId ?? null;
+
+    const existing = await this.client.negotiationRecord.findFirst({
+      where: {
+        propertyId: payload.propertyId,
+        ...(shortlistId ? { shortlistId } : { shortlistId: null })
+      }
+    });
+    if (existing) {
+      return mapPrismaNegotiation(existing);
+    }
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateNegotiation({
+      propertyId: payload.propertyId,
+      shortlistId,
+      offerReadinessId: payload.offerReadinessId ?? offerReadiness?.id ?? null,
+      initialOfferPrice: payload.initialOfferPrice,
+      offerReadiness,
+      now,
+      patch: {
+        status: payload.status,
+        currentOfferPrice: payload.currentOfferPrice,
+        sellerCounterPrice: payload.sellerCounterPrice,
+        buyerWalkAwayPrice: payload.buyerWalkAwayPrice,
+        roundNumber: payload.roundNumber
+      }
+    });
+
+    const record = await this.client.negotiationRecord.create({
+      data: {
+        propertyId: evaluation.propertyId,
+        shortlistId: evaluation.shortlistId,
+        offerReadinessId: evaluation.offerReadinessId,
+        status: evaluation.status,
+        initialOfferPrice: evaluation.initialOfferPrice,
+        currentOfferPrice: evaluation.currentOfferPrice,
+        sellerCounterPrice: evaluation.sellerCounterPrice,
+        buyerWalkAwayPrice: evaluation.buyerWalkAwayPrice,
+        roundNumber: evaluation.roundNumber,
+        guidanceHeadline: evaluation.guidance.headline,
+        guidanceRiskLevel: evaluation.guidance.riskLevel,
+        guidanceFlagsJson: evaluation.guidance.flags,
+        guidanceNextStepsJson: evaluation.guidance.nextSteps,
+        lastActionAt: new Date(now)
+      }
+    });
+
+    await this.client.negotiationEvent.create({
+      data: {
+        negotiationRecordId: record.id as string,
+        type: "NEGOTIATION_STARTED",
+        label: "Negotiation started",
+        details: null
+      }
+    });
+    await this.client.negotiationEvent.create({
+      data: {
+        negotiationRecordId: record.id as string,
+        type: "INITIAL_OFFER_SET",
+        label: "Initial offer set",
+        details: `Initial offer recorded at ${evaluation.initialOfferPrice.toLocaleString("en-US", {
+          style: "currency",
+          currency: "USD",
+          maximumFractionDigits: 0
+        })}.`
+      }
+    });
+
+    const shortlist = shortlistId ? await this.getShortlist(shortlistId) : null;
+    await this.recordValidationEvent({
+      eventName: "negotiation_started",
+      sessionId: shortlist?.sessionId ?? null,
+      payload: {
+        shortlistId,
+        offerReadinessId: evaluation.offerReadinessId,
+        negotiationRecordId: record.id as string,
+        propertyId: evaluation.propertyId,
+        status: evaluation.status
+      }
+    });
+
+    return mapPrismaNegotiation(record);
+  }
+
+  async listNegotiations(shortlistId: string): Promise<NegotiationRecord[]> {
+    const records = await this.client.negotiationRecord.findMany({
+      where: {
+        shortlistId
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+
+    return records.map((record) => mapPrismaNegotiation(record));
+  }
+
+  async getNegotiation(propertyId: string, shortlistId?: string): Promise<NegotiationRecord | null> {
+    const record = await this.client.negotiationRecord.findFirst({
+      where: {
+        propertyId,
+        ...(shortlistId ? { shortlistId } : {})
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+
+    return record ? mapPrismaNegotiation(record) : null;
+  }
+
+  async updateNegotiation(
+    id: string,
+    patch: {
+      status?: NegotiationStatus;
+      currentOfferPrice?: number;
+      sellerCounterPrice?: number | null;
+      buyerWalkAwayPrice?: number | null;
+      roundNumber?: number;
+    }
+  ): Promise<NegotiationRecord | null> {
+    const existing = await this.client.negotiationRecord.findUnique({
+      where: {
+        id
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const current = mapPrismaNegotiation(existing);
+    const offerReadinessRecord = current.offerReadinessId
+      ? await this.client.offerReadiness.findUnique({
+          where: {
+            id: current.offerReadinessId
+          }
+        })
+      : null;
+    const offerReadiness = offerReadinessRecord ? mapPrismaOfferReadiness(offerReadinessRecord) : null;
+    const now = new Date().toISOString();
+    const evaluation = evaluateNegotiation({
+      propertyId: current.propertyId,
+      shortlistId: current.shortlistId ?? null,
+      offerReadinessId: current.offerReadinessId ?? null,
+      initialOfferPrice: current.initialOfferPrice,
+      current,
+      offerReadiness,
+      now,
+      patch
+    });
+
+    const record = await this.client.negotiationRecord.update({
+      where: {
+        id
+      },
+      data: {
+        status: evaluation.status,
+        currentOfferPrice: evaluation.currentOfferPrice,
+        sellerCounterPrice: evaluation.sellerCounterPrice,
+        buyerWalkAwayPrice: evaluation.buyerWalkAwayPrice,
+        roundNumber: evaluation.roundNumber,
+        guidanceHeadline: evaluation.guidance.headline,
+        guidanceRiskLevel: evaluation.guidance.riskLevel,
+        guidanceFlagsJson: evaluation.guidance.flags,
+        guidanceNextStepsJson: evaluation.guidance.nextSteps,
+        lastActionAt: new Date(now)
+      }
+    });
+
+    const shortlist = current.shortlistId ? await this.getShortlist(current.shortlistId) : null;
+    const statusEventMap: Partial<Record<NegotiationStatus, WorkflowActivityRecord["eventType"]>> = {
+      OFFER_MADE: "offer_submitted",
+      COUNTER_RECEIVED: "counter_received",
+      COUNTER_SENT: "counter_sent",
+      ACCEPTED: "negotiation_accepted",
+      REJECTED: "negotiation_rejected",
+      WITHDRAWN: "negotiation_withdrawn"
+    };
+    if (current.status !== evaluation.status && statusEventMap[evaluation.status]) {
+      await this.recordValidationEvent({
+        eventName: statusEventMap[evaluation.status]!,
+        sessionId: shortlist?.sessionId ?? null,
+        payload: {
+          shortlistId: current.shortlistId,
+          offerReadinessId: current.offerReadinessId,
+          negotiationRecordId: id,
+          propertyId: current.propertyId,
+          fromStatus: current.status,
+          toStatus: evaluation.status
+        }
+      });
+    }
+
+    return mapPrismaNegotiation(record);
+  }
+
+  async createNegotiationEvent(
+    negotiationRecordId: string,
+    payload: {
+      type: NegotiationEventType;
+      label: string;
+      details?: string | null;
+    }
+  ): Promise<NegotiationEvent | null> {
+    const existing = await this.client.negotiationRecord.findUnique({
+      where: {
+        id: negotiationRecordId
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const now = new Date();
+    await this.client.negotiationRecord.update({
+      where: {
+        id: negotiationRecordId
+      },
+      data: {
+        lastActionAt: now
+      }
+    });
+
+    const event = await this.client.negotiationEvent.create({
+      data: {
+        negotiationRecordId,
+        type: payload.type,
+        label: payload.label,
+        details: payload.details ?? null,
+        createdAt: now
+      }
+    });
+
+    return mapPrismaNegotiationEvent(event);
+  }
+
+  async listNegotiationEvents(negotiationRecordId: string): Promise<NegotiationEvent[]> {
+    const records = await this.client.negotiationEvent.findMany({
+      where: {
+        negotiationRecordId
+      },
+      orderBy: {
+        createdAt: "asc"
+      }
+    });
+
+    return records.map((record) => mapPrismaNegotiationEvent(record));
+  }
+
+  async getNegotiationSummary(
+    propertyId: string,
+    shortlistId?: string
+  ): Promise<NegotiationSummary | null> {
+    const record = await this.getNegotiation(propertyId, shortlistId);
+    return record ? toNegotiationSummary(record) : null;
+  }
+
   async updateShortlistItem(
     shortlistId: string,
     itemId: string,
@@ -4598,6 +5216,20 @@ export class PrismaSearchRepository implements SearchRepository {
     });
     if (!existing || (existing.shortlistId as string) !== shortlistId) {
       return false;
+    }
+
+    const negotiation = await this.client.negotiationRecord.findFirst({
+      where: {
+        shortlistId,
+        propertyId: existing.canonicalPropertyId as string
+      }
+    });
+    if (negotiation) {
+      await this.client.negotiationRecord.delete({
+        where: {
+          id: negotiation.id as string
+        }
+      });
     }
 
     await this.client.shortlistItem.delete({

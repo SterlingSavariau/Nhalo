@@ -203,6 +203,7 @@ model Shortlist {
   sourceSnapshot SearchSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
   items          ShortlistItem[]
   offerReadiness OfferReadiness[]
+  negotiations   NegotiationRecord[]
   sharedLinks    SharedShortlistLink[]
 
   @@index([sessionId, updatedAt])
@@ -256,10 +257,50 @@ model OfferReadiness {
   updatedAt              DateTime @updatedAt
   shortlist              Shortlist @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
   shortlistItem          ShortlistItem @relation(fields: [shortlistItemId], references: [id], onDelete: Cascade)
+  negotiation            NegotiationRecord?
 
   @@index([shortlistId, updatedAt])
   @@index([propertyId, updatedAt])
   @@unique([shortlistId, propertyId])
+}
+
+model NegotiationRecord {
+  id                  String   @id @default(cuid())
+  propertyId          String
+  shortlistId         String?
+  offerReadinessId    String?  @unique
+  status              String
+  initialOfferPrice   Int
+  currentOfferPrice   Int
+  sellerCounterPrice  Int?
+  buyerWalkAwayPrice  Int?
+  roundNumber         Int      @default(1)
+  guidanceHeadline    String
+  guidanceRiskLevel   String
+  guidanceFlagsJson   Json
+  guidanceNextStepsJson Json
+  lastActionAt        DateTime
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  shortlist           Shortlist? @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
+  offerReadiness      OfferReadiness? @relation(fields: [offerReadinessId], references: [id], onDelete: SetNull)
+  events              NegotiationEvent[]
+
+  @@index([shortlistId, updatedAt])
+  @@index([propertyId, updatedAt])
+  @@unique([shortlistId, propertyId])
+}
+
+model NegotiationEvent {
+  id                  String   @id @default(cuid())
+  negotiationRecordId String
+  type                String
+  label               String
+  details             String?
+  createdAt           DateTime @default(now())
+  negotiationRecord   NegotiationRecord @relation(fields: [negotiationRecordId], references: [id], onDelete: Cascade)
+
+  @@index([negotiationRecordId, createdAt])
 }
 
 model SharedShortlistLink {

@@ -233,6 +233,83 @@ const offerReadinessUpdateSchema = z
     }
   );
 
+const negotiationCreateSchema = z.object({
+  propertyId: z.string().trim().min(1, "propertyId is required"),
+  shortlistId: z.string().trim().min(1).optional(),
+  offerReadinessId: z.string().trim().min(1).optional(),
+  status: z
+    .enum([
+      "NOT_STARTED",
+      "DRAFTING_OFFER",
+      "OFFER_MADE",
+      "COUNTER_RECEIVED",
+      "BUYER_REVIEWING",
+      "COUNTER_SENT",
+      "ACCEPTED",
+      "REJECTED",
+      "WITHDRAWN",
+      "EXPIRED"
+    ])
+    .optional(),
+  initialOfferPrice: z.number().int().positive("initialOfferPrice must be positive"),
+  currentOfferPrice: z.number().int().positive().optional(),
+  sellerCounterPrice: z.number().int().positive().nullable().optional(),
+  buyerWalkAwayPrice: z.number().int().positive().nullable().optional(),
+  roundNumber: z.number().int().min(1).optional()
+});
+
+const negotiationUpdateSchema = z
+  .object({
+    status: z
+      .enum([
+        "NOT_STARTED",
+        "DRAFTING_OFFER",
+        "OFFER_MADE",
+        "COUNTER_RECEIVED",
+        "BUYER_REVIEWING",
+        "COUNTER_SENT",
+        "ACCEPTED",
+        "REJECTED",
+        "WITHDRAWN",
+        "EXPIRED"
+      ])
+      .optional(),
+    currentOfferPrice: z.number().int().positive().optional(),
+    sellerCounterPrice: z.number().int().positive().nullable().optional(),
+    buyerWalkAwayPrice: z.number().int().positive().nullable().optional(),
+    roundNumber: z.number().int().min(1).optional()
+  })
+  .refine(
+    (payload) =>
+      payload.status !== undefined ||
+      payload.currentOfferPrice !== undefined ||
+      payload.sellerCounterPrice !== undefined ||
+      payload.buyerWalkAwayPrice !== undefined ||
+      payload.roundNumber !== undefined,
+    {
+      message: "At least one negotiation field is required"
+    }
+  );
+
+const negotiationEventCreateSchema = z.object({
+  type: z.enum([
+    "NEGOTIATION_STARTED",
+    "INITIAL_OFFER_SET",
+    "OFFER_SUBMITTED",
+    "SELLER_COUNTER_RECEIVED",
+    "BUYER_COUNTER_SENT",
+    "BUYER_ACCEPTED",
+    "BUYER_REJECTED",
+    "SELLER_ACCEPTED",
+    "SELLER_REJECTED",
+    "NEGOTIATION_WITHDRAWN",
+    "NEGOTIATION_EXPIRED",
+    "NOTE_ADDED"
+  ]),
+  label: z.string().trim().min(1, "label is required"),
+  details: z.string().trim().min(1).max(2000).optional()
+});
+
 const resultNoteCreateSchema = z.object({
   sessionId: z.string().trim().min(1).optional(),
   entityType: z.enum(["shortlist_item", "snapshot_result", "shared_snapshot_result"]),
@@ -3686,11 +3763,13 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
 
     const items = await persistence.searchRepository.listShortlistItems(shortlistId);
     const offerReadiness = await persistence.searchRepository.listOfferReadiness(shortlistId);
+    const negotiations = await persistence.searchRepository.listNegotiations(shortlistId);
     metrics.recordShortlistView();
     return {
       shortlist,
       items,
-      offerReadiness
+      offerReadiness,
+      negotiations
     };
   });
 
@@ -3927,6 +4006,187 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     return recommendation;
+  });
+
+  app.post("/negotiations", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Negotiation tracking");
+    }
+
+    ensureWriteCapable(reliability);
+    const payload = negotiationCreateSchema.parse(request.body);
+    const record = await persistence.searchRepository.createNegotiation(payload);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "NEGOTIATION_CREATE_FAILED",
+          "Negotiation tracking could not be started for this property."
+        )
+      );
+    }
+
+    metrics.recordNegotiationCreate();
+    metrics.recordFeatureUsage("negotiation_tracking");
+    return reply.status(201).send(record);
+  });
+
+  app.get("/negotiations/:propertyId/summary", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Negotiation tracking");
+    }
+
+    const params = request.params as { propertyId?: string };
+    const query = request.query as { shortlistId?: string } | undefined;
+    const propertyId = params.propertyId?.trim();
+    const shortlistId = query?.shortlistId?.trim();
+
+    if (!propertyId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid property id", [
+          { field: "propertyId", message: "propertyId is required" }
+        ])
+      );
+    }
+
+    const summary = await persistence.searchRepository.getNegotiationSummary(propertyId, shortlistId);
+    if (!summary) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "NEGOTIATION_NOT_FOUND",
+          "No negotiation record was found for this property."
+        )
+      );
+    }
+
+    metrics.recordNegotiationSummaryView();
+    return summary;
+  });
+
+  app.get("/negotiations/:id/events", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Negotiation tracking");
+    }
+
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid negotiation id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const events = await persistence.searchRepository.listNegotiationEvents(id);
+    return {
+      events
+    };
+  });
+
+  app.get("/negotiations/:propertyId", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Negotiation tracking");
+    }
+
+    const params = request.params as { propertyId?: string };
+    const query = request.query as { shortlistId?: string } | undefined;
+    const propertyId = params.propertyId?.trim();
+    const shortlistId = query?.shortlistId?.trim();
+
+    if (!propertyId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid property id", [
+          { field: "propertyId", message: "propertyId is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getNegotiation(propertyId, shortlistId);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "NEGOTIATION_NOT_FOUND",
+          "No negotiation record was found for this property."
+        )
+      );
+    }
+
+    return record;
+  });
+
+  app.patch("/negotiations/:id", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Negotiation tracking");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    const patch = negotiationUpdateSchema.parse(request.body);
+
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid negotiation id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.updateNegotiation(id, patch);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "NEGOTIATION_NOT_FOUND",
+          "No negotiation record was found for this id."
+        )
+      );
+    }
+
+    metrics.recordFeatureUsage("negotiation_tracking");
+    if (patch.status) {
+      metrics.recordNegotiationStatusChange();
+      if (patch.status === "ACCEPTED") {
+        metrics.recordNegotiationAccept();
+      } else if (patch.status === "REJECTED") {
+        metrics.recordNegotiationReject();
+      } else if (patch.status === "WITHDRAWN") {
+        metrics.recordNegotiationWithdraw();
+      }
+    }
+
+    return record;
+  });
+
+  app.post("/negotiations/:id/events", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Negotiation tracking");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    const payload = negotiationEventCreateSchema.parse(request.body);
+
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid negotiation id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const event = await persistence.searchRepository.createNegotiationEvent(id, payload);
+    if (!event) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "NEGOTIATION_NOT_FOUND",
+          "No negotiation record was found for this id."
+        )
+      );
+    }
+
+    metrics.recordNegotiationEventCreate();
+    return reply.status(201).send(event);
   });
 
   app.post("/comments", async (request, reply) => {

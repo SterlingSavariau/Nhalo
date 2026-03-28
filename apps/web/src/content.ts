@@ -134,6 +134,25 @@ export const OFFER_READINESS_COPY = {
     "This recommendation is deterministic and based on stored shortlist data, not live negotiation or legal advice."
 } as const;
 
+export const NEGOTIATION_COPY = {
+  title: "Negotiation tracking",
+  intro:
+    "Negotiation tracking is a mutable workflow layer. It helps the buyer track offer rounds and counters without automating legal execution.",
+  startAction: "Start negotiation",
+  updateAction: "Update negotiation",
+  addEventAction: "Add timeline event",
+  currentOfferLabel: "Current offer",
+  sellerCounterLabel: "Seller counter",
+  walkAwayLabel: "Walk-away price",
+  roundLabel: "Round",
+  timelineTitle: "Negotiation history",
+  guidanceTitle: "Negotiation guidance",
+  nextStepsTitle: "Next steps",
+  flagsTitle: "Flags",
+  summaryWarning:
+    "Guidance is deterministic and based on stored shortlist, offer-readiness, and negotiation state. It is not legal or brokerage advice."
+} as const;
+
 export const COLLABORATION_COPY = {
   sharedShortlistTitle: "Shared shortlist review",
   readOnlyLabel: "Read-only access",
@@ -464,6 +483,20 @@ export function buildWorkflowActivityLabel(
       return "Offer readiness updated";
     case "offer_status_changed":
       return "Offer status changed";
+    case "negotiation_started":
+      return "Negotiation started";
+    case "offer_submitted":
+      return "Offer submitted";
+    case "counter_received":
+      return "Seller counter received";
+    case "counter_sent":
+      return "Buyer counter sent";
+    case "negotiation_accepted":
+      return "Negotiation accepted";
+    case "negotiation_rejected":
+      return "Negotiation rejected";
+    case "negotiation_withdrawn":
+      return "Negotiation withdrawn";
     case "review_state_changed":
       return "Review state changed";
     default:

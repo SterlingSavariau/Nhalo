@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import type {
+  NegotiationEvent,
+  NegotiationRecord,
   OfferReadiness,
   SharedShortlist,
   ResultNote,
@@ -13,6 +15,7 @@ import {
   SHORTLIST_COPY,
   buildWorkflowActivityLabel
 } from "../content";
+import { NegotiationTrackerCard } from "./NegotiationTrackerCard";
 import { OfferReadinessCard } from "./OfferReadinessCard";
 
 interface ShortlistPanelProps {
@@ -20,6 +23,8 @@ interface ShortlistPanelProps {
   selectedShortlistId: string | null;
   items: ShortlistItem[];
   offerReadiness: OfferReadiness[];
+  negotiations: NegotiationRecord[];
+  negotiationEventsByRecordId: Record<string, NegotiationEvent[]>;
   notes: ResultNote[];
   workflowActivity: WorkflowActivityRecord[];
   onCreate(payload: { title: string; description?: string | null }): void;
@@ -49,6 +54,33 @@ interface ShortlistPanelProps {
       userConfirmed?: boolean;
     }
   ): void;
+  onCreateNegotiation(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    offerReadinessId?: string | null;
+    status?: NegotiationRecord["status"];
+    initialOfferPrice: number;
+    currentOfferPrice?: number;
+    buyerWalkAwayPrice?: number | null;
+  }): Promise<void> | void;
+  onUpdateNegotiation(
+    id: string,
+    patch: {
+      status?: NegotiationRecord["status"];
+      currentOfferPrice?: number;
+      sellerCounterPrice?: number | null;
+      buyerWalkAwayPrice?: number | null;
+      roundNumber?: number;
+    }
+  ): Promise<void> | void;
+  onAddNegotiationEvent(
+    negotiationId: string,
+    payload: {
+      type: NegotiationEvent["type"];
+      label: string;
+      details?: string | null;
+    }
+  ): Promise<void> | void;
   onSaveNote(entityId: string, noteId: string | null, body: string): void;
   onDeleteNote(noteId: string): void;
   onOpenHistoricalCompare(itemId: string): void;
@@ -75,6 +107,8 @@ export function ShortlistPanel({
   selectedShortlistId,
   items,
   offerReadiness,
+  negotiations,
+  negotiationEventsByRecordId,
   notes,
   workflowActivity,
   onCreate,
@@ -85,6 +119,9 @@ export function ShortlistPanel({
   onReviewStateChange,
   onCreateOfferReadiness,
   onUpdateOfferReadiness,
+  onCreateNegotiation,
+  onUpdateNegotiation,
+  onAddNegotiationEvent,
   onSaveNote,
   onDeleteNote,
   onOpenHistoricalCompare,
@@ -109,6 +146,13 @@ export function ShortlistPanel({
     }
     return map;
   }, [offerReadiness]);
+  const negotiationsByPropertyId = useMemo(() => {
+    const map = new Map<string, NegotiationRecord>();
+    for (const entry of negotiations) {
+      map.set(entry.propertyId, entry);
+    }
+    return map;
+  }, [negotiations]);
 
   return (
     <section className="activity-panel shortlist-panel">
@@ -307,6 +351,19 @@ export function ShortlistPanel({
                     offerReadiness={offerReadinessByPropertyId.get(item.canonicalPropertyId) ?? null}
                     onCreate={onCreateOfferReadiness}
                     onUpdate={onUpdateOfferReadiness}
+                  />
+                  <NegotiationTrackerCard
+                    item={item}
+                    negotiation={negotiationsByPropertyId.get(item.canonicalPropertyId) ?? null}
+                    offerReadiness={offerReadinessByPropertyId.get(item.canonicalPropertyId) ?? null}
+                    events={
+                      negotiationEventsByRecordId[
+                        negotiationsByPropertyId.get(item.canonicalPropertyId)?.id ?? ""
+                      ] ?? []
+                    }
+                    onAddEvent={onAddNegotiationEvent}
+                    onCreate={onCreateNegotiation}
+                    onUpdate={onUpdateNegotiation}
                   />
 
                   <label className="note-editor">

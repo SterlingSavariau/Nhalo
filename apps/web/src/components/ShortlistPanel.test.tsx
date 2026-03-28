@@ -100,6 +100,41 @@ describe("ShortlistPanel", () => {
             updatedAt: "2026-03-24T12:05:00.000Z"
           }
         ]}
+        negotiations={[
+          {
+            id: "negotiation-1",
+            propertyId: "canonical-1",
+            shortlistId: "shortlist-1",
+            offerReadinessId: "offer-1",
+            status: "COUNTER_RECEIVED",
+            initialOfferPrice: 389000,
+            currentOfferPrice: 392000,
+            sellerCounterPrice: 398000,
+            buyerWalkAwayPrice: 400000,
+            roundNumber: 2,
+            guidance: {
+              headline: "Seller counter has been received and is ready for buyer review.",
+              riskLevel: "medium",
+              nextSteps: ["Review the seller counter", "Decide whether to counter, accept, or reject"],
+              flags: ["Seller counter is close to the recommended offer range."]
+            },
+            lastActionAt: "2026-03-24T12:10:00.000Z",
+            createdAt: "2026-03-24T12:06:00.000Z",
+            updatedAt: "2026-03-24T12:10:00.000Z"
+          }
+        ]}
+        negotiationEventsByRecordId={{
+          "negotiation-1": [
+            {
+              id: "negotiation-event-1",
+              negotiationRecordId: "negotiation-1",
+              type: "SELLER_COUNTER_RECEIVED",
+              label: "Seller counter received",
+              details: "Seller counter recorded at $398,000.",
+              createdAt: "2026-03-24T12:10:00.000Z"
+            }
+          ]
+        }}
         notes={[
           {
             id: "note-1",
@@ -111,7 +146,9 @@ describe("ShortlistPanel", () => {
             updatedAt: "2026-03-24T12:00:00.000Z"
           }
         ]}
+        onAddNegotiationEvent={vi.fn()}
         onCreate={vi.fn()}
+        onCreateNegotiation={vi.fn()}
         onCreateOfferReadiness={vi.fn()}
         onDelete={vi.fn()}
         onDeleteNote={vi.fn()}
@@ -121,6 +158,7 @@ describe("ShortlistPanel", () => {
         onSaveNote={vi.fn()}
         onSelect={vi.fn()}
         onTogglePinned={vi.fn()}
+        onUpdateNegotiation={vi.fn()}
         onUpdateOfferReadiness={vi.fn()}
         selectedShortlistId="shortlist-1"
         shortlists={[
@@ -157,5 +195,7 @@ describe("ShortlistPanel", () => {
     expect(markup).toContain("Compare to current");
     expect(markup).toContain("Offer readiness");
     expect(markup).toContain("Recommended offer");
+    expect(markup).toContain("Negotiation tracking");
+    expect(markup).toContain("Seller counter received");
   });
 });

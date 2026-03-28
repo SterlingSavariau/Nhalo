@@ -1,18 +1,54 @@
-import type { OfferReadiness, ResultNote, ScoredHome } from "@nhalo/types";
+import type {
+  NegotiationEvent,
+  NegotiationRecord,
+  OfferReadiness,
+  ResultNote,
+  ScoredHome
+} from "@nhalo/types";
 import { RESULT_COPY, buildDecisionLabels, buildTradeoffSummary, geocodePrecisionExplanation } from "../content";
 import { sourceFreshnessLabel } from "../view-model";
 import { useEffect, useState } from "react";
+import { NegotiationTrackerCard } from "./NegotiationTrackerCard";
 
 interface HomeDetailPanelProps {
   home: ScoredHome | null;
   allHomes: ScoredHome[];
   note?: ResultNote | null;
   offerReadiness?: OfferReadiness | null;
+  negotiation?: NegotiationRecord | null;
+  negotiationEvents?: NegotiationEvent[];
   noteEnabled?: boolean;
   onClose(): void;
   onSaveNote?(body: string): void;
   onDeleteNote?(): void;
   onViewAudit(homeId: string): void;
+  onCreateNegotiation?(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    offerReadinessId?: string | null;
+    status?: NegotiationRecord["status"];
+    initialOfferPrice: number;
+    currentOfferPrice?: number;
+    buyerWalkAwayPrice?: number | null;
+  }): Promise<void> | void;
+  onUpdateNegotiation?(
+    id: string,
+    patch: {
+      status?: NegotiationRecord["status"];
+      currentOfferPrice?: number;
+      sellerCounterPrice?: number | null;
+      buyerWalkAwayPrice?: number | null;
+      roundNumber?: number;
+    }
+  ): Promise<void> | void;
+  onAddNegotiationEvent?(
+    negotiationId: string,
+    payload: {
+      type: NegotiationEvent["type"];
+      label: string;
+      details?: string | null;
+    }
+  ): Promise<void> | void;
 }
 
 export function HomeDetailPanel({
@@ -20,11 +56,16 @@ export function HomeDetailPanel({
   allHomes,
   note,
   offerReadiness,
+  negotiation,
+  negotiationEvents = [],
   noteEnabled,
   onClose,
   onSaveNote,
   onDeleteNote,
-  onViewAudit
+  onViewAudit,
+  onCreateNegotiation,
+  onUpdateNegotiation,
+  onAddNegotiationEvent
 }: HomeDetailPanelProps) {
   const [draftNote, setDraftNote] = useState("");
 
@@ -127,6 +168,29 @@ export function HomeDetailPanel({
             <p className="muted">{offerReadiness.nextSteps.join(" · ")}</p>
           </div>
         </div>
+      ) : null}
+
+      {onCreateNegotiation && onUpdateNegotiation && onAddNegotiationEvent && (negotiation || offerReadiness) ? (
+        <NegotiationTrackerCard
+          item={{
+            id: `detail-${home.canonicalPropertyId ?? home.id}`,
+            shortlistId: negotiation?.shortlistId ?? offerReadiness?.shortlistId ?? "",
+            canonicalPropertyId: home.canonicalPropertyId ?? home.id,
+            sourceSnapshotId: null,
+            sourceHistoryId: null,
+            sourceSearchDefinitionId: null,
+            capturedHome: home,
+            reviewState: "undecided",
+            addedAt: negotiation?.createdAt ?? offerReadiness?.createdAt ?? new Date().toISOString(),
+            updatedAt: negotiation?.updatedAt ?? offerReadiness?.updatedAt ?? new Date().toISOString()
+          }}
+          events={negotiationEvents}
+          negotiation={negotiation}
+          offerReadiness={offerReadiness}
+          onAddEvent={onAddNegotiationEvent}
+          onCreate={onCreateNegotiation}
+          onUpdate={onUpdateNegotiation}
+        />
       ) : null}
 
       <div className="summary-block">
