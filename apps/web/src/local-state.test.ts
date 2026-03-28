@@ -146,4 +146,11 @@ describe("local-state", () => {
     expect(context?.pilotToken).toBe("pilot-token-1");
     expect(nextSession.sessionId).toBe(session.sessionId);
   });
+
+  it("ignores corrupted pilot context safely", () => {
+    const storage = createMemoryStorage();
+    storage.setItem("nhalo.ui.pilot.context", JSON.stringify({ partnerId: "partner-1" }));
+
+    expect(loadPilotContext(storage)).toBeNull();
+  });
 });

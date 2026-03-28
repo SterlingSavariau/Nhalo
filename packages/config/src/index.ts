@@ -1,8 +1,11 @@
 import type {
+  EnvironmentProfileName,
   GeocoderProviderMode,
   ListingProviderMode,
   OpsFeatureConfig,
+  PlanTier,
   PropertyType,
+  RuntimeEnvironmentName,
   SafetyProviderMode,
   SearchWeights
 } from "@nhalo/types";
@@ -40,6 +43,37 @@ export const DEFAULT_GEOCODER_PROVIDER_MAX_CALLS_PER_MINUTE = 180;
 export const DEFAULT_OPS_DEFAULT_PAGE_SIZE = 20;
 export const DEFAULT_OPS_MAX_PAGE_SIZE = 100;
 export const DEFAULT_ENABLE_INTERNAL_PERF_SUMMARY = true;
+export const DEFAULT_ENABLE_RELIABILITY_SUMMARY = true;
+export const DEFAULT_BACKGROUND_JOBS_ENABLED = true;
+export const DEFAULT_BACKGROUND_JOB_LOCKING_ENABLED = true;
+export const DEFAULT_ENABLE_INTERNAL_ROUTE_GUARDS = false;
+export const DEFAULT_ENABLE_VERSION_ENDPOINT = true;
+export const DEFAULT_RELIABILITY_INCIDENTS_ENABLED = true;
+export const DEFAULT_ENABLE_PLAN_CAPABILITIES = true;
+export const DEFAULT_DEFAULT_PLAN_TIER: PlanTier = "free_demo";
+export const DEFAULT_MAX_SAVED_SEARCHES_PER_SESSION = 10;
+export const DEFAULT_MAX_SHORTLISTS_PER_SESSION = 5;
+export const DEFAULT_MAX_SHARE_LINKS_PER_SESSION = 10;
+export const DEFAULT_MAX_EXPORTS_PER_SESSION = 20;
+export const DEFAULT_ENABLE_USAGE_FUNNEL_SUMMARY = true;
+export const DEFAULT_ENABLE_USAGE_FRICTION_SUMMARY = true;
+export const DEFAULT_ENABLE_EXPORT_LIMITS = false;
+export const DEFAULT_SECURITY_REDACT_LOG_FIELDS = true;
+export const DEFAULT_SHARE_LINK_MIN_TOKEN_LENGTH = 24;
+export const DEFAULT_ENABLE_PUBLIC_SHARED_VIEWS = true;
+export const DEFAULT_ENABLE_PUBLIC_SHARED_SHORTLISTS = true;
+export const DEFAULT_SECURITY_MAX_NOTE_LENGTH = 2000;
+export const DEFAULT_SECURITY_MAX_COMMENT_LENGTH = 2000;
+export const DEFAULT_SECURITY_MAX_FEEDBACK_LENGTH = 1000;
+export const DEFAULT_SECURITY_MAX_REQUEST_BODY_BYTES = 131_072;
+export const DEFAULT_SHARED_OPEN_WINDOW_MS = 60_000;
+export const DEFAULT_SHARED_OPEN_MAX = 60;
+export const DEFAULT_COLLABORATION_WRITE_WINDOW_MS = 60_000;
+export const DEFAULT_COLLABORATION_WRITE_MAX = 40;
+export const DEFAULT_FEEDBACK_WINDOW_MS = 60_000;
+export const DEFAULT_FEEDBACK_MAX = 20;
+export const DEFAULT_PILOT_LINK_OPEN_WINDOW_MS = 60_000;
+export const DEFAULT_PILOT_LINK_OPEN_MAX = 40;
 export const DEFAULT_SNAPSHOT_RETENTION_DAYS = 30;
 export const DEFAULT_SEARCH_HISTORY_RETENTION_DAYS = 30;
 export const DEFAULT_RATE_LIMIT_SEARCH_WINDOW_MS = 60_000;
@@ -80,6 +114,7 @@ export class ConfigError extends Error {
 
 export interface AppConfig {
   nodeEnv: NodeEnvironment;
+  runtimeEnvironment: RuntimeEnvironmentName;
   port: number;
   apiUrl: string;
   databaseUrl?: string;
@@ -95,12 +130,15 @@ export interface AppConfig {
   validation: ValidationConfig;
   workflow: WorkflowConfig;
   ops: OpsFeatureConfig;
+  product: ProductCapabilityConfig;
   safety: SafetyConfig;
   listings: ListingConfig;
   geocoder: GeocoderConfig;
   searchQuality: SearchQualityConfig;
   dataQuality: DataQualityConfig;
   performance: PerformanceConfig;
+  security: SecurityConfig;
+  deployment: DeploymentConfig;
 }
 
 export interface ExternalProviderConfig {
@@ -159,6 +197,53 @@ export interface PerformanceConfig {
   internalPerfSummaryEnabled: boolean;
 }
 
+export interface DeploymentConfig {
+  profile: EnvironmentProfileName;
+  enableReliabilitySummary: boolean;
+  backgroundJobsEnabled: boolean;
+  backgroundJobLockingEnabled: boolean;
+  productionStrictStartup: boolean;
+  versionEndpointEnabled: boolean;
+  reliabilityIncidentsEnabled: boolean;
+  buildMetadata: {
+    appVersion: string;
+    buildId: string;
+    gitSha: string | null;
+    buildTimestamp: string;
+  };
+  environmentBehavior: {
+    runtimeEnvironment: RuntimeEnvironmentName;
+    profile: EnvironmentProfileName;
+    productionLike: boolean;
+    publicSharingDefault: boolean;
+    demoModeDefault: boolean;
+    validationModeDefault: boolean;
+    cleanupDefault: boolean;
+    strictRateLimitsDefault: boolean;
+  };
+}
+
+export interface SecurityConfig {
+  internalRouteGuardsEnabled: boolean;
+  internalRouteAccessToken?: string;
+  redactLogFields: boolean;
+  shareLinkMinTokenLength: number;
+  publicSharedViewsEnabled: boolean;
+  publicSharedShortlistsEnabled: boolean;
+  maxNoteLength: number;
+  maxCommentLength: number;
+  maxFeedbackLength: number;
+  maxRequestBodyBytes: number;
+  sharedOpenWindowMs: number;
+  sharedOpenMax: number;
+  collaborationWriteWindowMs: number;
+  collaborationWriteMax: number;
+  feedbackWindowMs: number;
+  feedbackMax: number;
+  pilotLinkOpenWindowMs: number;
+  pilotLinkOpenMax: number;
+}
+
 export interface RetentionConfig {
   snapshotRetentionDays: number;
   searchHistoryRetentionDays: number;
@@ -193,6 +278,18 @@ export interface OpsFeatureConfig {
   pilotOpsEnabled: boolean;
   internalOpsUiEnabled: boolean;
   pilotLinksEnabled: boolean;
+}
+
+export interface ProductCapabilityConfig {
+  enabled: boolean;
+  defaultPlanTier: PlanTier;
+  maxSavedSearchesPerSession: number;
+  maxShortlistsPerSession: number;
+  maxShareLinksPerSession: number;
+  maxExportsPerSession: number;
+  usageFunnelSummaryEnabled: boolean;
+  usageFrictionSummaryEnabled: boolean;
+  exportLimitsEnabled: boolean;
 }
 
 let cachedConfig: AppConfig | null = null;
@@ -239,6 +336,74 @@ function parseNodeEnv(value: string | undefined): NodeEnvironment {
   }
 }
 
+function parsePlanTier(value: string | undefined, fallback: PlanTier): PlanTier {
+  switch (value) {
+    case "free_demo":
+    case "pilot":
+    case "partner":
+    case "internal":
+      return value;
+    default:
+      return fallback;
+  }
+}
+
+function defaultRuntimeEnvironment(nodeEnv: NodeEnvironment): RuntimeEnvironmentName {
+  switch (nodeEnv) {
+    case "staging":
+      return "staging";
+    case "production":
+      return "production_like_pilot";
+    case "test":
+      return "development";
+    default:
+      return "local";
+  }
+}
+
+function parseRuntimeEnvironment(
+  value: string | undefined,
+  nodeEnv: NodeEnvironment
+): RuntimeEnvironmentName {
+  switch (value) {
+    case "local":
+    case "development":
+    case "staging":
+    case "production_like_pilot":
+      return value;
+    default:
+      return defaultRuntimeEnvironment(nodeEnv);
+  }
+}
+
+function defaultEnvironmentProfile(runtimeEnvironment: RuntimeEnvironmentName): EnvironmentProfileName {
+  switch (runtimeEnvironment) {
+    case "production_like_pilot":
+      return "production_pilot";
+    case "staging":
+      return "staging_pilot";
+    case "development":
+      return "local_dev";
+    default:
+      return "local_demo";
+  }
+}
+
+function parseEnvironmentProfile(
+  value: string | undefined,
+  runtimeEnvironment: RuntimeEnvironmentName
+): EnvironmentProfileName {
+  switch (value) {
+    case "local_demo":
+    case "local_dev":
+    case "staging_pilot":
+    case "production_pilot":
+      return value;
+    default:
+      return defaultEnvironmentProfile(runtimeEnvironment);
+  }
+}
+
 function parseLogLevel(value: string | undefined): LogLevel {
   switch (value) {
     case "debug":
@@ -249,6 +414,18 @@ function parseLogLevel(value: string | undefined): LogLevel {
     default:
       return "info";
   }
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value === "true") {
+    return true;
+  }
+
+  if (value === "false") {
+    return false;
+  }
+
+  return fallback;
 }
 
 function parseProviderMode(value: string | undefined): "mock" | "hybrid" | "live" {
@@ -365,18 +542,176 @@ export function getGeocoderConfig(): GeocoderConfig {
   };
 }
 
+export function getSecurityConfig(runtimeEnvironment?: RuntimeEnvironmentName): SecurityConfig {
+  const productionLike =
+    runtimeEnvironment === "staging" || runtimeEnvironment === "production_like_pilot";
+
+  return {
+    internalRouteGuardsEnabled: parseBoolean(
+      process.env.ENABLE_INTERNAL_ROUTE_GUARDS,
+      DEFAULT_ENABLE_INTERNAL_ROUTE_GUARDS
+    ),
+    internalRouteAccessToken: process.env.INTERNAL_ROUTE_ACCESS_TOKEN?.trim() || undefined,
+    redactLogFields: parseBoolean(
+      process.env.SECURITY_REDACT_LOG_FIELDS,
+      DEFAULT_SECURITY_REDACT_LOG_FIELDS
+    ),
+    shareLinkMinTokenLength: parsePositiveInteger(
+      process.env.SHARE_LINK_MIN_TOKEN_LENGTH,
+      DEFAULT_SHARE_LINK_MIN_TOKEN_LENGTH
+    ),
+    publicSharedViewsEnabled: parseBoolean(
+      process.env.ENABLE_PUBLIC_SHARED_VIEWS,
+      productionLike ? false : DEFAULT_ENABLE_PUBLIC_SHARED_VIEWS
+    ),
+    publicSharedShortlistsEnabled: parseBoolean(
+      process.env.ENABLE_PUBLIC_SHARED_SHORTLISTS,
+      productionLike ? false : DEFAULT_ENABLE_PUBLIC_SHARED_SHORTLISTS
+    ),
+    maxNoteLength: parsePositiveInteger(
+      process.env.SECURITY_MAX_NOTE_LENGTH,
+      DEFAULT_SECURITY_MAX_NOTE_LENGTH
+    ),
+    maxCommentLength: parsePositiveInteger(
+      process.env.SECURITY_MAX_COMMENT_LENGTH,
+      DEFAULT_SECURITY_MAX_COMMENT_LENGTH
+    ),
+    maxFeedbackLength: parsePositiveInteger(
+      process.env.SECURITY_MAX_FEEDBACK_LENGTH,
+      DEFAULT_SECURITY_MAX_FEEDBACK_LENGTH
+    ),
+    maxRequestBodyBytes: parsePositiveInteger(
+      process.env.SECURITY_MAX_REQUEST_BODY_BYTES,
+      DEFAULT_SECURITY_MAX_REQUEST_BODY_BYTES
+    ),
+    sharedOpenWindowMs: parsePositiveInteger(
+      process.env.SECURITY_SHARED_OPEN_WINDOW_MS,
+      DEFAULT_SHARED_OPEN_WINDOW_MS
+    ),
+    sharedOpenMax: parsePositiveInteger(
+      process.env.SECURITY_SHARED_OPEN_MAX,
+      DEFAULT_SHARED_OPEN_MAX
+    ),
+    collaborationWriteWindowMs: parsePositiveInteger(
+      process.env.SECURITY_COLLABORATION_WRITE_WINDOW_MS,
+      DEFAULT_COLLABORATION_WRITE_WINDOW_MS
+    ),
+    collaborationWriteMax: parsePositiveInteger(
+      process.env.SECURITY_COLLABORATION_WRITE_MAX,
+      DEFAULT_COLLABORATION_WRITE_MAX
+    ),
+    feedbackWindowMs: parsePositiveInteger(
+      process.env.SECURITY_FEEDBACK_WINDOW_MS,
+      DEFAULT_FEEDBACK_WINDOW_MS
+    ),
+    feedbackMax: parsePositiveInteger(
+      process.env.SECURITY_FEEDBACK_MAX,
+      DEFAULT_FEEDBACK_MAX
+    ),
+    pilotLinkOpenWindowMs: parsePositiveInteger(
+      process.env.SECURITY_PILOT_LINK_OPEN_WINDOW_MS,
+      DEFAULT_PILOT_LINK_OPEN_WINDOW_MS
+    ),
+    pilotLinkOpenMax: parsePositiveInteger(
+      process.env.SECURITY_PILOT_LINK_OPEN_MAX,
+      DEFAULT_PILOT_LINK_OPEN_MAX
+    )
+  };
+}
+
+export function getDeploymentConfig(
+  nodeEnv: NodeEnvironment,
+  runtimeEnvironment: RuntimeEnvironmentName
+): DeploymentConfig {
+  const profile = parseEnvironmentProfile(process.env.APP_ENV_PROFILE, runtimeEnvironment);
+  const productionLike =
+    runtimeEnvironment === "staging" || runtimeEnvironment === "production_like_pilot";
+  const buildSha = process.env.BUILD_SHA?.trim() || null;
+  const buildTimestamp =
+    process.env.BUILD_TIMESTAMP?.trim() || new Date(0).toISOString();
+  const appVersion = process.env.APP_VERSION?.trim() || "0.1.0";
+  const buildId =
+    process.env.BUILD_ID?.trim() || buildSha || `${runtimeEnvironment}-${appVersion}`;
+
+  return {
+    profile,
+    enableReliabilitySummary: parseBoolean(
+      process.env.ENABLE_RELIABILITY_SUMMARY,
+      DEFAULT_ENABLE_RELIABILITY_SUMMARY
+    ),
+    backgroundJobsEnabled: parseBoolean(
+      process.env.BACKGROUND_JOBS_ENABLED,
+      DEFAULT_BACKGROUND_JOBS_ENABLED
+    ),
+    backgroundJobLockingEnabled: parseBoolean(
+      process.env.BACKGROUND_JOB_LOCKING_ENABLED,
+      DEFAULT_BACKGROUND_JOB_LOCKING_ENABLED
+    ),
+    productionStrictStartup: parseBoolean(
+      process.env.PRODUCTION_STRICT_STARTUP,
+      productionLike
+    ),
+    versionEndpointEnabled: parseBoolean(
+      process.env.ENABLE_VERSION_ENDPOINT,
+      DEFAULT_ENABLE_VERSION_ENDPOINT
+    ),
+    reliabilityIncidentsEnabled: parseBoolean(
+      process.env.RELIABILITY_INCIDENTS_ENABLED,
+      DEFAULT_RELIABILITY_INCIDENTS_ENABLED
+    ),
+    buildMetadata: {
+      appVersion,
+      buildId,
+      gitSha: buildSha,
+      buildTimestamp
+    },
+    environmentBehavior: {
+      runtimeEnvironment,
+      profile,
+      productionLike,
+      publicSharingDefault: profile === "local_demo" || profile === "local_dev",
+      demoModeDefault: profile === "local_demo",
+      validationModeDefault: profile !== "production_pilot",
+      cleanupDefault: true,
+      strictRateLimitsDefault: productionLike
+    }
+  };
+}
+
 function validateConfig(config: AppConfig): AppConfig {
   const details: Array<{ field: string; message: string }> = [];
   const rawNodeEnv = process.env.NODE_ENV;
+  const rawRuntimeEnvironment = process.env.RUNTIME_ENVIRONMENT;
   const rawProviderMode = process.env.PROVIDER_MODE;
   const rawGeocoderMode = process.env.GEOCODER_PROVIDER_MODE;
   const rawListingMode = process.env.LISTING_PROVIDER_MODE;
   const rawSafetyMode = process.env.SAFETY_PROVIDER_MODE;
+  const rawPlanTier = process.env.DEFAULT_PLAN_TIER;
 
   if (rawNodeEnv && !["development", "test", "staging", "production"].includes(rawNodeEnv)) {
     details.push({
       field: "NODE_ENV",
       message: "NODE_ENV must be development, test, staging, or production."
+    });
+  }
+
+  if (
+    rawRuntimeEnvironment &&
+    !["local", "development", "staging", "production_like_pilot"].includes(rawRuntimeEnvironment)
+  ) {
+    details.push({
+      field: "RUNTIME_ENVIRONMENT",
+      message: "RUNTIME_ENVIRONMENT must be local, development, staging, or production_like_pilot."
+    });
+  }
+
+  if (
+    process.env.APP_ENV_PROFILE &&
+    !["local_demo", "local_dev", "staging_pilot", "production_pilot"].includes(process.env.APP_ENV_PROFILE)
+  ) {
+    details.push({
+      field: "APP_ENV_PROFILE",
+      message: "APP_ENV_PROFILE must be local_demo, local_dev, staging_pilot, or production_pilot."
     });
   }
 
@@ -405,6 +740,13 @@ function validateConfig(config: AppConfig): AppConfig {
     details.push({
       field: "SAFETY_PROVIDER_MODE",
       message: "SAFETY_PROVIDER_MODE must be mock, hybrid, or live."
+    });
+  }
+
+  if (rawPlanTier && !["free_demo", "pilot", "partner", "internal"].includes(rawPlanTier)) {
+    details.push({
+      field: "DEFAULT_PLAN_TIER",
+      message: "DEFAULT_PLAN_TIER must be free_demo, pilot, partner, or internal."
     });
   }
 
@@ -520,6 +862,105 @@ function validateConfig(config: AppConfig): AppConfig {
     });
   }
 
+  if (
+    config.product.maxSavedSearchesPerSession <= 0 ||
+    config.product.maxShortlistsPerSession <= 0 ||
+    config.product.maxShareLinksPerSession <= 0 ||
+    config.product.maxExportsPerSession <= 0
+  ) {
+    details.push({
+      field: "PRODUCT_LIMITS",
+      message: "Configured product limits must be greater than 0."
+    });
+  }
+
+  if (
+    config.security.internalRouteGuardsEnabled &&
+    (config.nodeEnv === "staging" || config.nodeEnv === "production") &&
+    !config.security.internalRouteAccessToken
+  ) {
+    details.push({
+      field: "INTERNAL_ROUTE_ACCESS_TOKEN",
+      message: "INTERNAL_ROUTE_ACCESS_TOKEN is required when internal route guards are enabled outside development or test."
+    });
+  }
+
+  if (config.security.shareLinkMinTokenLength < 16) {
+    details.push({
+      field: "SHARE_LINK_MIN_TOKEN_LENGTH",
+      message: "SHARE_LINK_MIN_TOKEN_LENGTH must be at least 16."
+    });
+  }
+
+  if (
+    config.security.maxNoteLength <= 0 ||
+    config.security.maxCommentLength <= 0 ||
+    config.security.maxFeedbackLength <= 0
+  ) {
+    details.push({
+      field: "SECURITY_LENGTH_LIMITS",
+      message: "SECURITY_MAX_NOTE_LENGTH, SECURITY_MAX_COMMENT_LENGTH, and SECURITY_MAX_FEEDBACK_LENGTH must be greater than 0."
+    });
+  }
+
+  if (config.security.maxRequestBodyBytes < 1024) {
+    details.push({
+      field: "SECURITY_MAX_REQUEST_BODY_BYTES",
+      message: "SECURITY_MAX_REQUEST_BODY_BYTES must be at least 1024."
+    });
+  }
+
+  if (!config.deployment.buildMetadata.buildTimestamp) {
+    details.push({
+      field: "BUILD_TIMESTAMP",
+      message: "BUILD_TIMESTAMP must be present when deployment metadata is enabled."
+    });
+  }
+
+  if (config.deployment.productionStrictStartup && !config.deployment.environmentBehavior.productionLike) {
+    details.push({
+      field: "PRODUCTION_STRICT_STARTUP",
+      message: "PRODUCTION_STRICT_STARTUP should only be enabled for staging or production-like pilot environments."
+    });
+  }
+
+  if (
+    config.deployment.environmentBehavior.productionLike &&
+    config.security.publicSharedViewsEnabled &&
+    !config.security.internalRouteGuardsEnabled
+  ) {
+    details.push({
+      field: "ENABLE_INTERNAL_ROUTE_GUARDS",
+      message:
+        "ENABLE_INTERNAL_ROUTE_GUARDS must be true when public shared views are enabled in staging or production-like pilot environments."
+    });
+  }
+
+  if (config.listings.mode === "live" && !config.listings.provider.configured) {
+    details.push({
+      field: "LISTING_PROVIDER_API_KEY",
+      message: "Live listing mode requires LISTING_PROVIDER_BASE_URL and LISTING_PROVIDER_API_KEY."
+    });
+  }
+
+  if (config.geocoder.mode === "live" && !config.geocoder.provider.configured) {
+    details.push({
+      field: "GEOCODER_PROVIDER_API_KEY",
+      message: "Live geocoder mode requires GEOCODER_PROVIDER_BASE_URL and GEOCODER_PROVIDER_API_KEY."
+    });
+  }
+
+  if (
+    config.safety.mode === "live" &&
+    !config.safety.crime.configured &&
+    !config.safety.school.configured
+  ) {
+    details.push({
+      field: "SAFETY_PROVIDER_API_KEYS",
+      message: "Live safety mode requires at least one configured live safety provider."
+    });
+  }
+
   if (details.length > 0) {
     throw new ConfigError("Invalid environment configuration", details);
   }
@@ -533,12 +974,15 @@ export function getConfig(): AppConfig {
   }
 
   const nodeEnv = parseNodeEnv(process.env.NODE_ENV);
+  const runtimeEnvironment = parseRuntimeEnvironment(process.env.RUNTIME_ENVIRONMENT, nodeEnv);
   const providerMode = parseProviderMode(process.env.PROVIDER_MODE);
   const defaultCacheTtlHours = parsePositiveInteger(process.env.CACHE_TTL, 24);
   const port = parsePort(process.env.PORT, 3000);
-  const relaxedLimits = nodeEnv === "development" || nodeEnv === "test";
+  const deployment = getDeploymentConfig(nodeEnv, runtimeEnvironment);
+  const relaxedLimits = !deployment.environmentBehavior.strictRateLimitsDefault;
   const config = validateConfig({
     nodeEnv,
+    runtimeEnvironment,
     port,
     apiUrl: process.env.NHALO_API_URL ?? `http://localhost:${port}`,
     databaseUrl: process.env.DATABASE_URL?.trim() || undefined,
@@ -595,38 +1039,84 @@ export function getConfig(): AppConfig {
       )
     },
     validation: {
-      enabled: process.env.VALIDATION_MODE === "true",
+      enabled: parseBoolean(
+        process.env.VALIDATION_MODE,
+        deployment.environmentBehavior.validationModeDefault
+      ),
       sharedSnapshotsEnabled:
-        process.env.ENABLE_SHARED_SNAPSHOTS === "true" || process.env.VALIDATION_MODE === "true",
+        parseBoolean(
+          process.env.ENABLE_SHARED_SNAPSHOTS,
+          deployment.environmentBehavior.publicSharingDefault
+            && parseBoolean(process.env.VALIDATION_MODE, deployment.environmentBehavior.validationModeDefault)
+        ),
       demoScenariosEnabled:
-        process.env.ENABLE_DEMO_SCENARIOS === "true" || process.env.VALIDATION_MODE === "true",
+        parseBoolean(
+          process.env.ENABLE_DEMO_SCENARIOS,
+          deployment.environmentBehavior.demoModeDefault
+        ),
       feedbackEnabled:
-        process.env.ENABLE_FEEDBACK_CAPTURE === "true" || process.env.VALIDATION_MODE === "true",
+        parseBoolean(
+          process.env.ENABLE_FEEDBACK_CAPTURE,
+          parseBoolean(process.env.VALIDATION_MODE, deployment.environmentBehavior.validationModeDefault)
+        ),
       shareSnapshotExpirationDays: parsePositiveInteger(
         process.env.SHARED_SNAPSHOT_EXPIRATION_DAYS,
         DEFAULT_SHARE_SNAPSHOT_EXPIRATION_DAYS
       )
     },
     workflow: {
-      shortlistsEnabled: String(process.env.ENABLE_SHORTLISTS ?? "true") === "true",
-      resultNotesEnabled: String(process.env.ENABLE_RESULT_NOTES ?? "true") === "true",
-      historicalCompareEnabled:
-        String(process.env.ENABLE_HISTORICAL_COMPARE ?? "true") === "true",
-      sharedShortlistsEnabled: String(process.env.ENABLE_SHARED_SHORTLISTS ?? "true") === "true",
-      sharedCommentsEnabled: String(process.env.ENABLE_SHARED_COMMENTS ?? "true") === "true",
-      reviewerDecisionsEnabled: String(process.env.ENABLE_REVIEWER_DECISIONS ?? "true") === "true"
+      shortlistsEnabled: parseBoolean(process.env.ENABLE_SHORTLISTS, true),
+      resultNotesEnabled: parseBoolean(process.env.ENABLE_RESULT_NOTES, true),
+      historicalCompareEnabled: parseBoolean(process.env.ENABLE_HISTORICAL_COMPARE, true),
+      sharedShortlistsEnabled: parseBoolean(process.env.ENABLE_SHARED_SHORTLISTS, true),
+      sharedCommentsEnabled: parseBoolean(process.env.ENABLE_SHARED_COMMENTS, true),
+      reviewerDecisionsEnabled: parseBoolean(process.env.ENABLE_REVIEWER_DECISIONS, true)
     },
     ops: {
-      pilotOpsEnabled: String(process.env.ENABLE_PILOT_OPS ?? "false") === "true",
-      internalOpsUiEnabled: String(process.env.ENABLE_INTERNAL_OPS_UI ?? "false") === "true",
-      pilotLinksEnabled: String(process.env.ENABLE_PILOT_LINKS ?? "false") === "true"
+      pilotOpsEnabled: parseBoolean(process.env.ENABLE_PILOT_OPS, false),
+      internalOpsUiEnabled: parseBoolean(process.env.ENABLE_INTERNAL_OPS_UI, false),
+      pilotLinksEnabled: parseBoolean(process.env.ENABLE_PILOT_LINKS, false)
+    },
+    product: {
+      enabled: parseBoolean(process.env.ENABLE_PLAN_CAPABILITIES, DEFAULT_ENABLE_PLAN_CAPABILITIES),
+      defaultPlanTier: parsePlanTier(process.env.DEFAULT_PLAN_TIER, DEFAULT_DEFAULT_PLAN_TIER),
+      maxSavedSearchesPerSession: parsePositiveInteger(
+        process.env.MAX_SAVED_SEARCHES_PER_SESSION,
+        DEFAULT_MAX_SAVED_SEARCHES_PER_SESSION
+      ),
+      maxShortlistsPerSession: parsePositiveInteger(
+        process.env.MAX_SHORTLISTS_PER_SESSION,
+        DEFAULT_MAX_SHORTLISTS_PER_SESSION
+      ),
+      maxShareLinksPerSession: parsePositiveInteger(
+        process.env.MAX_SHARE_LINKS_PER_SESSION,
+        DEFAULT_MAX_SHARE_LINKS_PER_SESSION
+      ),
+      maxExportsPerSession: parsePositiveInteger(
+        process.env.MAX_EXPORTS_PER_SESSION,
+        DEFAULT_MAX_EXPORTS_PER_SESSION
+      ),
+      usageFunnelSummaryEnabled: parseBoolean(
+        process.env.ENABLE_USAGE_FUNNEL_SUMMARY,
+        DEFAULT_ENABLE_USAGE_FUNNEL_SUMMARY
+      ),
+      usageFrictionSummaryEnabled: parseBoolean(
+        process.env.ENABLE_USAGE_FRICTION_SUMMARY,
+        DEFAULT_ENABLE_USAGE_FRICTION_SUMMARY
+      ),
+      exportLimitsEnabled: parseBoolean(
+        process.env.ENABLE_EXPORT_LIMITS,
+        DEFAULT_ENABLE_EXPORT_LIMITS
+      )
     },
     safety: getSafetyConfig(),
     listings: getListingConfig(),
     geocoder: getGeocoderConfig(),
     searchQuality: getSearchQualityConfig(),
     dataQuality: getDataQualityConfig(),
-    performance: getPerformanceConfig()
+    performance: getPerformanceConfig(),
+    security: getSecurityConfig(runtimeEnvironment),
+    deployment
   });
 
   cachedConfig = config;

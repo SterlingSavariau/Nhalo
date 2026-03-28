@@ -47,6 +47,24 @@ export type GeocodePrecision =
 export type DataQualitySourceDomain = "listing" | "safety" | "geocode" | "search";
 export type DataQualitySeverity = "info" | "warn" | "error" | "critical";
 export type DataQualityStatus = "open" | "acknowledged" | "resolved" | "ignored";
+export type RuntimeEnvironmentName = "local" | "development" | "staging" | "production_like_pilot";
+export type EnvironmentProfileName =
+  | "local_demo"
+  | "local_dev"
+  | "staging_pilot"
+  | "production_pilot";
+export type RuntimeReliabilityState =
+  | "healthy"
+  | "degraded"
+  | "maintenance"
+  | "read_only_degraded"
+  | "startup_blocked";
+export type DependencyClassification =
+  | "required"
+  | "optional"
+  | "internal_only"
+  | "background";
+export type ReliabilityIncidentStatus = "open" | "acknowledged" | "resolved" | "ignored";
 export type DataQualityTargetType =
   | "listing"
   | "property"
@@ -87,6 +105,7 @@ export interface SessionIdentity {
 }
 
 export type PilotPartnerStatus = "active" | "paused" | "inactive";
+export type PlanTier = "free_demo" | "pilot" | "partner" | "internal";
 
 export interface PilotFeatureOverrides {
   demoModeEnabled: boolean;
@@ -95,12 +114,32 @@ export interface PilotFeatureOverrides {
   feedbackEnabled: boolean;
   validationPromptsEnabled: boolean;
   shortlistCollaborationEnabled: boolean;
+  exportResultsEnabled: boolean;
+}
+
+export interface EffectiveCapabilities {
+  planTier: PlanTier;
+  canShareSnapshots: boolean;
+  canShareShortlists: boolean;
+  canUseDemoMode: boolean;
+  canExportResults: boolean;
+  canUseCollaboration: boolean;
+  canUseOpsViews: boolean;
+  canSubmitFeedback: boolean;
+  canSeeValidationPrompts: boolean;
+  limits: {
+    savedSearches: number | null;
+    shortlists: number | null;
+    shareLinks: number | null;
+    exportsPerSession: number | null;
+  };
 }
 
 export interface PilotPartner {
   id: string;
   name: string;
   slug: string;
+  planTier: PlanTier;
   status: PilotPartnerStatus;
   contactLabel?: string | null;
   notes?: string | null;
@@ -113,10 +152,12 @@ export interface PilotContext {
   partnerId: string;
   partnerSlug: string;
   partnerName: string;
+  planTier: PlanTier;
   status: PilotPartnerStatus;
   pilotLinkId: string;
   pilotToken: string;
   allowedFeatures: PilotFeatureOverrides;
+  capabilities: EffectiveCapabilities;
 }
 
 export interface PilotLinkRecord {
@@ -190,6 +231,121 @@ export interface OpsSummary {
   }>;
   providerDegradationCount: number;
   partnerUsage: PartnerUsageSummary[];
+  security?: {
+    revokedLinkOpenAttemptCount: number;
+    expiredLinkOpenAttemptCount: number;
+    invalidTokenAccessCount: number;
+    internalRouteDeniedCount: number;
+    rateLimitTriggerCountByEndpoint: Record<string, number>;
+    validationRejectCountByCategory: Record<string, number>;
+    malformedPayloadCount: number;
+    shareRevocationEnforcementCount: number;
+  };
+}
+
+export interface BuildMetadata {
+  appVersion: string;
+  buildId: string;
+  gitSha: string | null;
+  buildTimestamp: string;
+  environment: RuntimeEnvironmentName;
+  profile?: EnvironmentProfileName;
+  formulaVersions: string[];
+}
+
+export interface LaunchGuardrail {
+  id: string;
+  status: "pass" | "warn" | "fail";
+  message: string;
+  detail: string;
+}
+
+export interface GoLiveCheckItem {
+  id: string;
+  label: string;
+  status: "pass" | "warn" | "fail";
+  detail: string;
+}
+
+export interface GoLiveCheckSummary {
+  generatedAt: string;
+  environment: RuntimeEnvironmentName;
+  profile: EnvironmentProfileName;
+  overallStatus: "pass" | "warn" | "fail";
+  reliabilityState: RuntimeReliabilityState;
+  checks: GoLiveCheckItem[];
+  guardrails: LaunchGuardrail[];
+}
+
+export interface SupportSummaryItem {
+  key: string;
+  title: string;
+  status: "ok" | "attention" | "blocked";
+  summary: string;
+  action: string;
+}
+
+export interface SupportContextSummary {
+  generatedAt: string;
+  environment: RuntimeEnvironmentName;
+  profile: EnvironmentProfileName;
+  items: SupportSummaryItem[];
+}
+
+export interface ReleaseSummary {
+  generatedAt: string;
+  environment: RuntimeEnvironmentName;
+  profile: EnvironmentProfileName;
+  build: BuildMetadata;
+  formulaVersions: string[];
+  persistenceMode: "memory" | "database";
+  schemaVersion: string | null;
+  enabledFeatures: string[];
+  degradedConstraints: string[];
+}
+
+export interface DependencyReadinessRecord {
+  name: string;
+  classification: DependencyClassification;
+  status: "healthy" | "degraded" | "unavailable";
+  detail: string;
+}
+
+export interface BackgroundJobStatus {
+  name: string;
+  enabled: boolean;
+  status: "idle" | "running" | "succeeded" | "failed" | "disabled";
+  lastRunAt: string | null;
+  lastCompletedAt: string | null;
+  lastFailedAt: string | null;
+  lastDurationMs: number | null;
+  runCount: number;
+  failureCount: number;
+  lastError: string | null;
+}
+
+export interface ReliabilityStateSummary {
+  state: RuntimeReliabilityState;
+  reasons: string[];
+  readOnlyMode: boolean;
+  cacheOnlyMode: boolean;
+  dependencies: DependencyReadinessRecord[];
+  backgroundJobs: BackgroundJobStatus[];
+  build: BuildMetadata;
+}
+
+export interface ReliabilityIncident {
+  id: string;
+  category: string;
+  severity: "warn" | "error" | "critical";
+  state: RuntimeReliabilityState;
+  status: ReliabilityIncidentStatus;
+  message: string;
+  provider?: string | null;
+  partnerId?: string | null;
+  context?: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Coordinates {
@@ -622,6 +778,7 @@ export interface SearchExecutionProfile {
 export interface PartnerUsageSummary {
   partnerId: string;
   partnerName?: string | null;
+  planTier?: PlanTier;
   searches: number;
   liveProviderCalls: number;
   cacheHitRate: number;
@@ -629,6 +786,70 @@ export interface PartnerUsageSummary {
   sharedSnapshotOpens: number;
   qualityEventCount: number;
   pilotLinkOpens: number;
+  shortlistActivityCount: number;
+  collaborationActivityCount: number;
+  exportUsageCount: number;
+  featureLimitHitCount: number;
+}
+
+export interface UsageFunnelSummary {
+  steps: Array<{
+    key:
+      | "search_started"
+      | "search_completed"
+      | "result_opened"
+      | "comparison_started"
+      | "shortlist_created"
+      | "snapshot_created"
+      | "snapshot_shared"
+      | "feedback_submitted"
+      | "rerun_executed"
+      | "shared_shortlist_opened";
+    label: string;
+    count: number;
+    conversionFromPrevious: number | null;
+  }>;
+}
+
+export interface UsageFrictionSummary {
+  emptyResultRateBySearchType: Record<
+    LocationType,
+    {
+      searches: number;
+      emptyResults: number;
+      rate: number;
+    }
+  >;
+  lowConfidenceResultRate: {
+    searches: number;
+    lowConfidenceTopResults: number;
+    rate: number;
+  };
+  searchesWithoutShortlistActivity: {
+    searches: number;
+    withoutShortlistActivity: number;
+    rate: number;
+  };
+  sharedSnapshotsNeverOpened: {
+    total: number;
+    neverOpened: number;
+    rate: number;
+  };
+  shortlistsWithoutReviewerActivity: {
+    total: number;
+    withoutReviewerActivity: number;
+    rate: number;
+  };
+  repeatedRerunsWithoutSavedOutcome: {
+    rerunSources: number;
+    repeatedWithoutSavedOutcome: number;
+    rate: number;
+  };
+}
+
+export interface PlanSummary {
+  planDistribution: Record<PlanTier, number>;
+  capabilityEnabledCounts: Record<string, number>;
 }
 
 export interface SearchResponse {
@@ -922,10 +1143,12 @@ export interface FeedbackRecord {
 }
 
 export type ValidationEventName =
+  | "search_started"
   | "search_completed"
   | "result_opened"
   | "comparison_started"
   | "snapshot_shared"
+  | "snapshot_created"
   | "snapshot_opened"
   | "rerun_executed"
   | "feedback_submitted"
@@ -933,6 +1156,11 @@ export type ValidationEventName =
   | "suggestion_used"
   | "demo_scenario_started"
   | "restore_used"
+  | "capability_limit_hit"
+  | "export_generated"
+  | "plan_capability_resolved"
+  | "share_feature_used"
+  | "shortlist_feature_used"
   | PilotActivityType
   | WorkflowActivityType
   | CollaborationActivityType;
@@ -1026,6 +1254,18 @@ export interface OpsFeatureConfig {
   pilotOpsEnabled: boolean;
   internalOpsUiEnabled: boolean;
   pilotLinksEnabled: boolean;
+}
+
+export interface ProductCapabilityConfig {
+  enabled: boolean;
+  defaultPlanTier: PlanTier;
+  maxSavedSearchesPerSession: number;
+  maxShortlistsPerSession: number;
+  maxShareLinksPerSession: number;
+  maxExportsPerSession: number;
+  usageFunnelSummaryEnabled: boolean;
+  usageFrictionSummaryEnabled: boolean;
+  exportLimitsEnabled: boolean;
 }
 
 export interface DemoScenario {
@@ -1146,6 +1386,7 @@ export interface SearchRepository {
   createPilotPartner(payload: {
     name: string;
     slug: string;
+    planTier?: PlanTier;
     status?: PilotPartnerStatus;
     contactLabel?: string | null;
     notes?: string | null;
@@ -1157,6 +1398,7 @@ export interface SearchRepository {
     id: string,
     patch: {
       name?: string;
+      planTier?: PlanTier;
       status?: PilotPartnerStatus;
       contactLabel?: string | null;
       notes?: string | null;
@@ -1244,6 +1486,7 @@ export interface SearchRepository {
     entityType?: SharedCommentEntityType;
     entityId?: string;
   }): Promise<SharedComment[]>;
+  getSharedComment(id: string): Promise<SharedComment | null>;
   updateSharedComment(id: string, body: string, authorLabel?: string | null): Promise<SharedComment | null>;
   deleteSharedComment(id: string): Promise<boolean>;
   createReviewerDecision(payload: {
@@ -1256,6 +1499,7 @@ export interface SearchRepository {
     shareId: string;
     shortlistItemId?: string;
   }): Promise<ReviewerDecision[]>;
+  getReviewerDecision(id: string): Promise<ReviewerDecision | null>;
   updateReviewerDecision(
     id: string,
     patch: {
@@ -1286,6 +1530,9 @@ export interface SearchRepository {
     limit?: number;
   }): Promise<PilotActivityRecord[]>;
   getOpsSummary(): Promise<OpsSummary>;
+  getUsageFunnelSummary(): Promise<UsageFunnelSummary>;
+  getUsageFrictionSummary(): Promise<UsageFrictionSummary>;
+  getPlanSummary(): Promise<PlanSummary>;
   listDataQualityEvents(filters?: {
     severity?: DataQualitySeverity;
     sourceDomain?: DataQualitySourceDomain;
@@ -1653,11 +1900,38 @@ export interface SearchMetrics {
   walkthroughViewCount: number;
   walkthroughDismissCount: number;
   exportUsageCount: number;
+  usageFunnelReadCount: number;
+  usageFrictionReadCount: number;
+  capabilityLimitHitCount: number;
+  exportGenerateCount: number;
+  planCapabilityResolutionCount: number;
+  planSummaryReadCount: number;
+  partnerUsageSummaryReadCount: number;
+  featureUsageCountByCapability: Record<string, number>;
+  shareToOpenConversionRate: {
+    opens: number;
+    shares: number;
+    rate: number;
+  };
+  shortlistToReviewConversionRate: {
+    reviewed: number;
+    shortlistAdds: number;
+    rate: number;
+  };
   ctaClickCount: number;
   validationPromptViewCount: number;
   validationPromptResponseCount: number;
   sharedSnapshotExpiredCount: number;
   validationSummaryReadCount: number;
+  revokedLinkOpenAttemptCount: number;
+  expiredLinkOpenAttemptCount: number;
+  invalidTokenAccessCount: number;
+  internalRouteDeniedCount: number;
+  rateLimitTriggerCountByEndpoint: Record<string, number>;
+  validationRejectCountByCategory: Record<string, number>;
+  malformedPayloadCount: number;
+  shareRevocationEnforcementCount: number;
+  securityConfigErrorCount: number;
   dataQualityEventCount: number;
   integrityIncidentOpenCount: number;
   integrityIncidentResolvedCount: number;
@@ -1737,6 +2011,25 @@ export interface SearchMetrics {
       count: number;
     }
   >;
+  startupSuccessCount: number;
+  startupDegradedCount: number;
+  startupFailureCount: number;
+  runtimeReliabilityStateChanges: number;
+  backgroundJobRunCount: number;
+  backgroundJobFailureCount: number;
+  cacheOnlyModeCount: number;
+  providerOutageFallbackCount: number;
+  readOnlyDegradedModeCount: number;
+  versionEndpointReadCount: number;
+  goLiveCheckReadCount: number;
+  supportContextReadCount: number;
+  releaseSummaryReadCount: number;
+  readinessFailCount: number;
+  readinessWarnCount: number;
+  launchGuardrailBlockCount: number;
+  launchGuardrailWarnCount: number;
+  opsCheckScriptRunCount: number;
+  demoProfileLoadCount: number;
   scoreDistribution: {
     count: number;
     average: number;

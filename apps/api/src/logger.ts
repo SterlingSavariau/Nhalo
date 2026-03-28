@@ -1,4 +1,4 @@
-import type { LogLevel } from "@nhalo/config";
+import { getConfig, type LogLevel } from "@nhalo/config";
 
 export interface StructuredLogEntry {
   timestamp: string;
@@ -10,6 +10,38 @@ export interface StructuredLogEntry {
   statusCode?: number;
   errorCode?: string;
   details?: unknown;
+}
+
+const REDACTED = "[REDACTED]";
+const DEFAULT_REDACT_KEYS = new Set([
+  "apiKey",
+  "authorization",
+  "databaseUrl",
+  "internalRouteAccessToken",
+  "pilotToken",
+  "pilotLinkToken",
+  "shareId",
+  "token",
+  "x-nhalo-internal-token"
+]);
+
+function redactValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactValue(entry));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => {
+        if (DEFAULT_REDACT_KEYS.has(key)) {
+          return [key, REDACTED];
+        }
+        return [key, redactValue(entry)];
+      })
+    );
+  }
+
+  return value;
 }
 
 export interface AppLogger {
@@ -43,11 +75,12 @@ export function createLogger(options?: {
       return;
     }
 
+    const redactLogs = getConfig().security.redactLogFields;
     write(
       JSON.stringify({
         timestamp: new Date().toISOString(),
         level: targetLevel,
-        ...entry
+        ...(redactLogs ? (redactValue(entry) as typeof entry) : entry)
       })
     );
   }

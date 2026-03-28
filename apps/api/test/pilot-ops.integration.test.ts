@@ -24,6 +24,9 @@ describe("pilot operations", () => {
     process.env.ENABLE_PILOT_LINKS = "true";
     process.env.VALIDATION_MODE = "true";
     process.env.ENABLE_DEMO_SCENARIOS = "true";
+    process.env.ENABLE_PLAN_CAPABILITIES = "true";
+    process.env.ENABLE_USAGE_FUNNEL_SUMMARY = "true";
+    process.env.ENABLE_USAGE_FRICTION_SUMMARY = "true";
     resetConfigCache();
 
     const providers = createMockProviders();
@@ -55,6 +58,7 @@ describe("pilot operations", () => {
       payload: {
         name: "Acme Pilot",
         slug: "acme-pilot",
+        planTier: "partner",
         featureOverrides: {
           demoModeEnabled: false,
           feedbackEnabled: true
@@ -81,7 +85,9 @@ describe("pilot operations", () => {
     });
     expect(openLink.statusCode).toBe(200);
     expect(openLink.json().context.partnerId).toBe(partner.id);
+    expect(openLink.json().context.planTier).toBe("partner");
     expect(openLink.json().context.allowedFeatures.demoModeEnabled).toBe(false);
+    expect(openLink.json().context.capabilities.canUseCollaboration).toBe(true);
 
     const demoBlocked = await app.inject({
       method: "GET",
@@ -129,6 +135,7 @@ describe("pilot operations", () => {
       url: `/ops/pilots/${partner.id}`
     });
     expect(partnerDetail.statusCode).toBe(200);
+    expect(partnerDetail.json().effectiveCapabilities.planTier).toBe("partner");
     expect(partnerDetail.json().links).toHaveLength(1);
     expect(partnerDetail.json().actions.length).toBeGreaterThanOrEqual(2);
 
@@ -158,6 +165,38 @@ describe("pilot operations", () => {
     expect(summaryResponse.json().summary.activePilotPartners).toBe(0);
     expect(summaryResponse.json().summary.pilotLinkCounts.total).toBe(1);
 
+    const usageFunnelResponse = await app.inject({
+      method: "GET",
+      url: "/ops/usage-funnel"
+    });
+    expect(usageFunnelResponse.statusCode).toBe(200);
+    expect(
+      usageFunnelResponse
+        .json()
+        .funnel.steps.find((step: { key: string }) => step.key === "search_started")?.count
+    ).toBeGreaterThanOrEqual(1);
+
+    const usageFrictionResponse = await app.inject({
+      method: "GET",
+      url: "/ops/usage-friction"
+    });
+    expect(usageFrictionResponse.statusCode).toBe(200);
+    expect(usageFrictionResponse.json().friction.emptyResultRateBySearchType.city.searches).toBeGreaterThanOrEqual(1);
+
+    const planSummaryResponse = await app.inject({
+      method: "GET",
+      url: "/ops/plans/summary"
+    });
+    expect(planSummaryResponse.statusCode).toBe(200);
+    expect(planSummaryResponse.json().summary.planDistribution.partner).toBeGreaterThanOrEqual(1);
+
+    const partnerUsageResponse = await app.inject({
+      method: "GET",
+      url: `/ops/partners/${partner.id}/usage`
+    });
+    expect(partnerUsageResponse.statusCode).toBe(200);
+    expect(partnerUsageResponse.json().usage.planTier).toBe("partner");
+
     const revokeLink = await app.inject({
       method: "POST",
       url: `/pilot/links/${token}/revoke`
@@ -181,6 +220,11 @@ describe("pilot operations", () => {
     expect(metricsResponse.json().pilotLinkOpenCount).toBe(1);
     expect(metricsResponse.json().pilotLinkRevokeCount).toBe(1);
     expect(metricsResponse.json().opsSummaryReadCount).toBe(1);
+    expect(metricsResponse.json().usageFunnelReadCount).toBe(1);
+    expect(metricsResponse.json().usageFrictionReadCount).toBe(1);
+    expect(metricsResponse.json().planSummaryReadCount).toBe(1);
+    expect(metricsResponse.json().partnerUsageSummaryReadCount).toBe(1);
+    expect(metricsResponse.json().planCapabilityResolutionCount).toBe(1);
     expect(metricsResponse.json().pilotActivityReadCount).toBe(1);
     expect(metricsResponse.json().providerDegradedDuringPilotCount).toBe(1);
     expect(metricsResponse.json().partnerFeatureOverrideCount).toBeGreaterThanOrEqual(2);
@@ -219,6 +263,66 @@ describe("pilot operations", () => {
     });
     expect(linkResponse.statusCode).toBe(404);
     expect(linkResponse.json().error.code).toBe("FEATURE_DISABLED");
+
+    await app.close();
+  });
+
+  it("enforces configured saved-search limits with an explicit error", async () => {
+    process.env.ENABLE_PLAN_CAPABILITIES = "true";
+    process.env.MAX_SAVED_SEARCHES_PER_SESSION = "1";
+    resetConfigCache();
+
+    const app = await buildApp({
+      repository: new InMemorySearchRepository(),
+      marketSnapshotRepository: new InMemoryMarketSnapshotRepository(),
+      safetySignalCacheRepository: new InMemorySafetySignalCacheRepository(),
+      listingCacheRepository: new InMemoryListingCacheRepository(),
+      geocodeCacheRepository: new InMemoryGeocodeCacheRepository(),
+      providers: createMockProviders(),
+      metrics: new MetricsCollector()
+    });
+
+    const payload = {
+      sessionId: "limit-session",
+      label: "First search",
+      request: {
+        locationType: "city",
+        locationValue: "Southfield, MI",
+        radiusMiles: 5,
+        propertyTypes: ["single_family", "condo", "townhome"],
+        preferences: [],
+        weights: {
+          price: 40,
+          size: 30,
+          safety: 30
+        }
+      }
+    };
+
+    const firstCreate = await app.inject({
+      method: "POST",
+      url: "/search/definitions",
+      payload
+    });
+    expect(firstCreate.statusCode).toBe(201);
+
+    const limitedCreate = await app.inject({
+      method: "POST",
+      url: "/search/definitions",
+      payload: {
+        ...payload,
+        label: "Second search"
+      }
+    });
+    expect(limitedCreate.statusCode).toBe(403);
+    expect(limitedCreate.json().error.code).toBe("CAPABILITY_LIMIT_HIT");
+
+    const metricsResponse = await app.inject({
+      method: "GET",
+      url: "/metrics"
+    });
+    expect(metricsResponse.statusCode).toBe(200);
+    expect(metricsResponse.json().capabilityLimitHitCount).toBe(1);
 
     await app.close();
   });

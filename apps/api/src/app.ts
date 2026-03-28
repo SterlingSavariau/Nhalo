@@ -3,18 +3,38 @@ import { ConfigError, getConfig } from "@nhalo/config";
 import { createPersistenceLayer, type PersistenceLayer } from "@nhalo/db";
 import { DEMO_SEARCH_SCENARIOS, createMockProviders, createProviders } from "@nhalo/providers";
 import type {
+  CollaborationActivityRecord,
+  DependencyReadinessRecord,
   DataQualitySeverity,
   DataQualitySourceDomain,
   DataQualityStatus,
   DemoScenario,
+  EnvironmentProfileName,
+  EffectiveCapabilities,
   GeocodeCacheRepository,
+  GoLiveCheckItem,
+  GoLiveCheckSummary,
+  LaunchGuardrail,
   ListingCacheRepository,
   MarketSnapshotRepository,
   PilotFeatureOverrides,
   PilotLinkView,
+  PlanTier,
   ProviderStatus,
+  SearchMetadata,
   SafetySignalCacheRepository,
   SearchRepository,
+  SearchResponse,
+  SharedComment,
+  SharedShortlistView,
+  SharedSnapshotView,
+  Shortlist,
+  ShortlistItem,
+  SupportContextSummary,
+  ReviewerDecision,
+  ReleaseSummary,
+  ReliabilityIncidentStatus,
+  ReliabilityStateSummary,
   ValidationEventName
 } from "@nhalo/types";
 import Fastify from "fastify";
@@ -22,7 +42,9 @@ import { ZodError, z } from "zod";
 import { ApiError, isApiError } from "./errors";
 import { createLogger, type AppLogger } from "./logger";
 import { MetricsCollector } from "./metrics";
+import { resolveEffectiveCapabilities } from "./capabilities";
 import { instrumentProviders } from "./provider-runtime";
+import { ReliabilityManager, classifyStartupDependencies } from "./reliability";
 import { searchRequestSchema } from "./search-schema";
 import { runSearch } from "./search-service";
 
@@ -95,9 +117,11 @@ const feedbackSchema = z.object({
 
 const validationEventSchema = z.object({
   eventName: z.enum([
+    "search_started",
     "search_completed",
     "result_opened",
     "comparison_started",
+    "snapshot_created",
     "snapshot_shared",
     "snapshot_opened",
     "rerun_executed",
@@ -105,7 +129,12 @@ const validationEventSchema = z.object({
     "empty_state_encountered",
     "suggestion_used",
     "demo_scenario_started",
-    "restore_used"
+    "restore_used",
+    "capability_limit_hit",
+    "export_generated",
+    "plan_capability_resolved",
+    "share_feature_used",
+    "shortlist_feature_used"
   ]),
   sessionId: z.string().trim().min(1).optional(),
   snapshotId: z.string().trim().min(1).optional(),
@@ -117,14 +146,14 @@ const validationEventSchema = z.object({
 
 const searchDefinitionCreateSchema = z.object({
   sessionId: z.string().trim().min(1).optional(),
-  label: z.string().trim().min(1, "label is required"),
+  label: z.string().trim().min(1, "label is required").max(160),
   request: searchRequestSchema,
   pinned: z.boolean().optional()
 });
 
 const searchDefinitionUpdateSchema = z
   .object({
-    label: z.string().trim().min(1).optional(),
+    label: z.string().trim().min(1).max(160).optional(),
     pinned: z.boolean().optional()
   })
   .refine((payload) => payload.label !== undefined || payload.pinned !== undefined, {
@@ -138,7 +167,7 @@ const rerunRequestSchema = z.object({
 
 const shortlistCreateSchema = z.object({
   sessionId: z.string().trim().min(1).optional(),
-  title: z.string().trim().min(1, "title is required"),
+  title: z.string().trim().min(1, "title is required").max(160),
   description: z.string().trim().max(500).optional(),
   sourceSnapshotId: z.string().trim().min(1).optional(),
   pinned: z.boolean().optional()
@@ -146,7 +175,7 @@ const shortlistCreateSchema = z.object({
 
 const shortlistUpdateSchema = z
   .object({
-    title: z.string().trim().min(1).optional(),
+    title: z.string().trim().min(1).max(160).optional(),
     description: z.string().trim().max(500).nullable().optional(),
     pinned: z.boolean().optional()
   })
@@ -214,8 +243,9 @@ const reviewerDecisionUpdateSchema = z
   });
 
 const pilotPartnerCreateSchema = z.object({
-  name: z.string().trim().min(1),
-  slug: z.string().trim().min(1),
+  name: z.string().trim().min(1).max(160),
+  slug: z.string().trim().min(1).max(80),
+  planTier: z.enum(["free_demo", "pilot", "partner", "internal"]).optional(),
   status: z.enum(["active", "paused", "inactive"]).optional(),
   contactLabel: z.string().trim().max(120).optional(),
   notes: z.string().trim().max(2000).optional(),
@@ -224,7 +254,8 @@ const pilotPartnerCreateSchema = z.object({
 
 const pilotPartnerUpdateSchema = z
   .object({
-    name: z.string().trim().min(1).optional(),
+    name: z.string().trim().min(1).max(160).optional(),
+    planTier: z.enum(["free_demo", "pilot", "partner", "internal"]).optional(),
     status: z.enum(["active", "paused", "inactive"]).optional(),
     contactLabel: z.string().trim().max(120).nullable().optional(),
     notes: z.string().trim().max(2000).nullable().optional(),
@@ -233,6 +264,7 @@ const pilotPartnerUpdateSchema = z
   .refine(
     (payload) =>
       payload.name !== undefined ||
+      payload.planTier !== undefined ||
       payload.status !== undefined ||
       payload.contactLabel !== undefined ||
       payload.notes !== undefined ||
@@ -252,13 +284,18 @@ const dataQualityStatusUpdateSchema = z.object({
   status: z.enum(["acknowledged", "resolved", "ignored"])
 });
 
+const reliabilityIncidentStatusUpdateSchema = z.object({
+  status: z.enum(["acknowledged", "resolved", "ignored"])
+});
+
 const PILOT_FEATURE_KEYS = [
   "demoModeEnabled",
   "sharedSnapshotsEnabled",
   "sharedShortlistsEnabled",
   "feedbackEnabled",
   "validationPromptsEnabled",
-  "shortlistCollaborationEnabled"
+  "shortlistCollaborationEnabled",
+  "exportResultsEnabled"
 ] as const;
 
 function extractSessionId(request: {
@@ -291,6 +328,17 @@ function extractPilotLinkId(request: {
   return raw?.trim() ? raw.trim() : null;
 }
 
+function extractInternalAccessToken(request: {
+  headers?: Record<string, unknown>;
+}): string | null {
+  const raw = request.headers?.["x-nhalo-internal-token"];
+  return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+}
+
+function getRoutePattern(request: RequestWithId): string {
+  return (request.routeOptions?.url as string | undefined) ?? request.url.split("?")[0] ?? request.url;
+}
+
 function parseLimit(
   query: Record<string, unknown> | undefined,
   fallback = 10,
@@ -319,6 +367,138 @@ function featureDisabled(feature: string): ApiError {
   return new ApiError(404, "FEATURE_DISABLED", `${feature} is not enabled in this environment.`);
 }
 
+function unavailableLinkPayload() {
+  return buildErrorPayload("LINK_UNAVAILABLE", "This link is unavailable.");
+}
+
+function requiresInternalRouteAccess(routePattern: string): boolean {
+  return (
+    routePattern === "/metrics" ||
+    routePattern === "/providers/status" ||
+    routePattern === "/validation/summary" ||
+    routePattern.startsWith("/ops/")
+  );
+}
+
+function enforceMaxLength(field: string, value: string | null | undefined, maxLength: number): void {
+  if (typeof value === "string" && value.length > maxLength) {
+    throw new ApiError(400, "VALIDATION_ERROR", "Invalid request payload", [
+      {
+        field,
+        message: `${field} must be at most ${maxLength} characters`
+      }
+    ]);
+  }
+}
+
+function ensureWriteCapable(
+  reliability: ReliabilityManager
+): void {
+  if (!reliability.canWrite()) {
+    throw new ApiError(
+      503,
+      "READ_ONLY_DEGRADED",
+      "The service is temporarily in a read-only degraded mode."
+    );
+  }
+}
+
+function sanitizeSearchMetadataForPublicShare(metadata: SearchMetadata): SearchMetadata {
+  const { performance, historyRecordId, sessionId, rerunResultMetadata, ...safeMetadata } = metadata;
+  return {
+    ...safeMetadata
+  };
+}
+
+function sanitizeSearchResponseForPublicShare(response: SearchResponse): SearchResponse {
+  return {
+    ...response,
+    metadata: sanitizeSearchMetadataForPublicShare(response.metadata)
+  };
+}
+
+function sanitizeShortlistForPublicShare(shortlist: Shortlist): Omit<Shortlist, "sessionId"> {
+  const { sessionId, ...safeShortlist } = shortlist;
+  return safeShortlist;
+}
+
+function sanitizeShortlistItemForPublicShare(
+  item: ShortlistItem
+): Omit<ShortlistItem, "sourceSnapshotId" | "sourceHistoryId" | "sourceSearchDefinitionId"> {
+  const { sourceSnapshotId, sourceHistoryId, sourceSearchDefinitionId, ...safeItem } = item;
+  return safeItem;
+}
+
+function sanitizeCommentForPublicShare(comment: SharedComment): SharedComment {
+  return {
+    ...comment,
+    authorLabel: comment.authorLabel ?? null
+  };
+}
+
+function sanitizeReviewerDecisionForPublicShare(decision: ReviewerDecision): ReviewerDecision {
+  return {
+    ...decision,
+    note: decision.note ?? null
+  };
+}
+
+function sanitizeCollaborationActivityForPublicShare(
+  record: CollaborationActivityRecord
+): Omit<CollaborationActivityRecord, "payload"> {
+  const { payload, ...safeRecord } = record;
+  return safeRecord;
+}
+
+function toPublicSharedSnapshotView(sharedView: SharedSnapshotView) {
+  // Public snapshot views should render the stored result set, not the private session context around it.
+  return {
+    readOnly: true,
+    shared: true as const,
+    share: {
+      shareId: sharedView.share.shareId,
+      snapshotId: sharedView.share.snapshotId,
+      expiresAt: sharedView.share.expiresAt ?? null,
+      status: sharedView.share.status,
+      createdAt: sharedView.share.createdAt
+    },
+    snapshot: {
+      id: sharedView.snapshot.id,
+      formulaVersion: sharedView.snapshot.formulaVersion,
+      request: sharedView.snapshot.request,
+      response: sanitizeSearchResponseForPublicShare(sharedView.snapshot.response),
+      validationMetadata: sharedView.snapshot.validationMetadata,
+      createdAt: sharedView.snapshot.createdAt
+    }
+  };
+}
+
+function toPublicSharedShortlistView(sharedView: SharedShortlistView) {
+  // Public shortlist views expose captured decision artifacts, not internal session or history metadata.
+  return {
+    readOnly: sharedView.readOnly,
+    shared: true as const,
+    share: {
+      shareId: sharedView.share.shareId,
+      shortlistId: sharedView.share.shortlistId,
+      shareMode: sharedView.share.shareMode,
+      collaborationRole: sharedView.share.collaborationRole,
+      expiresAt: sharedView.share.expiresAt ?? null,
+      status: sharedView.share.status,
+      createdAt: sharedView.share.createdAt
+    },
+    shortlist: sanitizeShortlistForPublicShare(sharedView.shortlist),
+    items: sharedView.items.map((item) => sanitizeShortlistItemForPublicShare(item)),
+    comments: sharedView.comments.map((comment) => sanitizeCommentForPublicShare(comment)),
+    reviewerDecisions: sharedView.reviewerDecisions.map((decision) =>
+      sanitizeReviewerDecisionForPublicShare(decision)
+    ),
+    collaborationActivity: sharedView.collaborationActivity.map((record) =>
+      sanitizeCollaborationActivityForPublicShare(record)
+    )
+  };
+}
+
 function shareModeAllowsComments(shareMode: "read_only" | "comment_only" | "review_only"): boolean {
   return shareMode === "comment_only" || shareMode === "review_only";
 }
@@ -332,6 +512,7 @@ async function resolvePilotContext(
   request: { headers?: Record<string, unknown>; query?: Record<string, unknown> },
   bodyPilotLinkId?: string | null
 ) {
+  const config = getConfig();
   const pilotToken = extractPilotLinkId(request, bodyPilotLinkId);
   if (!pilotToken) {
     return null;
@@ -355,10 +536,16 @@ async function resolvePilotContext(
       partnerId: partner.id,
       partnerSlug: partner.slug,
       partnerName: partner.name,
+      planTier: partner.planTier,
       status: partner.status,
       pilotLinkId: link.id,
       pilotToken: link.token,
-      allowedFeatures: link.allowedFeatures
+      allowedFeatures: link.allowedFeatures,
+      capabilities: resolveEffectiveCapabilities({
+        config,
+        planTier: partner.planTier,
+        overrides: link.allowedFeatures
+      })
     }
   } satisfies PilotLinkView;
 }
@@ -381,35 +568,92 @@ function hasPilotOverrideValue(input?: Partial<PilotFeatureOverrides> | null): b
   return Boolean(input && Object.keys(input).length > 0);
 }
 
+function getDefaultCapabilities(
+  config: ReturnType<typeof getConfig>,
+  planTier: PlanTier
+): EffectiveCapabilities {
+  const resolved = resolveEffectiveCapabilities({
+    config,
+    planTier,
+    overrides: {
+      demoModeEnabled: true,
+      sharedSnapshotsEnabled: true,
+      sharedShortlistsEnabled: true,
+      feedbackEnabled: true,
+      validationPromptsEnabled: true,
+      shortlistCollaborationEnabled: true,
+      exportResultsEnabled: true
+    }
+  });
+  return {
+    ...resolved,
+    canShareSnapshots:
+      config.validation.enabled &&
+      config.validation.sharedSnapshotsEnabled &&
+      config.security.publicSharedViewsEnabled,
+    canShareShortlists:
+      config.workflow.shortlistsEnabled &&
+      config.workflow.sharedShortlistsEnabled &&
+      config.security.publicSharedShortlistsEnabled,
+    canUseDemoMode:
+      config.validation.enabled &&
+      config.validation.demoScenariosEnabled,
+    canExportResults: true,
+    canUseCollaboration:
+      config.workflow.sharedShortlistsEnabled &&
+      (config.workflow.sharedCommentsEnabled || config.workflow.reviewerDecisionsEnabled),
+    canUseOpsViews:
+      config.ops.pilotOpsEnabled &&
+      config.ops.internalOpsUiEnabled,
+    canSubmitFeedback:
+      config.validation.enabled &&
+      config.validation.feedbackEnabled,
+    canSeeValidationPrompts: config.validation.enabled
+  };
+}
+
+function getEffectiveCapabilities(
+  config: ReturnType<typeof getConfig>,
+  pilotContext: PilotLinkView | null
+): EffectiveCapabilities {
+  return (
+    pilotContext?.context.capabilities ??
+    getDefaultCapabilities(config, config.product.defaultPlanTier)
+  );
+}
+
 function getEffectivePilotFeatures(
   config: ReturnType<typeof getConfig>,
   pilotContext: PilotLinkView | null
-): PilotFeatureOverrides {
-  const overrides = pilotContext?.context.allowedFeatures;
-
+): PilotFeatureOverrides & { exportResultsEnabled: boolean } {
+  const capabilities = getEffectiveCapabilities(config, pilotContext);
   return {
-    demoModeEnabled: config.validation.enabled
-      && config.validation.demoScenariosEnabled
-      && (overrides?.demoModeEnabled ?? true),
-    sharedSnapshotsEnabled: config.validation.enabled
-      && config.validation.sharedSnapshotsEnabled
-      && (overrides?.sharedSnapshotsEnabled ?? true),
-    sharedShortlistsEnabled: config.workflow.shortlistsEnabled
-      && config.workflow.sharedShortlistsEnabled
-      && (overrides?.sharedShortlistsEnabled ?? true),
-    feedbackEnabled: config.validation.enabled
-      && config.validation.feedbackEnabled
-      && (overrides?.feedbackEnabled ?? true),
-    validationPromptsEnabled: config.validation.enabled
-      && (overrides?.validationPromptsEnabled ?? true),
-    shortlistCollaborationEnabled: config.workflow.sharedShortlistsEnabled
-      && (config.workflow.sharedCommentsEnabled || config.workflow.reviewerDecisionsEnabled)
-      && (overrides?.shortlistCollaborationEnabled ?? true)
+    demoModeEnabled: capabilities.canUseDemoMode,
+    sharedSnapshotsEnabled: capabilities.canShareSnapshots,
+    sharedShortlistsEnabled: capabilities.canShareShortlists,
+    feedbackEnabled: capabilities.canSubmitFeedback,
+    validationPromptsEnabled: capabilities.canSeeValidationPrompts,
+    shortlistCollaborationEnabled: capabilities.canUseCollaboration,
+    exportResultsEnabled: capabilities.canExportResults
   };
 }
 
 function featureDisabledForPilot(feature: string): ApiError {
   return new ApiError(403, "PILOT_FEATURE_DISABLED", `${feature} is disabled for this pilot context.`);
+}
+
+function capabilityLimitHitError(feature: string, limit: number): ApiError {
+  return new ApiError(
+    403,
+    "CAPABILITY_LIMIT_HIT",
+    `${feature} has reached the current plan limit.`,
+    [
+      {
+        field: "limit",
+        message: String(limit)
+      }
+    ]
+  );
 }
 
 function withPilotPayload(
@@ -449,7 +693,71 @@ async function recordValidationEventWithPilot(
   });
 }
 
+async function countSessionShareLinks(
+  repository: SearchRepository,
+  sessionId: string | null
+): Promise<number> {
+  if (!sessionId) {
+    return 0;
+  }
+
+  const snapshots = await repository.listSearchSnapshots(sessionId, 1_000);
+  const snapshotShares = snapshots.reduce(
+    (total, snapshot) => total + (snapshot.validationMetadata?.shareCount ?? 0),
+    0
+  );
+  const shortlists = await repository.listShortlists(sessionId);
+  const shortlistShares = (
+    await Promise.all(shortlists.map((shortlist) => repository.listSharedShortlists(shortlist.id)))
+  ).reduce((total, shares) => total + shares.length, 0);
+
+  return snapshotShares + shortlistShares;
+}
+
+async function enforceSessionCapabilityLimit(options: {
+  repository: SearchRepository;
+  metrics: MetricsCollector;
+  config: ReturnType<typeof getConfig>;
+  pilotContext: PilotLinkView | null;
+  sessionId: string | null;
+  capabilityKey: keyof EffectiveCapabilities["limits"];
+  featureLabel: string;
+  currentCount: () => Promise<number>;
+}): Promise<void> {
+  if (!options.config.product.enabled) {
+    return;
+  }
+
+  const capabilities = getEffectiveCapabilities(options.config, options.pilotContext);
+  const limit = capabilities.limits[options.capabilityKey];
+  if (limit === null) {
+    return;
+  }
+
+  const currentCount = await options.currentCount();
+  if (currentCount < limit) {
+    return;
+  }
+
+  options.metrics.recordCapabilityLimitHit(options.featureLabel);
+  await recordValidationEventWithPilot(
+    options.repository,
+    {
+      eventName: "capability_limit_hit",
+      sessionId: options.sessionId,
+      payload: {
+        capability: options.featureLabel,
+        limit,
+        currentCount
+      }
+    },
+    options.pilotContext
+  );
+  throw capabilityLimitHitError(options.featureLabel, limit);
+}
+
 export interface AppDependencies {
+  persistence: PersistenceLayer;
   repository: SearchRepository;
   marketSnapshotRepository: MarketSnapshotRepository;
   safetySignalCacheRepository: SafetySignalCacheRepository;
@@ -532,6 +840,26 @@ function classifyError(error: unknown): {
   statusCode: number;
   payload: ReturnType<typeof buildErrorPayload>;
 } {
+  const fastifyError = error as { code?: string; statusCode?: number; message?: string } | undefined;
+  if (fastifyError?.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+    return {
+      category: "VALIDATION_ERROR",
+      statusCode: 413,
+      payload: buildErrorPayload(
+        "PAYLOAD_TOO_LARGE",
+        "The request payload exceeded the allowed size."
+      )
+    };
+  }
+
+  if (fastifyError?.code === "FST_ERR_CTP_INVALID_JSON_BODY") {
+    return {
+      category: "VALIDATION_ERROR",
+      statusCode: 400,
+      payload: buildErrorPayload("MALFORMED_JSON", "The request body contained malformed JSON.")
+    };
+  }
+
   if (error instanceof ZodError) {
     return {
       category: "VALIDATION_ERROR",
@@ -549,11 +877,18 @@ function classifyError(error: unknown): {
   }
 
   if (isApiError(error)) {
+    const code = error.code.toUpperCase();
     return {
       category:
-        error.code.includes("PROVIDER") || error.code.includes("LOCATION")
-          ? "PROVIDER_ERROR"
-          : "INTERNAL_ERROR",
+        code.includes("VALIDATION") || code.includes("PAYLOAD") || code.includes("MALFORMED")
+          ? "VALIDATION_ERROR"
+          : code.includes("PROVIDER") || code.includes("LOCATION")
+            ? "PROVIDER_ERROR"
+            : code.includes("DATABASE")
+              ? "DATABASE_ERROR"
+              : code.includes("CONFIG")
+                ? "CONFIG_ERROR"
+                : "INTERNAL_ERROR",
       statusCode: error.statusCode,
       payload: buildErrorPayload(error.code, error.message, error.details ?? [])
     };
@@ -591,11 +926,386 @@ function formatValidationError(error: ZodError) {
   );
 }
 
+function buildEnabledFeatureList(config: ReturnType<typeof getConfig>): string[] {
+  const features: string[] = [];
+
+  if (config.validation.enabled) {
+    features.push("validation");
+  }
+  if (config.validation.sharedSnapshotsEnabled && config.security.publicSharedViewsEnabled) {
+    features.push("shared_snapshots");
+  }
+  if (config.workflow.shortlistsEnabled) {
+    features.push("shortlists");
+  }
+  if (config.workflow.sharedShortlistsEnabled && config.security.publicSharedShortlistsEnabled) {
+    features.push("shared_shortlists");
+  }
+  if (config.workflow.sharedCommentsEnabled || config.workflow.reviewerDecisionsEnabled) {
+    features.push("collaboration");
+  }
+  if (config.ops.pilotOpsEnabled) {
+    features.push("pilot_ops");
+  }
+  if (config.validation.demoScenariosEnabled) {
+    features.push("demo_mode");
+  }
+  if (config.product.enabled) {
+    features.push(`plan:${config.product.defaultPlanTier}`);
+  }
+
+  return features;
+}
+
+function buildGuardrailDetail(config: ReturnType<typeof getConfig>): string {
+  return `profile=${config.deployment.profile}, env=${config.runtimeEnvironment}`;
+}
+
+function evaluateLaunchGuardrails(payload: {
+  config: ReturnType<typeof getConfig>;
+  reliability: ReliabilityStateSummary;
+}): LaunchGuardrail[] {
+  const { config, reliability } = payload;
+  const guardrails: LaunchGuardrail[] = [];
+  const productionLike = config.deployment.environmentBehavior.productionLike;
+
+  if (productionLike && !config.security.internalRouteGuardsEnabled) {
+    guardrails.push({
+      id: "internal_route_guards_required",
+      status: "fail",
+      message: "Internal route guards are required in staging and production-like profiles.",
+      detail: buildGuardrailDetail(config)
+    });
+  }
+
+  if (
+    productionLike &&
+    config.security.publicSharedViewsEnabled &&
+    !config.security.internalRouteGuardsEnabled
+  ) {
+    guardrails.push({
+      id: "public_sharing_requires_guards",
+      status: "fail",
+      message: "Public sharing cannot be enabled in staging or production-like profiles without internal route guards.",
+      detail: buildGuardrailDetail(config)
+    });
+  }
+
+  if (productionLike && config.validation.demoScenariosEnabled) {
+    guardrails.push({
+      id: "demo_mode_enabled_in_production_profile",
+      status: "warn",
+      message: "Demo scenarios are enabled in a production-like profile.",
+      detail: buildGuardrailDetail(config)
+    });
+  }
+
+  if (
+    productionLike &&
+    [config.providerMode, config.listings.mode, config.safety.mode, config.geocoder.mode].includes("mock")
+  ) {
+    guardrails.push({
+      id: "mock_provider_mode_enabled",
+      status: "warn",
+      message: "One or more providers are still running in mock mode.",
+      detail: `provider=${config.providerMode}, listing=${config.listings.mode}, safety=${config.safety.mode}, geocoder=${config.geocoder.mode}`
+    });
+  }
+
+  if (reliability.state !== "healthy") {
+    guardrails.push({
+      id: "runtime_not_healthy",
+      status: reliability.state === "startup_blocked" ? "fail" : "warn",
+      message: "Runtime reliability is not fully healthy.",
+      detail: reliability.reasons.join(" · ") || reliability.state
+    });
+  }
+
+  return guardrails;
+}
+
+function summariseProviderMode(config: ReturnType<typeof getConfig>): string {
+  return `provider=${config.providerMode}, listing=${config.listings.mode}, safety=${config.safety.mode}, geocoder=${config.geocoder.mode}`;
+}
+
+function buildGoLiveCheckSummary(payload: {
+  config: ReturnType<typeof getConfig>;
+  persistenceMode: PersistenceLayer["mode"];
+  readiness: { database: boolean; cache: boolean };
+  reliability: ReliabilityStateSummary;
+  providers: ProviderStatus[];
+}): GoLiveCheckSummary {
+  const { config, persistenceMode, readiness, reliability, providers } = payload;
+  const productionLike = config.deployment.environmentBehavior.productionLike;
+  const checks: GoLiveCheckItem[] = [
+    {
+      id: "config_validation",
+      label: "Config validation",
+      status: "pass",
+      detail: "Configuration loaded successfully."
+    },
+    {
+      id: "required_secrets",
+      label: "Required secrets",
+      status:
+        (config.listings.mode === "live" && !config.listings.provider.configured) ||
+        (config.geocoder.mode === "live" && !config.geocoder.provider.configured) ||
+        (config.safety.mode === "live" &&
+          !config.safety.crime.configured &&
+          !config.safety.school.configured)
+          ? "fail"
+          : config.providerMode === "hybrid" &&
+              (!config.listings.provider.configured ||
+                !config.geocoder.provider.configured ||
+                (!config.safety.crime.configured && !config.safety.school.configured))
+            ? "warn"
+            : "pass",
+      detail: `listingLiveConfigured=${config.listings.provider.configured}, geocoderLiveConfigured=${config.geocoder.provider.configured}, safetyLiveConfigured=${config.safety.crime.configured || config.safety.school.configured}`
+    },
+    {
+      id: "database",
+      label: "Database reachability",
+      status: readiness.database ? "pass" : productionLike ? "fail" : "warn",
+      detail: readiness.database
+        ? `${persistenceMode} persistence reachable`
+        : `${persistenceMode} persistence unavailable`
+    },
+    {
+      id: "schema_compatibility",
+      label: "Schema compatibility",
+      status:
+        persistenceMode === "database" && readiness.database
+          ? "pass"
+          : productionLike
+            ? "fail"
+            : "warn",
+      detail:
+        persistenceMode === "database" && readiness.database
+          ? "Database-backed persistence is available for schema-backed artifacts."
+          : "Running without database-backed schema verification."
+    },
+    {
+      id: "provider_modes",
+      label: "Provider modes",
+      status:
+        productionLike &&
+        [config.providerMode, config.listings.mode, config.safety.mode, config.geocoder.mode].includes("mock")
+          ? "warn"
+          : "pass",
+      detail: summariseProviderMode(config)
+    },
+    {
+      id: "background_jobs",
+      label: "Background jobs",
+      status:
+        !config.deployment.backgroundJobsEnabled
+          ? "warn"
+          : reliability.backgroundJobs.some((job) => job.status === "failed")
+            ? "warn"
+            : "pass",
+      detail:
+        !config.deployment.backgroundJobsEnabled
+          ? "Background jobs disabled by config."
+          : reliability.backgroundJobs.length === 0
+            ? "No background jobs registered."
+            : reliability.backgroundJobs
+                .map((job) => `${job.name}:${job.status}`)
+                .join(", ")
+    },
+    {
+      id: "internal_guards",
+      label: "Internal route guards",
+      status:
+        config.security.internalRouteGuardsEnabled
+          ? "pass"
+          : productionLike
+            ? "fail"
+            : "warn",
+      detail: config.security.internalRouteGuardsEnabled
+        ? "Internal ops routes require an access token."
+        : "Internal ops routes are not guard-protected."
+    },
+    {
+      id: "public_sharing",
+      label: "Public sharing posture",
+      status:
+        productionLike && config.security.publicSharedViewsEnabled
+          ? "warn"
+          : "pass",
+      detail: `sharedSnapshots=${config.security.publicSharedViewsEnabled}, sharedShortlists=${config.security.publicSharedShortlistsEnabled}`
+    },
+    {
+      id: "build_metadata",
+      label: "Build metadata",
+      status:
+        config.deployment.buildMetadata.buildId &&
+        config.deployment.buildMetadata.buildTimestamp
+          ? "pass"
+          : "fail",
+      detail: `${config.deployment.buildMetadata.buildId} @ ${config.deployment.buildMetadata.buildTimestamp}`
+    },
+    {
+      id: "reliability_state",
+      label: "Runtime reliability",
+      status:
+        reliability.state === "healthy"
+          ? "pass"
+          : reliability.state === "startup_blocked"
+            ? "fail"
+            : "warn",
+      detail: reliability.reasons.join(" · ") || reliability.state
+    },
+    {
+      id: "demo_mode",
+      label: "Demo mode profile fit",
+      status:
+        (config.deployment.profile === "local_demo" && config.validation.demoScenariosEnabled) ||
+        (config.deployment.profile !== "local_demo" && !config.validation.demoScenariosEnabled)
+          ? "pass"
+          : "warn",
+      detail: `profile=${config.deployment.profile}, demoScenariosEnabled=${config.validation.demoScenariosEnabled}`
+    },
+    {
+      id: "plan_defaults",
+      label: "Plan defaults and limits",
+      status:
+        config.product.maxSavedSearchesPerSession > 0 &&
+        config.product.maxShortlistsPerSession > 0 &&
+        config.product.maxShareLinksPerSession > 0
+          ? "pass"
+          : "fail",
+      detail: `defaultPlan=${config.product.defaultPlanTier}, saved=${config.product.maxSavedSearchesPerSession}, shortlists=${config.product.maxShortlistsPerSession}, shares=${config.product.maxShareLinksPerSession}`
+    }
+  ];
+
+  if (providers.some((provider) => provider.status !== "healthy")) {
+    checks.push({
+      id: "provider_health",
+      label: "Provider readiness",
+      status: providers.some((provider) => provider.status === "failing" || provider.status === "unavailable") ? "warn" : "pass",
+      detail: providers
+        .map((provider) => `${provider.providerName}:${provider.status}`)
+        .join(", ")
+    });
+  }
+
+  const guardrails = evaluateLaunchGuardrails({ config, reliability });
+  const overallStatus = checks.some((check) => check.status === "fail") || guardrails.some((item) => item.status === "fail")
+    ? "fail"
+    : checks.some((check) => check.status === "warn") || guardrails.some((item) => item.status === "warn")
+      ? "warn"
+      : "pass";
+
+  return {
+    generatedAt: new Date().toISOString(),
+    environment: config.runtimeEnvironment,
+    profile: config.deployment.profile,
+    overallStatus,
+    reliabilityState: reliability.state,
+    checks,
+    guardrails
+  };
+}
+
+function buildSupportContextSummary(payload: {
+  config: ReturnType<typeof getConfig>;
+  reliability: ReliabilityStateSummary;
+  capabilities: EffectiveCapabilities;
+}): SupportContextSummary {
+  const { config, reliability, capabilities } = payload;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    environment: config.runtimeEnvironment,
+    profile: config.deployment.profile,
+    items: [
+      {
+        key: "sharing",
+        title: "Why is sharing enabled or disabled?",
+        status:
+          config.security.publicSharedViewsEnabled || config.security.publicSharedShortlistsEnabled
+            ? "ok"
+            : "attention",
+        summary: `Shared snapshots=${config.security.publicSharedViewsEnabled}, shared shortlists=${config.security.publicSharedShortlistsEnabled}.`,
+        action: "Check public sharing flags and partner capabilities before a pilot demo."
+      },
+      {
+        key: "mutable_routes",
+        title: "Why are mutable routes blocked?",
+        status: reliability.readOnlyMode ? "blocked" : "ok",
+        summary: reliability.readOnlyMode
+          ? "Mutable routes are blocked because the runtime is in read-only degraded mode."
+          : "Mutable routes are currently writable.",
+        action: reliability.readOnlyMode
+          ? "Restore primary persistence or wait for reliability state to return to healthy."
+          : "No action needed."
+      },
+      {
+        key: "degraded_state",
+        title: "Why is the app degraded?",
+        status: reliability.state === "healthy" ? "ok" : "attention",
+        summary:
+          reliability.state === "healthy"
+            ? "The runtime is healthy."
+            : reliability.reasons.join(" · ") || reliability.state,
+        action:
+          reliability.state === "healthy"
+            ? "No action needed."
+            : "Use /ready, /ops/summary, and provider status to confirm whether degradation is acceptable for the current demo or pilot."
+      },
+      {
+        key: "feature_flags",
+        title: "Which feature flags are active?",
+        status: "ok",
+        summary: buildEnabledFeatureList(config).join(", ") || "No optional feature groups enabled.",
+        action: "Use the release summary to verify environment-specific flags before sharing externally."
+      },
+      {
+        key: "provider_modes",
+        title: "Which provider modes are active?",
+        status: [config.providerMode, config.listings.mode, config.safety.mode, config.geocoder.mode].includes("mock")
+          ? "attention"
+          : "ok",
+        summary: summariseProviderMode(config),
+        action: "Switch provider modes explicitly if this environment should avoid mock data."
+      },
+      {
+        key: "limits",
+        title: "Why did a limit trigger?",
+        status: "ok",
+        summary: `plan=${capabilities.planTier}, saved=${capabilities.limits.savedSearches ?? "unlimited"}, shortlists=${capabilities.limits.shortlists ?? "unlimited"}, shares=${capabilities.limits.shareLinks ?? "unlimited"}, exports=${capabilities.limits.exportsPerSession ?? "unlimited"}`,
+        action: "Use plan defaults or partner overrides to raise limits when a pilot requires it."
+      }
+    ]
+  };
+}
+
+function buildReleaseSummary(payload: {
+  config: ReturnType<typeof getConfig>;
+  reliability: ReliabilityStateSummary;
+  persistenceMode: PersistenceLayer["mode"];
+}): ReleaseSummary {
+  const { config, reliability, persistenceMode } = payload;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    environment: config.runtimeEnvironment,
+    profile: config.deployment.profile,
+    build: reliability.build,
+    formulaVersions: reliability.build.formulaVersions,
+    persistenceMode,
+    schemaVersion: process.env.SCHEMA_VERSION?.trim() || null,
+    enabledFeatures: buildEnabledFeatureList(config),
+    degradedConstraints: reliability.reasons
+  };
+}
+
 export async function buildApp(dependencies?: Partial<AppDependencies>) {
   const config = getConfig();
   const logger = dependencies?.logger ?? createLogger({ level: config.logLevel });
   const persistence: PersistenceLayer =
-    dependencies?.repository &&
+    dependencies?.persistence ??
+    (dependencies?.repository &&
     dependencies?.marketSnapshotRepository &&
     dependencies?.safetySignalCacheRepository &&
     dependencies?.listingCacheRepository &&
@@ -622,7 +1332,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
           },
           async close() {}
         }
-      : await createPersistenceLayer(config.databaseUrl);
+      : await createPersistenceLayer(config.databaseUrl));
 
   if (
     config.databaseUrl &&
@@ -637,6 +1347,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     ]);
   }
   const metrics = dependencies?.metrics ?? new MetricsCollector();
+  const reliability = new ReliabilityManager(config, metrics);
   const providers = instrumentProviders(
     dependencies?.providers ??
       createProviders({
@@ -647,7 +1358,75 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       }),
     metrics
   );
-  const app = Fastify({ logger: false, disableRequestLogging: true });
+  const app = Fastify({
+    logger: false,
+    disableRequestLogging: true,
+    bodyLimit: config.security.maxRequestBodyBytes
+  });
+  const startupReadiness = await persistence.checkReadiness();
+  const startupProviderStatuses = await providers.getStatuses();
+  const startupDependencies: DependencyReadinessRecord[] = classifyStartupDependencies({
+    config,
+    persistenceMode: persistence.mode,
+    readiness: startupReadiness,
+    providers: startupProviderStatuses
+  });
+  const startupReliability = reliability.initializeDependencies(startupDependencies);
+  const startupGuardrails = evaluateLaunchGuardrails({
+    config,
+    reliability: startupReliability
+  });
+  for (const guardrail of startupGuardrails) {
+    if (guardrail.status === "fail") {
+      metrics.recordLaunchGuardrail("block");
+      logger.error({
+        message: "Launch guardrail blocked startup",
+        endpoint: "startup",
+        statusCode: 503,
+        details: guardrail
+      });
+    } else if (guardrail.status === "warn") {
+      metrics.recordLaunchGuardrail("warn");
+      logger.warn({
+        message: "Launch guardrail warning",
+        endpoint: "startup",
+        statusCode: 200,
+        details: guardrail
+      });
+    }
+  }
+  if (config.deployment.productionStrictStartup && startupReliability.state === "startup_blocked") {
+    metrics.recordStartupOutcome("failure");
+    throw new ConfigError("Required startup dependencies are unavailable for this environment.", [
+      {
+        field: "STARTUP_DEPENDENCIES",
+        message: startupReliability.reasons.join(" ")
+      }
+    ]);
+  }
+  if (
+    config.deployment.productionStrictStartup &&
+    startupGuardrails.some((guardrail) => guardrail.status === "fail")
+  ) {
+    metrics.recordStartupOutcome("failure");
+    throw new ConfigError("Launch guardrails blocked startup for this environment.", startupGuardrails
+      .filter((guardrail) => guardrail.status === "fail")
+      .map((guardrail) => ({
+        field: guardrail.id,
+        message: guardrail.message
+      })));
+  }
+  reliability.recordStartup();
+  logger.info({
+    message: "Startup dependency classification completed",
+    endpoint: "startup",
+    statusCode: startupReliability.state === "healthy" ? 200 : 503,
+    details: {
+      state: startupReliability.state,
+      dependencies: startupDependencies,
+      build: startupReliability.build
+    }
+  });
   const demoScenarios: DemoScenario[] = DEMO_SEARCH_SCENARIOS;
   const takeSearchRateLimit = createRateLimiter(
     config.rateLimit.searchMax,
@@ -657,32 +1436,73 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     config.rateLimit.snapshotMax,
     config.rateLimit.snapshotWindowMs
   );
+  const takeSharedOpenRateLimit = createRateLimiter(
+    config.security.sharedOpenMax,
+    config.security.sharedOpenWindowMs
+  );
+  const takeCollaborationWriteRateLimit = createRateLimiter(
+    config.security.collaborationWriteMax,
+    config.security.collaborationWriteWindowMs
+  );
+  const takeFeedbackRateLimit = createRateLimiter(
+    config.security.feedbackMax,
+    config.security.feedbackWindowMs
+  );
+  const takePilotLinkOpenRateLimit = createRateLimiter(
+    config.security.pilotLinkOpenMax,
+    config.security.pilotLinkOpenWindowMs
+  );
+  reliability.updateBackgroundJobDefinition("retention_cleanup", config.deployment.backgroundJobsEnabled);
+  let cleanupRunning = false;
   const cleanupTimer =
-    config.retention.cleanupIntervalMs > 0
+    config.deployment.backgroundJobsEnabled && config.retention.cleanupIntervalMs > 0
       ? setInterval(() => {
+          if (config.deployment.backgroundJobLockingEnabled && cleanupRunning) {
+            return;
+          }
+          cleanupRunning = true;
+          const startedAt = Date.now();
+          reliability.startBackgroundJob("retention_cleanup");
+          logger.info({
+            message: "Background job started",
+            endpoint: "background",
+            statusCode: 200,
+            details: {
+              job: "retention_cleanup"
+            }
+          });
           persistence
             .cleanupExpiredData({
               snapshotRetentionDays: config.retention.snapshotRetentionDays,
               searchHistoryRetentionDays: config.retention.searchHistoryRetentionDays
             })
             .then((summary) => {
+              reliability.completeBackgroundJob("retention_cleanup", Date.now() - startedAt);
               if (
                 summary.snapshotsRemoved > 0 ||
                 summary.historyRemoved > 0 ||
                 summary.cachesRemoved > 0
               ) {
                 logger.info({
-                  message: "Retention cleanup completed",
-                  details: summary
-                });
+                    message: "Retention cleanup completed",
+                    details: summary
+                  });
               }
             })
             .catch((error) => {
+              reliability.failBackgroundJob(
+                "retention_cleanup",
+                error instanceof Error ? error.message : "Unknown cleanup failure",
+                Date.now() - startedAt
+              );
               logger.warn({
                 message: "Retention cleanup failed",
                 errorCode: "DATABASE_ERROR",
                 details: error instanceof Error ? error.message : "Unknown cleanup failure"
               });
+            })
+            .finally(() => {
+              cleanupRunning = false;
             });
         }, config.retention.cleanupIntervalMs)
       : null;
@@ -695,11 +1515,26 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   app.addHook("onRequest", async (request, reply) => {
     (request as RequestWithId & Record<PropertyKey, unknown>)[REQUEST_STARTED_AT] = Date.now();
     reply.header("x-request-id", request.id);
+    const routePattern = getRoutePattern(request as RequestWithId);
     logger.debug({
       message: "Request started",
       requestId: request.id,
-      endpoint: (request.routeOptions?.url as string | undefined) ?? request.url
+      endpoint: routePattern
     });
+
+    if (config.security.internalRouteGuardsEnabled && requiresInternalRouteAccess(routePattern)) {
+      const internalToken = extractInternalAccessToken(request);
+      if (!internalToken || internalToken !== config.security.internalRouteAccessToken) {
+        metrics.recordInternalRouteDenied();
+        logger.warn({
+          message: "Internal route access denied",
+          requestId: request.id,
+          endpoint: routePattern,
+          statusCode: 403
+        });
+        return reply.status(403).send(buildErrorPayload("INTERNAL_ROUTE_FORBIDDEN", "This route is not available."));
+      }
+    }
   });
 
   app.addHook("onResponse", async (request, reply) => {
@@ -754,6 +1589,16 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
           : "Unknown error"
     });
 
+    if (classified.category === "VALIDATION_ERROR") {
+      metrics.recordValidationReject(classified.payload.error.code);
+      if (
+        classified.payload.error.code === "MALFORMED_JSON" ||
+        classified.payload.error.code === "PAYLOAD_TOO_LARGE"
+      ) {
+        metrics.recordMalformedPayload();
+      }
+    }
+
     return reply.status(classified.statusCode).send(classified.payload);
   });
 
@@ -761,8 +1606,19 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     status: "ok",
     timestamp: new Date().toISOString(),
     uptimeSeconds: Number(process.uptime().toFixed(2)),
-    memoryUsage: process.memoryUsage()
+    memoryUsage: process.memoryUsage(),
+    environment: config.runtimeEnvironment,
+    build: reliability.getBuildMetadata()
   }));
+
+  app.get("/version", async () => {
+    if (!config.deployment.versionEndpointEnabled) {
+      throw featureDisabled("Version endpoint");
+    }
+
+    metrics.recordVersionEndpointRead();
+    return reliability.getBuildMetadata();
+  });
 
   app.get("/ready", async (request, reply) => {
     const [dependencyReadiness, statuses] = await Promise.all([
@@ -770,20 +1626,114 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       providers.getStatuses()
     ]);
 
-    const providersReady = statuses.every(
-      (status) => status.status !== "failing" && status.status !== "unavailable"
-    );
-    const ready = dependencyReadiness.database && dependencyReadiness.cache && providersReady;
+    const dependencySummary = classifyStartupDependencies({
+      config,
+      persistenceMode: persistence.mode,
+      readiness: dependencyReadiness,
+      providers: statuses
+    });
+    const runtimeReliability = reliability.initializeDependencies(dependencySummary);
+    const providersReady = statuses.every((status) => status.status === "healthy");
+    const ready = runtimeReliability.state === "healthy" && dependencyReadiness.database && dependencyReadiness.cache && providersReady;
 
     return reply.status(ready ? 200 : 503).send({
       status: ready ? "ready" : "not_ready",
       requestId: request.id,
+      reliability: runtimeReliability,
       checks: {
         database: dependencyReadiness.database,
         cache: dependencyReadiness.cache,
         providers: providersReady
       }
     });
+  });
+
+  app.get("/ops/go-live-check", async (request) => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Go-live readiness");
+    }
+
+    const query = request.query as Record<string, unknown> | undefined;
+    const [dependencyReadiness, statuses] = await Promise.all([
+      persistence.checkReadiness(),
+      providers.getStatuses()
+    ]);
+    const dependencySummary = classifyStartupDependencies({
+      config,
+      persistenceMode: persistence.mode,
+      readiness: dependencyReadiness,
+      providers: statuses
+    });
+    const runtimeReliability = reliability.initializeDependencies(dependencySummary);
+    const summary = buildGoLiveCheckSummary({
+      config,
+      persistenceMode: persistence.mode,
+      readiness: dependencyReadiness,
+      reliability: runtimeReliability,
+      providers: statuses
+    });
+
+    metrics.recordGoLiveCheckRead();
+    if (summary.overallStatus === "fail") {
+      metrics.recordReadinessOutcome("fail");
+    } else if (summary.overallStatus === "warn") {
+      metrics.recordReadinessOutcome("warn");
+    }
+    if (query?.source === "script") {
+      metrics.recordOpsCheckScriptRun();
+    }
+
+    return { summary };
+  });
+
+  app.get("/ops/support", async () => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Support context");
+    }
+
+    const support = buildSupportContextSummary({
+      config,
+      reliability: reliability.snapshot(),
+      capabilities: getDefaultCapabilities(config, config.product.defaultPlanTier)
+    });
+    const release = buildReleaseSummary({
+      config,
+      reliability: reliability.snapshot(),
+      persistenceMode: persistence.mode
+    });
+
+    metrics.recordSupportContextRead();
+    return { support, release };
+  });
+
+  app.get("/ops/support/context", async () => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Support context");
+    }
+
+    const support = buildSupportContextSummary({
+      config,
+      reliability: reliability.snapshot(),
+      capabilities: getDefaultCapabilities(config, config.product.defaultPlanTier)
+    });
+
+    metrics.recordSupportContextRead();
+    return { support };
+  });
+
+  app.get("/ops/release-summary", async () => {
+    if (!config.ops.pilotOpsEnabled) {
+      throw featureDisabled("Release summary");
+    }
+
+    const summary = buildReleaseSummary({
+      config,
+      reliability: reliability.snapshot(),
+      persistenceMode: persistence.mode
+    });
+
+    metrics.recordReleaseSummaryRead();
+    return { summary };
   });
 
   app.get("/providers/status", async () => {
@@ -841,6 +1791,10 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabledForPilot("Demo scenarios");
     }
 
+    if (config.deployment.profile === "local_demo") {
+      metrics.recordDemoProfileLoad();
+    }
+
     return {
       scenarios: demoScenarios
     };
@@ -856,16 +1810,48 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     return summary;
   });
 
+  app.get("/ops/usage-funnel", async () => {
+    if (!config.ops.pilotOpsEnabled || !config.product.usageFunnelSummaryEnabled) {
+      throw featureDisabled("Usage funnel summary");
+    }
+
+    const funnel = await persistence.searchRepository.getUsageFunnelSummary();
+    metrics.recordUsageFunnelRead();
+    return { funnel };
+  });
+
+  app.get("/ops/usage-friction", async () => {
+    if (!config.ops.pilotOpsEnabled || !config.product.usageFrictionSummaryEnabled) {
+      throw featureDisabled("Usage friction summary");
+    }
+
+    const friction = await persistence.searchRepository.getUsageFrictionSummary();
+    metrics.recordUsageFrictionRead();
+    return { friction };
+  });
+
+  app.get("/ops/plans/summary", async () => {
+    if (!config.ops.pilotOpsEnabled || !config.product.enabled) {
+      throw featureDisabled("Plan summary");
+    }
+
+    const summary = await persistence.searchRepository.getPlanSummary();
+    metrics.recordPlanSummaryRead();
+    return { summary };
+  });
+
   app.post("/ops/pilots", async (request, reply) => {
     if (!config.ops.pilotOpsEnabled) {
       throw featureDisabled("Pilot operations");
     }
 
+    ensureWriteCapable(reliability);
     const payload = pilotPartnerCreateSchema.parse(request.body);
     const featureOverrides = normalizePilotFeatureOverrides(payload.featureOverrides);
     const partner = await persistence.searchRepository.createPilotPartner({
       name: payload.name,
       slug: payload.slug,
+      planTier: payload.planTier,
       status: payload.status,
       contactLabel: payload.contactLabel ?? null,
       notes: payload.notes ?? null,
@@ -939,6 +1925,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
 
     return {
       partner,
+      effectiveCapabilities: resolveEffectiveCapabilities({
+        config,
+        planTier: partner.planTier,
+        overrides: partner.featureOverrides
+      }),
       links,
       actions,
       usage: usage[0] ?? null
@@ -950,6 +1941,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Pilot operations");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { partnerId?: string };
     const partnerId = params.partnerId?.trim();
     const payload = pilotPartnerUpdateSchema.parse(request.body);
@@ -967,6 +1959,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       : undefined;
     const updated = await persistence.searchRepository.updatePilotPartner(partnerId, {
       name: payload.name,
+      planTier: payload.planTier,
       status: payload.status,
       contactLabel: payload.contactLabel,
       notes: payload.notes,
@@ -1030,6 +2023,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Pilot links");
     }
 
+    ensureWriteCapable(reliability);
     const payload = pilotLinkCreateSchema.parse(request.body);
     const partner = await persistence.searchRepository.getPilotPartner(payload.partnerId);
 
@@ -1104,32 +2098,56 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       );
     }
 
+    if (token.length < config.security.shareLinkMinTokenLength) {
+      metrics.recordInvalidTokenAccess();
+      return reply.status(404).send(unavailableLinkPayload());
+    }
+
+    const rateLimit = takePilotLinkOpenRateLimit(request.ip);
+    if (!rateLimit.allowed) {
+      metrics.recordRateLimitTrigger("/pilot/links/:token");
+      throw new ApiError(429, "RATE_LIMITED", "Pilot link rate limit exceeded.", [
+        {
+          field: "retryAfterMs",
+          message: String(rateLimit.retryAfterMs)
+        }
+      ]);
+    }
+
     const view = await persistence.searchRepository.getPilotLink(token);
     if (!view) {
-      return reply.status(404).send(
-        buildErrorPayload("PILOT_LINK_NOT_FOUND", "No pilot link was found for this token.")
-      );
+      metrics.recordInvalidTokenAccess();
+      return reply.status(404).send(unavailableLinkPayload());
     }
 
     if (view.link.status === "expired") {
-      return reply.status(410).send(
-        buildErrorPayload("PILOT_LINK_EXPIRED", "This pilot link has expired.")
-      );
+      metrics.recordExpiredLinkOpenAttempt();
+      return reply.status(410).send(unavailableLinkPayload());
     }
 
     if (view.link.status === "revoked") {
-      return reply.status(410).send(
-        buildErrorPayload("PILOT_LINK_REVOKED", "This pilot link has been revoked.")
-      );
+      metrics.recordRevokedLinkOpenAttempt();
+      return reply.status(410).send(unavailableLinkPayload());
     }
 
     metrics.recordPilotLinkOpen();
+    metrics.recordPlanCapabilityResolution();
     await persistence.searchRepository.recordValidationEvent({
       eventName: "pilot_link_opened",
       payload: {
         partnerId: view.partner.id,
         partnerSlug: view.partner.slug,
         pilotLinkId: view.link.id
+      }
+    });
+    await persistence.searchRepository.recordValidationEvent({
+      eventName: "plan_capability_resolved",
+      payload: {
+        partnerId: view.partner.id,
+        partnerSlug: view.partner.slug,
+        pilotLinkId: view.link.id,
+        planTier: view.context.planTier,
+        capabilities: view.context.capabilities
       }
     });
 
@@ -1141,6 +2159,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Pilot links");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { token?: string };
     const token = params.token?.trim();
 
@@ -1216,6 +2235,27 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     return { activity };
   });
 
+  app.get("/ops/partners/:partnerId/usage", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled || !config.product.enabled) {
+      throw featureDisabled("Partner usage summary");
+    }
+
+    const params = request.params as { partnerId?: string };
+    const partnerId = params.partnerId?.trim();
+
+    if (!partnerId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid partner id", [
+          { field: "partnerId", message: "partnerId is required" }
+        ])
+      );
+    }
+
+    const usage = await persistence.searchRepository.getPartnerUsageSummary(partnerId);
+    metrics.recordPartnerUsageSummaryRead();
+    return { usage: usage[0] ?? null };
+  });
+
   app.get("/ops/actions", async (request) => {
     if (!config.ops.pilotOpsEnabled) {
       throw featureDisabled("Pilot operations");
@@ -1236,17 +2276,54 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Pilot operations");
     }
 
-    const [summary, statuses, dataQualitySummary] = await Promise.all([
+    const [summary, statuses, dataQualitySummary, usageFunnel, usageFriction, planSummary] = await Promise.all([
       persistence.searchRepository.getOpsSummary(),
       providers.getStatuses(),
-      persistence.searchRepository.getDataQualitySummary()
+      persistence.searchRepository.getDataQualitySummary(),
+      config.product.usageFunnelSummaryEnabled
+        ? persistence.searchRepository.getUsageFunnelSummary()
+        : Promise.resolve(null),
+      config.product.usageFrictionSummaryEnabled
+        ? persistence.searchRepository.getUsageFrictionSummary()
+        : Promise.resolve(null),
+      config.product.enabled
+        ? persistence.searchRepository.getPlanSummary()
+        : Promise.resolve(null)
     ]);
     const metricSnapshot = metrics.snapshot();
     metrics.recordOpsSummaryRead();
+    const reliabilitySummary = config.deployment.enableReliabilitySummary ? reliability.snapshot() : null;
+    const goLiveCheck = buildGoLiveCheckSummary({
+      config,
+      persistenceMode: persistence.mode,
+      readiness: await persistence.checkReadiness(),
+      reliability: reliability.snapshot(),
+      providers: statuses
+    });
+    const support = buildSupportContextSummary({
+      config,
+      reliability: reliability.snapshot(),
+      capabilities: getDefaultCapabilities(config, config.product.defaultPlanTier)
+    });
+    const releaseSummary = buildReleaseSummary({
+      config,
+      reliability: reliability.snapshot(),
+      persistenceMode: persistence.mode
+    });
 
     return {
       summary: {
         ...summary,
+        security: {
+          revokedLinkOpenAttemptCount: metricSnapshot.revokedLinkOpenAttemptCount,
+          expiredLinkOpenAttemptCount: metricSnapshot.expiredLinkOpenAttemptCount,
+          invalidTokenAccessCount: metricSnapshot.invalidTokenAccessCount,
+          internalRouteDeniedCount: metricSnapshot.internalRouteDeniedCount,
+          rateLimitTriggerCountByEndpoint: metricSnapshot.rateLimitTriggerCountByEndpoint,
+          validationRejectCountByCategory: metricSnapshot.validationRejectCountByCategory,
+          malformedPayloadCount: metricSnapshot.malformedPayloadCount,
+          shareRevocationEnforcementCount: metricSnapshot.shareRevocationEnforcementCount
+        },
         topErrorCategories: Object.entries(metricSnapshot.errorRateByCategory)
           .map(([category, value]) => ({
             category,
@@ -1265,10 +2342,87 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
             heavyEndpointReadCounts: metricSnapshot.heavyEndpointReadCounts
           }
         : null,
+      reliability: reliabilitySummary,
       dataQualitySummary,
+      goLiveCheck,
+      support,
+      releaseSummary,
+      usage: {
+        funnel: usageFunnel,
+        friction: usageFriction,
+        planSummary
+      },
       errors: metricSnapshot.errorRateByCategory,
+      security: {
+        revokedLinkOpenAttemptCount: metricSnapshot.revokedLinkOpenAttemptCount,
+        expiredLinkOpenAttemptCount: metricSnapshot.expiredLinkOpenAttemptCount,
+        invalidTokenAccessCount: metricSnapshot.invalidTokenAccessCount,
+        internalRouteDeniedCount: metricSnapshot.internalRouteDeniedCount,
+        rateLimitTriggerCountByEndpoint: metricSnapshot.rateLimitTriggerCountByEndpoint,
+        validationRejectCountByCategory: metricSnapshot.validationRejectCountByCategory,
+        malformedPayloadCount: metricSnapshot.malformedPayloadCount,
+        shareRevocationEnforcementCount: metricSnapshot.shareRevocationEnforcementCount
+      },
       providers: statuses
     };
+  });
+
+  app.get("/ops/reliability/incidents", async (request) => {
+    if (!config.ops.pilotOpsEnabled || !config.deployment.reliabilityIncidentsEnabled) {
+      throw featureDisabled("Reliability incidents");
+    }
+
+    const query = request.query as Record<string, unknown> | undefined;
+    return {
+      incidents: reliability.listIncidents({
+        status:
+          typeof query?.status === "string"
+            ? (query.status as ReliabilityIncidentStatus)
+            : undefined,
+        category: typeof query?.category === "string" ? query.category.trim() : undefined,
+        provider: typeof query?.provider === "string" ? query.provider.trim() : undefined,
+        limit: parseLimit(query, config.performance.opsDefaultPageSize, config.performance.opsMaxPageSize)
+      })
+    };
+  });
+
+  app.patch("/ops/reliability/incidents/:id", async (request, reply) => {
+    if (!config.ops.pilotOpsEnabled || !config.deployment.reliabilityIncidentsEnabled) {
+      throw featureDisabled("Reliability incidents");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const incidentId = params.id?.trim();
+    const payload = reliabilityIncidentStatusUpdateSchema.parse(request.body ?? {});
+    if (!incidentId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid reliability incident id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const incident = reliability.updateIncidentStatus(incidentId, payload.status);
+    if (!incident) {
+      return reply.status(404).send(
+        buildErrorPayload("RELIABILITY_INCIDENT_NOT_FOUND", "No reliability incident was found for this id.")
+      );
+    }
+
+    await persistence.searchRepository.recordOpsAction({
+      actionType: `reliability_incident_${payload.status}`,
+      targetType: "reliability_incident",
+      targetId: incidentId,
+      partnerId: incident.partnerId ?? null,
+      result: "success",
+      details: {
+        status: payload.status,
+        category: incident.category
+      }
+    });
+
+    return incident;
   });
 
   app.get("/ops/errors", async () => {
@@ -1279,7 +2433,16 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     const snapshot = metrics.snapshot();
     metrics.recordOpsErrorView();
     return {
-      errors: snapshot.errorRateByCategory
+      errors: snapshot.errorRateByCategory,
+      security: {
+        revokedLinkOpenAttemptCount: snapshot.revokedLinkOpenAttemptCount,
+        expiredLinkOpenAttemptCount: snapshot.expiredLinkOpenAttemptCount,
+        invalidTokenAccessCount: snapshot.invalidTokenAccessCount,
+        internalRouteDeniedCount: snapshot.internalRouteDeniedCount,
+        rateLimitTriggerCountByEndpoint: snapshot.rateLimitTriggerCountByEndpoint,
+        validationRejectCountByCategory: snapshot.validationRejectCountByCategory,
+        malformedPayloadCount: snapshot.malformedPayloadCount
+      }
     };
   });
 
@@ -1513,6 +2676,28 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       ...payload,
       sessionId: extractSessionId(request, payload.sessionId ?? null)
     });
+    if (payload.eventName === "export_generated") {
+      metrics.recordExportGenerate();
+      metrics.recordFeatureUsage("canExportResults");
+    }
+    if (payload.eventName === "plan_capability_resolved") {
+      metrics.recordPlanCapabilityResolution();
+    }
+    if (payload.eventName === "capability_limit_hit") {
+      metrics.recordCapabilityLimitHit(
+        typeof payload.payload?.capability === "string" ? payload.payload.capability : "unknown"
+      );
+    }
+    if (payload.eventName === "share_feature_used") {
+      metrics.recordFeatureUsage(
+        typeof payload.payload?.feature === "string" ? payload.payload.feature : "share_feature"
+      );
+    }
+    if (payload.eventName === "shortlist_feature_used") {
+      metrics.recordFeatureUsage(
+        typeof payload.payload?.feature === "string" ? payload.payload.feature : "shortlist_feature"
+      );
+    }
 
     return reply.status(202).send(event);
   });
@@ -1522,12 +2707,25 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Feedback capture");
     }
 
+    ensureWriteCapable(reliability);
     const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
     if (!getEffectivePilotFeatures(config, pilotContext).feedbackEnabled) {
       throw featureDisabledForPilot("Feedback capture");
     }
 
+    const feedbackRateLimit = takeFeedbackRateLimit(extractSessionId(request) ?? request.ip);
+    if (!feedbackRateLimit.allowed) {
+      metrics.recordRateLimitTrigger("/feedback");
+      throw new ApiError(429, "RATE_LIMITED", "Feedback rate limit exceeded.", [
+        {
+          field: "retryAfterMs",
+          message: String(feedbackRateLimit.retryAfterMs)
+        }
+      ]);
+    }
+
     const payload = feedbackSchema.parse(request.body);
+    enforceMaxLength("comment", payload.comment, config.security.maxFeedbackLength);
     const sessionId = extractSessionId(request, payload.sessionId ?? null);
     const record = await persistence.searchRepository.createFeedback({
       ...payload,
@@ -1564,6 +2762,20 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     const payload = searchRequestSchema.parse(request.body);
     const sessionId = extractSessionId(request);
     const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    if (config.validation.enabled) {
+      await recordValidationEventWithPilot(
+        persistence.searchRepository,
+        {
+          eventName: "search_started",
+          sessionId,
+          payload: {
+            locationType: payload.locationType,
+            radiusMiles: payload.radiusMiles
+          }
+        },
+        pilotContext
+      );
+    }
     try {
       const response = await runSearch(
         payload,
@@ -1582,6 +2794,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
           partnerId: pilotContext?.partner.id ?? null
         }
       );
+      reliability.noteProviderUsage(response.metadata.performance?.providerUsage);
       if (config.validation.enabled) {
         await recordValidationEventWithPilot(persistence.searchRepository, {
           eventName: "search_completed",
@@ -1636,14 +2849,30 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       ]);
     }
 
+    ensureWriteCapable(reliability);
     const payload = searchSnapshotPayloadSchema.parse(request.body);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    const sessionId = extractSessionId(request, payload.sessionId ?? null);
     const startedAt = Date.now();
     const snapshot = await persistence.searchRepository.createSearchSnapshot({
       ...payload,
-      sessionId: extractSessionId(request, payload.sessionId ?? null)
+      sessionId
     });
     metrics.recordSnapshotCreated();
     metrics.recordSnapshotWriteLatency(Date.now() - startedAt);
+    if (config.validation.enabled) {
+      await recordValidationEventWithPilot(
+        persistence.searchRepository,
+        {
+          eventName: "snapshot_created",
+          sessionId,
+          snapshotId: snapshot.id,
+          historyRecordId: snapshot.historyRecordId ?? null,
+          searchDefinitionId: snapshot.searchDefinitionId ?? null
+        },
+        pilotContext
+      );
+    }
 
     return reply.status(201).send(snapshot);
   });
@@ -1704,12 +2933,18 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   });
 
   app.post("/search/snapshots/:id/share", async (request, reply) => {
-    if (!config.validation.enabled || !config.validation.sharedSnapshotsEnabled) {
+    if (
+      !config.validation.enabled ||
+      !config.validation.sharedSnapshotsEnabled ||
+      !config.security.publicSharedViewsEnabled
+    ) {
       throw featureDisabled("Shared snapshots");
     }
 
+    ensureWriteCapable(reliability);
     const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
-    if (!getEffectivePilotFeatures(config, pilotContext).sharedSnapshotsEnabled) {
+    const capabilities = getEffectiveCapabilities(config, pilotContext);
+    if (!capabilities.canShareSnapshots) {
       throw featureDisabledForPilot("Shared snapshots");
     }
 
@@ -1739,6 +2974,16 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     const sessionId = extractSessionId(request, payload.sessionId ?? snapshot.sessionId ?? null);
+    await enforceSessionCapabilityLimit({
+      repository: persistence.searchRepository,
+      metrics,
+      config,
+      pilotContext,
+      sessionId,
+      capabilityKey: "shareLinks",
+      featureLabel: "shareLinks",
+      currentCount: () => countSessionShareLinks(persistence.searchRepository, sessionId)
+    });
     const expiresInDays =
       payload.expiresInDays ?? config.validation.shareSnapshotExpirationDays;
     const share = await persistence.searchRepository.createSharedSnapshot({
@@ -1754,7 +2999,21 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
         shareId: share.shareId
       }
     }, pilotContext);
+    await recordValidationEventWithPilot(
+      persistence.searchRepository,
+      {
+        eventName: "share_feature_used",
+        sessionId,
+        snapshotId,
+        payload: {
+          feature: "shared_snapshot",
+          shareId: share.shareId
+        }
+      },
+      pilotContext
+    );
     metrics.recordSharedSnapshotCreate();
+    metrics.recordFeatureUsage("canShareSnapshots");
 
     return reply.status(201).send({
       share,
@@ -1764,7 +3023,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   });
 
   app.get("/shared/snapshots/:shareId", async (request, reply) => {
-    if (!config.validation.enabled || !config.validation.sharedSnapshotsEnabled) {
+    if (
+      !config.validation.enabled ||
+      !config.validation.sharedSnapshotsEnabled ||
+      !config.security.publicSharedViewsEnabled
+    ) {
       throw featureDisabled("Shared snapshots");
     }
 
@@ -1787,33 +3050,38 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       );
     }
 
+    if (shareId.length < config.security.shareLinkMinTokenLength) {
+      metrics.recordInvalidTokenAccess();
+      return reply.status(404).send(unavailableLinkPayload());
+    }
+
+    const sharedRateLimit = takeSharedOpenRateLimit(request.ip);
+    if (!sharedRateLimit.allowed) {
+      metrics.recordRateLimitTrigger("/shared/snapshots/:shareId");
+      throw new ApiError(429, "RATE_LIMITED", "Shared snapshot rate limit exceeded.", [
+        {
+          field: "retryAfterMs",
+          message: String(sharedRateLimit.retryAfterMs)
+        }
+      ]);
+    }
+
     const sharedView = await persistence.searchRepository.getSharedSnapshot(shareId);
     if (!sharedView) {
-      return reply.status(404).send(
-        buildErrorPayload(
-          "SHARED_SNAPSHOT_NOT_FOUND",
-          "No shared snapshot was found for this share id."
-        )
-      );
+      metrics.recordInvalidTokenAccess();
+      return reply.status(404).send(unavailableLinkPayload());
     }
 
     if (sharedView.share.status === "expired") {
       metrics.recordSharedSnapshotExpired();
-      return reply.status(410).send(
-        buildErrorPayload(
-          "SHARED_SNAPSHOT_EXPIRED",
-          "This shared snapshot link has expired and can no longer be opened."
-        )
-      );
+      metrics.recordExpiredLinkOpenAttempt();
+      return reply.status(410).send(unavailableLinkPayload());
     }
 
     if (sharedView.share.status === "revoked") {
-      return reply.status(410).send(
-        buildErrorPayload(
-          "SHARED_SNAPSHOT_REVOKED",
-          "This shared snapshot link has been revoked and can no longer be opened."
-        )
-      );
+      metrics.recordRevokedLinkOpenAttempt();
+      metrics.recordShareRevocationEnforcement();
+      return reply.status(410).send(unavailableLinkPayload());
     }
 
     await recordValidationEventWithPilot(persistence.searchRepository, {
@@ -1826,18 +3094,27 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }, pilotContext);
     metrics.recordSharedSnapshotOpen();
 
-    return {
-      readOnly: true,
-      shared: true,
-      ...sharedView
-    };
+    return toPublicSharedSnapshotView(sharedView);
   });
 
   app.post("/search/definitions", async (request, reply) => {
+    ensureWriteCapable(reliability);
     const payload = searchDefinitionCreateSchema.parse(request.body);
+    const sessionId = extractSessionId(request, payload.sessionId ?? null);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    await enforceSessionCapabilityLimit({
+      repository: persistence.searchRepository,
+      metrics,
+      config,
+      pilotContext,
+      sessionId,
+      capabilityKey: "savedSearches",
+      featureLabel: "savedSearches",
+      currentCount: async () => (await persistence.searchRepository.listSearchDefinitions(sessionId)).length
+    });
     const definition = await persistence.searchRepository.createSearchDefinition({
       ...payload,
-      sessionId: extractSessionId(request, payload.sessionId ?? null)
+      sessionId
     });
     metrics.recordSearchDefinitionCreate();
     if (definition.pinned) {
@@ -1885,6 +3162,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   });
 
   app.patch("/search/definitions/:id", async (request, reply) => {
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const definitionId = params.id?.trim();
     const patch = searchDefinitionUpdateSchema.parse(request.body);
@@ -1920,6 +3198,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   });
 
   app.delete("/search/definitions/:id", async (request, reply) => {
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const definitionId = params.id?.trim();
 
@@ -1998,15 +3277,42 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shortlists");
     }
 
+    ensureWriteCapable(reliability);
     const payload = shortlistCreateSchema.parse(request.body);
+    const sessionId = extractSessionId(request, payload.sessionId ?? null);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    await enforceSessionCapabilityLimit({
+      repository: persistence.searchRepository,
+      metrics,
+      config,
+      pilotContext,
+      sessionId,
+      capabilityKey: "shortlists",
+      featureLabel: "shortlists",
+      currentCount: async () => (await persistence.searchRepository.listShortlists(sessionId)).length
+    });
     const shortlist = await persistence.searchRepository.createShortlist({
       ...payload,
-      sessionId: extractSessionId(request, payload.sessionId ?? null)
+      sessionId
     });
     metrics.recordShortlistCreate();
     if (shortlist.pinned) {
       metrics.recordSavedSearchPin();
     }
+    await recordValidationEventWithPilot(
+      persistence.searchRepository,
+      {
+        eventName: "shortlist_feature_used",
+        sessionId,
+        snapshotId: shortlist.sourceSnapshotId ?? null,
+        payload: {
+          feature: "shortlist_created",
+          shortlistId: shortlist.id
+        }
+      },
+      pilotContext
+    );
+    metrics.recordFeatureUsage("shortlists");
 
     return reply.status(201).send(shortlist);
   });
@@ -2057,6 +3363,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shortlists");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const shortlistId = params.id?.trim();
     const patch = shortlistUpdateSchema.parse(request.body);
@@ -2084,6 +3391,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shortlists");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const shortlistId = params.id?.trim();
 
@@ -2107,12 +3415,18 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   });
 
   app.post("/shortlists/:id/share", async (request, reply) => {
-    if (!config.workflow.shortlistsEnabled || !config.workflow.sharedShortlistsEnabled) {
+    if (
+      !config.workflow.shortlistsEnabled ||
+      !config.workflow.sharedShortlistsEnabled ||
+      !config.security.publicSharedShortlistsEnabled
+    ) {
       throw featureDisabled("Shared shortlists");
     }
 
+    ensureWriteCapable(reliability);
     const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
-    if (!getEffectivePilotFeatures(config, pilotContext).sharedShortlistsEnabled) {
+    const capabilities = getEffectiveCapabilities(config, pilotContext);
+    if (!capabilities.canShareShortlists) {
       throw featureDisabledForPilot("Shared shortlists");
     }
 
@@ -2136,6 +3450,16 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     const sessionId = extractSessionId(request, payload.sessionId ?? shortlist.sessionId ?? null);
+    await enforceSessionCapabilityLimit({
+      repository: persistence.searchRepository,
+      metrics,
+      config,
+      pilotContext,
+      sessionId,
+      capabilityKey: "shareLinks",
+      featureLabel: "shareLinks",
+      currentCount: () => countSessionShareLinks(persistence.searchRepository, sessionId)
+    });
     const share = await persistence.searchRepository.createSharedShortlist({
       shortlistId,
       sessionId,
@@ -2155,7 +3479,21 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
         shareMode: share.shareMode
       }
     }, pilotContext);
+    await recordValidationEventWithPilot(
+      persistence.searchRepository,
+      {
+        eventName: "share_feature_used",
+        sessionId,
+        payload: {
+          feature: "shared_shortlist",
+          shareId: share.shareId,
+          shortlistId: share.shortlistId
+        }
+      },
+      pilotContext
+    );
     metrics.recordShortlistShareCreate();
+    metrics.recordFeatureUsage("canShareShortlists");
     return reply.status(201).send({
       share,
       shareUrl: `${config.apiUrl.replace(/\/$/, "")}/shared/shortlists/${share.shareId}`,
@@ -2190,6 +3528,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shared shortlists");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { shareId?: string };
     const shareId = params.shareId?.trim();
 
@@ -2215,7 +3554,11 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   });
 
   app.get("/shared/shortlists/:shareId", async (request, reply) => {
-    if (!config.workflow.shortlistsEnabled || !config.workflow.sharedShortlistsEnabled) {
+    if (
+      !config.workflow.shortlistsEnabled ||
+      !config.workflow.sharedShortlistsEnabled ||
+      !config.security.publicSharedShortlistsEnabled
+    ) {
       throw featureDisabled("Shared shortlists");
     }
 
@@ -2235,33 +3578,38 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       );
     }
 
+    if (shareId.length < config.security.shareLinkMinTokenLength) {
+      metrics.recordInvalidTokenAccess();
+      return reply.status(404).send(unavailableLinkPayload());
+    }
+
+    const sharedRateLimit = takeSharedOpenRateLimit(request.ip);
+    if (!sharedRateLimit.allowed) {
+      metrics.recordRateLimitTrigger("/shared/shortlists/:shareId");
+      throw new ApiError(429, "RATE_LIMITED", "Shared shortlist rate limit exceeded.", [
+        {
+          field: "retryAfterMs",
+          message: String(sharedRateLimit.retryAfterMs)
+        }
+      ]);
+    }
+
     const sharedView = await persistence.searchRepository.getSharedShortlist(shareId);
     if (!sharedView) {
-      return reply.status(404).send(
-        buildErrorPayload(
-          "SHARED_SHORTLIST_NOT_FOUND",
-          "No shared shortlist was found for this share id."
-        )
-      );
+      metrics.recordInvalidTokenAccess();
+      return reply.status(404).send(unavailableLinkPayload());
     }
 
     if (sharedView.share.status === "expired") {
       metrics.recordExpiredShareOpen();
-      return reply.status(410).send(
-        buildErrorPayload(
-          "SHARED_SHORTLIST_EXPIRED",
-          "This shared shortlist link has expired and can no longer be opened."
-        )
-      );
+      metrics.recordExpiredLinkOpenAttempt();
+      return reply.status(410).send(unavailableLinkPayload());
     }
 
     if (sharedView.share.status === "revoked") {
-      return reply.status(410).send(
-        buildErrorPayload(
-          "SHARED_SHORTLIST_REVOKED",
-          "This shared shortlist link has been revoked and can no longer be opened."
-        )
-      );
+      metrics.recordRevokedLinkOpenAttempt();
+      metrics.recordShareRevocationEnforcement();
+      return reply.status(410).send(unavailableLinkPayload());
     }
 
     metrics.recordShortlistShareOpen();
@@ -2273,7 +3621,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
         shortlistId: sharedView.shortlist.id
       }
     }, pilotContext);
-    return sharedView;
+    return toPublicSharedShortlistView(sharedView);
   });
 
   app.get("/shortlists/:id/items", async (request, reply) => {
@@ -2312,6 +3660,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shortlists");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const shortlistId = params.id?.trim();
     const payload = shortlistItemCreateSchema.parse(request.body);
@@ -2332,6 +3681,25 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     metrics.recordShortlistItemAdd();
+    const shortlist = await persistence.searchRepository.getShortlist(shortlistId);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    await recordValidationEventWithPilot(
+      persistence.searchRepository,
+      {
+        eventName: "shortlist_feature_used",
+        sessionId: shortlist?.sessionId ?? extractSessionId(request),
+        snapshotId: item.sourceSnapshotId ?? null,
+        historyRecordId: item.sourceHistoryId ?? null,
+        searchDefinitionId: item.sourceSearchDefinitionId ?? null,
+        payload: {
+          feature: "shortlist_item_added",
+          shortlistId,
+          shortlistItemId: item.id
+        }
+      },
+      pilotContext
+    );
+    metrics.recordFeatureUsage("shortlist_item");
     return reply.status(201).send(item);
   });
 
@@ -2340,6 +3708,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shortlists");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string; itemId?: string };
     const shortlistId = params.id?.trim();
     const itemId = params.itemId?.trim();
@@ -2369,6 +3738,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shortlists");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string; itemId?: string };
     const shortlistId = params.id?.trim();
     const itemId = params.itemId?.trim();
@@ -2397,19 +3767,34 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shared comments");
     }
 
+    ensureWriteCapable(reliability);
     const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
     if (!getEffectivePilotFeatures(config, pilotContext).shortlistCollaborationEnabled) {
       throw featureDisabledForPilot("Shared comments");
     }
 
+    const rateLimit = takeCollaborationWriteRateLimit(request.ip);
+    if (!rateLimit.allowed) {
+      metrics.recordRateLimitTrigger("/comments");
+      throw new ApiError(429, "RATE_LIMITED", "Comment rate limit exceeded.", [
+        {
+          field: "retryAfterMs",
+          message: String(rateLimit.retryAfterMs)
+        }
+      ]);
+    }
+
     const payload = sharedCommentCreateSchema.parse(request.body);
+    enforceMaxLength("body", payload.body, config.security.maxCommentLength);
     const shared = await persistence.searchRepository.getSharedShortlist(payload.shareId);
     if (!shared) {
+      metrics.recordInvalidTokenAccess();
       return reply.status(404).send(
-        buildErrorPayload("SHARED_SHORTLIST_NOT_FOUND", "No shared shortlist was found for this share id.")
+        unavailableLinkPayload()
       );
     }
     if (shared.share.status !== "active") {
+      metrics.recordShareRevocationEnforcement();
       return reply.status(410).send(
         buildErrorPayload(
           "SHARED_SHORTLIST_UNAVAILABLE",
@@ -2469,6 +3854,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shared comments");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const commentId = params.id?.trim();
     const payload = sharedCommentUpdateSchema.parse(request.body);
@@ -2478,6 +3864,33 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
         buildErrorPayload("VALIDATION_ERROR", "Invalid comment id", [
           { field: "id", message: "id is required" }
         ])
+      );
+    }
+
+    enforceMaxLength("body", payload.body, config.security.maxCommentLength);
+    const existing = await persistence.searchRepository.getSharedComment(commentId);
+    if (!existing) {
+      return reply.status(404).send(
+        buildErrorPayload("COMMENT_NOT_FOUND", "No shared comment was found for this id.")
+      );
+    }
+
+    const shared = await persistence.searchRepository.getSharedShortlist(existing.shareId);
+    if (!shared || shared.share.status !== "active") {
+      metrics.recordShareRevocationEnforcement();
+      return reply.status(410).send(
+        buildErrorPayload(
+          "SHARED_SHORTLIST_UNAVAILABLE",
+          "This shared shortlist link is no longer available for collaboration."
+        )
+      );
+    }
+    if (!shareModeAllowsComments(shared.share.shareMode)) {
+      return reply.status(403).send(
+        buildErrorPayload(
+          "COLLABORATION_FORBIDDEN",
+          "This shared shortlist is read-only and does not accept comments."
+        )
       );
     }
 
@@ -2501,6 +3914,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Shared comments");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const commentId = params.id?.trim();
     if (!commentId) {
@@ -2511,13 +3925,33 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       );
     }
 
-    const deleted = await persistence.searchRepository.deleteSharedComment(commentId);
-    if (!deleted) {
+    const existing = await persistence.searchRepository.getSharedComment(commentId);
+    if (!existing) {
       return reply.status(404).send(
         buildErrorPayload("COMMENT_NOT_FOUND", "No shared comment was found for this id.")
       );
     }
 
+    const shared = await persistence.searchRepository.getSharedShortlist(existing.shareId);
+    if (!shared || shared.share.status !== "active") {
+      metrics.recordShareRevocationEnforcement();
+      return reply.status(410).send(
+        buildErrorPayload(
+          "SHARED_SHORTLIST_UNAVAILABLE",
+          "This shared shortlist link is no longer available for collaboration."
+        )
+      );
+    }
+    if (!shareModeAllowsComments(shared.share.shareMode)) {
+      return reply.status(403).send(
+        buildErrorPayload(
+          "COLLABORATION_FORBIDDEN",
+          "This shared shortlist is read-only and does not accept comments."
+        )
+      );
+    }
+
+    const deleted = await persistence.searchRepository.deleteSharedComment(commentId);
     metrics.recordSharedCommentDelete();
     return reply.status(204).send();
   });
@@ -2527,19 +3961,33 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Reviewer decisions");
     }
 
+    ensureWriteCapable(reliability);
     const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
     if (!getEffectivePilotFeatures(config, pilotContext).shortlistCollaborationEnabled) {
       throw featureDisabledForPilot("Reviewer decisions");
     }
 
+    const rateLimit = takeCollaborationWriteRateLimit(request.ip);
+    if (!rateLimit.allowed) {
+      metrics.recordRateLimitTrigger("/reviewer-decisions");
+      throw new ApiError(429, "RATE_LIMITED", "Reviewer decision rate limit exceeded.", [
+        {
+          field: "retryAfterMs",
+          message: String(rateLimit.retryAfterMs)
+        }
+      ]);
+    }
+
     const payload = reviewerDecisionCreateSchema.parse(request.body);
     const shared = await persistence.searchRepository.getSharedShortlist(payload.shareId);
     if (!shared) {
+      metrics.recordInvalidTokenAccess();
       return reply.status(404).send(
-        buildErrorPayload("SHARED_SHORTLIST_NOT_FOUND", "No shared shortlist was found for this share id.")
+        unavailableLinkPayload()
       );
     }
     if (shared.share.status !== "active") {
+      metrics.recordShareRevocationEnforcement();
       return reply.status(410).send(
         buildErrorPayload(
           "SHARED_SHORTLIST_UNAVAILABLE",
@@ -2606,6 +4054,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Reviewer decisions");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const decisionId = params.id?.trim();
     const patch = reviewerDecisionUpdateSchema.parse(request.body);
@@ -2618,13 +4067,34 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       );
     }
 
-    const decision = await persistence.searchRepository.updateReviewerDecision(decisionId, patch);
-    if (!decision) {
+    enforceMaxLength("note", patch.note ?? undefined, 500);
+    const existing = await persistence.searchRepository.getReviewerDecision(decisionId);
+    if (!existing) {
       return reply.status(404).send(
         buildErrorPayload("REVIEWER_DECISION_NOT_FOUND", "No reviewer decision was found for this id.")
       );
     }
 
+    const shared = await persistence.searchRepository.getSharedShortlist(existing.shareId);
+    if (!shared || shared.share.status !== "active") {
+      metrics.recordShareRevocationEnforcement();
+      return reply.status(410).send(
+        buildErrorPayload(
+          "SHARED_SHORTLIST_UNAVAILABLE",
+          "This shared shortlist link is no longer available for review."
+        )
+      );
+    }
+    if (!shareModeAllowsReviewerDecision(shared.share.shareMode)) {
+      return reply.status(403).send(
+        buildErrorPayload(
+          "COLLABORATION_FORBIDDEN",
+          "This shared shortlist does not allow reviewer decisions."
+        )
+      );
+    }
+
+    const decision = await persistence.searchRepository.updateReviewerDecision(decisionId, patch);
     metrics.recordReviewerDecisionUpdate();
     return decision;
   });
@@ -2634,6 +4104,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Reviewer decisions");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const decisionId = params.id?.trim();
     if (!decisionId) {
@@ -2644,13 +4115,33 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       );
     }
 
-    const deleted = await persistence.searchRepository.deleteReviewerDecision(decisionId);
-    if (!deleted) {
+    const existing = await persistence.searchRepository.getReviewerDecision(decisionId);
+    if (!existing) {
       return reply.status(404).send(
         buildErrorPayload("REVIEWER_DECISION_NOT_FOUND", "No reviewer decision was found for this id.")
       );
     }
 
+    const shared = await persistence.searchRepository.getSharedShortlist(existing.shareId);
+    if (!shared || shared.share.status !== "active") {
+      metrics.recordShareRevocationEnforcement();
+      return reply.status(410).send(
+        buildErrorPayload(
+          "SHARED_SHORTLIST_UNAVAILABLE",
+          "This shared shortlist link is no longer available for review."
+        )
+      );
+    }
+    if (!shareModeAllowsReviewerDecision(shared.share.shareMode)) {
+      return reply.status(403).send(
+        buildErrorPayload(
+          "COLLABORATION_FORBIDDEN",
+          "This shared shortlist does not allow reviewer decisions."
+        )
+      );
+    }
+
+    const deleted = await persistence.searchRepository.deleteReviewerDecision(decisionId);
     return reply.status(204).send();
   });
 
@@ -2659,7 +4150,20 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Result notes");
     }
 
+    ensureWriteCapable(reliability);
+    const rateLimit = takeCollaborationWriteRateLimit(extractSessionId(request) ?? request.ip);
+    if (!rateLimit.allowed) {
+      metrics.recordRateLimitTrigger("/notes");
+      throw new ApiError(429, "RATE_LIMITED", "Note rate limit exceeded.", [
+        {
+          field: "retryAfterMs",
+          message: String(rateLimit.retryAfterMs)
+        }
+      ]);
+    }
+
     const payload = resultNoteCreateSchema.parse(request.body);
+    enforceMaxLength("body", payload.body, config.security.maxNoteLength);
     const note = await persistence.searchRepository.createResultNote({
       ...payload,
       sessionId: extractSessionId(request, payload.sessionId ?? null)
@@ -2692,6 +4196,18 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Result notes");
     }
 
+    ensureWriteCapable(reliability);
+    const rateLimit = takeCollaborationWriteRateLimit(extractSessionId(request) ?? request.ip);
+    if (!rateLimit.allowed) {
+      metrics.recordRateLimitTrigger("/notes/:id");
+      throw new ApiError(429, "RATE_LIMITED", "Note rate limit exceeded.", [
+        {
+          field: "retryAfterMs",
+          message: String(rateLimit.retryAfterMs)
+        }
+      ]);
+    }
+
     const params = request.params as { id?: string };
     const noteId = params.id?.trim();
     const payload = resultNoteUpdateSchema.parse(request.body);
@@ -2703,6 +4219,8 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
         ])
       );
     }
+
+    enforceMaxLength("body", payload.body, config.security.maxNoteLength);
 
     const note = await persistence.searchRepository.updateResultNote(noteId, payload.body);
     if (!note) {
@@ -2720,6 +4238,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       throw featureDisabled("Result notes");
     }
 
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const noteId = params.id?.trim();
 
@@ -2790,6 +4309,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   });
 
   app.post("/search/definitions/:id/rerun", async (request, reply) => {
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const definitionId = params.id?.trim();
     const payload = rerunRequestSchema.parse(request.body ?? {});
@@ -2833,6 +4353,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       rerunSourceType: "definition",
       rerunSourceId: definition.id
     });
+    reliability.noteProviderUsage(response.metadata.performance?.providerUsage);
 
     await persistence.searchRepository.updateSearchDefinition(definition.id, {
       lastRunAt: new Date().toISOString()
@@ -2879,6 +4400,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
   });
 
   app.post("/search/history/:id/rerun", async (request, reply) => {
+    ensureWriteCapable(reliability);
     const params = request.params as { id?: string };
     const historyId = params.id?.trim();
     const payload = rerunRequestSchema.parse(request.body ?? {});
@@ -2922,6 +4444,7 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       rerunSourceType: "history",
       rerunSourceId: historyRecord.id
     });
+    reliability.noteProviderUsage(response.metadata.performance?.providerUsage);
 
     if (payload.createSnapshot) {
       const startedAt = Date.now();

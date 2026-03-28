@@ -1,6 +1,7 @@
 import type {
   DataQualityEvent,
   DataQualitySummary,
+  GoLiveCheckSummary,
   OpsActionRecord,
   OpsSummary,
   PilotActivityRecord,
@@ -8,6 +9,8 @@ import type {
   PilotLinkRecord,
   PilotPartner,
   PilotPartnerStatus,
+  ReliabilityStateSummary,
+  ReleaseSummary,
   SearchMetrics
 } from "@nhalo/types";
 import { useState } from "react";
@@ -25,7 +28,19 @@ interface OpsPanelProps {
           liveFetchBudgetExhaustionCount: SearchMetrics["liveFetchBudgetExhaustionCount"];
           heavyEndpointReadCounts: SearchMetrics["heavyEndpointReadCounts"];
         } | null;
+        reliability: ReliabilityStateSummary | null;
         dataQualitySummary: DataQualitySummary;
+        goLiveCheck: GoLiveCheckSummary;
+        support: {
+          items: Array<{
+            key: string;
+            title: string;
+            status: "ok" | "attention" | "blocked";
+            summary: string;
+            action: string;
+          }>;
+        };
+        releaseSummary: ReleaseSummary;
         errors: SearchMetrics["errorRateByCategory"];
       }
     | null;
@@ -112,6 +127,8 @@ export function OpsPanel({
     selectedPartner
       ? partnerUsage.find((entry) => entry.partnerId === selectedPartner.id) ?? null
       : null;
+  const security = summary?.summary.security;
+  const reliability = summary?.reliability;
 
   return (
     <section className="ops-panel">
@@ -179,7 +196,76 @@ export function OpsPanel({
               (summary?.performance?.liveFetchBudgetExhaustionCount.safety ?? 0)}
           </p>
         </div>
+        <div className="summary-block">
+          <h3>Security & trust</h3>
+          <p>
+            {security?.invalidTokenAccessCount ?? 0} invalid token attempts ·{" "}
+            {security?.internalRouteDeniedCount ?? 0} denied internal route calls
+          </p>
+          <p className="muted">
+            revoked/expired{" "}
+            {(security?.revokedLinkOpenAttemptCount ?? 0) + (security?.expiredLinkOpenAttemptCount ?? 0)}
+            {" "}· malformed payloads {security?.malformedPayloadCount ?? 0}
+          </p>
+        </div>
+        <div className="summary-block">
+          <h3>Reliability</h3>
+          <p>{reliability?.state ?? "unknown"}</p>
+          <p className="muted">
+            {reliability?.build.environment ?? "unknown env"} · {reliability?.build.appVersion ?? "unknown version"}
+          </p>
+        </div>
+        <div className="summary-block">
+          <h3>Go-live check</h3>
+          <p>{summary?.goLiveCheck?.overallStatus ?? "unknown"}</p>
+          <p className="muted">
+            {summary?.goLiveCheck?.profile ?? "unknown profile"} ·{" "}
+            {summary?.goLiveCheck?.guardrails.filter((entry) => entry.status !== "pass").length ?? 0} active guardrails
+          </p>
+        </div>
+        <div className="summary-block">
+          <h3>Release summary</h3>
+          <p>{summary?.releaseSummary?.build.buildId ?? "unknown build"}</p>
+          <p className="muted">
+            {summary?.releaseSummary?.profile ?? "unknown profile"} ·{" "}
+            {summary?.releaseSummary?.enabledFeatures.slice(0, 3).join(", ") || "no feature labels"}
+          </p>
+        </div>
       </div>
+
+      {reliability ? (
+        <div className="summary-block ops-reliability-block">
+          <h3>Runtime reliability</h3>
+          <p>
+            {reliability.readOnlyMode ? "Read-only degraded" : reliability.cacheOnlyMode ? "Cache-only fallback active" : "Writable"}
+          </p>
+          <p className="muted">
+            {reliability.reasons.length > 0 ? reliability.reasons.join(" · ") : "No active degraded reasons"}
+          </p>
+          <p className="muted">
+            Build {reliability.build.buildId} · {reliability.build.gitSha} · {new Date(reliability.build.buildTimestamp).toLocaleString()}
+          </p>
+          <p className="muted">
+            Jobs:{" "}
+            {reliability.backgroundJobs.length > 0
+              ? reliability.backgroundJobs
+                  .map((job) => `${job.name} ${job.status} (${job.failureCount} failures)`)
+                  .join(", ")
+              : "No background jobs configured"}
+          </p>
+        </div>
+      ) : null}
+
+      {summary ? (
+        <div className="summary-block ops-reliability-block">
+          <h3>Support context</h3>
+          {(summary.support?.items ?? []).slice(0, 4).map((item) => (
+            <p className="muted" key={item.key}>
+              <strong>{item.title}:</strong> {item.summary} {item.action}
+            </p>
+          ))}
+        </div>
+      ) : null}
 
       <div className="ops-create-form">
         <h3>{PILOT_OPS_COPY.createPartnerTitle}</h3>

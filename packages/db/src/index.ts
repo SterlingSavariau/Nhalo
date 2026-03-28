@@ -6,14 +6,17 @@ import {
   DEFAULT_LISTING_STALE_TTL_HOURS,
   DEFAULT_SAFETY_CACHE_TTL_HOURS,
   DEFAULT_SAFETY_STALE_TTL_HOURS,
-  MARKET_SNAPSHOT_FRESH_HOURS
+  MARKET_SNAPSHOT_FRESH_HOURS,
+  getConfig
 } from "@nhalo/config";
+import { randomBytes } from "node:crypto";
 import type {
   CollaborationActivityRecord,
   CollaborationRole,
   DataQualityEvent,
   DataQualityStatus,
   DataQualitySummary,
+  EffectiveCapabilities,
   FeedbackRecord,
   GeocodeCacheRecord,
   GeocodeCacheRepository,
@@ -28,6 +31,8 @@ import type {
   MarketSnapshotRepository,
   OpsActionRecord,
   OpsSummary,
+  PlanSummary,
+  PlanTier,
   PartnerUsageSummary,
   PilotActivityRecord,
   PilotFeatureOverrides,
@@ -46,8 +51,10 @@ import type {
   ShortlistItem,
   SearchDefinition,
   SearchHistoryRecord,
+  SearchRequest,
   ScoreAuditRecord,
   ReviewState,
+  SearchResponse,
   SearchSnapshotRecord,
   SearchPersistenceInput,
   SearchRepository,
@@ -55,11 +62,29 @@ import type {
   SharedSnapshotView,
   ValidationEventRecord,
   ValidationSummary,
+  UsageFrictionSummary,
+  UsageFunnelSummary,
   WorkflowActivityRecord
 } from "@nhalo/types";
 
+function randomToken(length = 32): string {
+  let token = "";
+
+  while (token.length < length) {
+    token += randomBytes(24).toString("base64url");
+  }
+
+  return token.slice(0, length);
+}
+
 function createId(prefix: string): string {
-  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${randomToken(24)}`;
+}
+
+function createSensitiveToken(prefix: string): string {
+  // Shared and pilot links cross trust boundaries, so use longer random tokens than internal ids.
+  const minLength = Math.max(getConfig().security.shareLinkMinTokenLength, 24);
+  return `${prefix}-${randomToken(minLength)}`;
 }
 
 function ageHours(timestamp: string): number {
@@ -116,12 +141,13 @@ type StoredOpsAction = OpsActionRecord;
 type StoredDataQualityEvent = DataQualityEvent;
 
 const DEFAULT_PILOT_FEATURES: PilotFeatureOverrides = {
-  demoModeEnabled: false,
-  sharedSnapshotsEnabled: false,
-  sharedShortlistsEnabled: false,
-  feedbackEnabled: false,
-  validationPromptsEnabled: false,
-  shortlistCollaborationEnabled: false
+  demoModeEnabled: true,
+  sharedSnapshotsEnabled: true,
+  sharedShortlistsEnabled: true,
+  feedbackEnabled: true,
+  validationPromptsEnabled: true,
+  shortlistCollaborationEnabled: true,
+  exportResultsEnabled: true
 };
 
 function sharedSnapshotStatus(record: StoredSharedSnapshot): SharedSnapshotRecord["status"] {
@@ -160,6 +186,119 @@ function mergePilotFeatures(
   return {
     ...DEFAULT_PILOT_FEATURES,
     ...(overrides ?? {})
+  };
+}
+
+const PLAN_FEATURE_DEFAULTS: Record<
+  PlanTier,
+  Omit<
+    EffectiveCapabilities,
+    "planTier" | "limits"
+  >
+> = {
+  free_demo: {
+    canShareSnapshots: true,
+    canShareShortlists: false,
+    canUseDemoMode: true,
+    canExportResults: true,
+    canUseCollaboration: false,
+    canUseOpsViews: false,
+    canSubmitFeedback: true,
+    canSeeValidationPrompts: true
+  },
+  pilot: {
+    canShareSnapshots: true,
+    canShareShortlists: true,
+    canUseDemoMode: true,
+    canExportResults: true,
+    canUseCollaboration: false,
+    canUseOpsViews: false,
+    canSubmitFeedback: true,
+    canSeeValidationPrompts: true
+  },
+  partner: {
+    canShareSnapshots: true,
+    canShareShortlists: true,
+    canUseDemoMode: true,
+    canExportResults: true,
+    canUseCollaboration: true,
+    canUseOpsViews: false,
+    canSubmitFeedback: true,
+    canSeeValidationPrompts: true
+  },
+  internal: {
+    canShareSnapshots: true,
+    canShareShortlists: true,
+    canUseDemoMode: true,
+    canExportResults: true,
+    canUseCollaboration: true,
+    canUseOpsViews: true,
+    canSubmitFeedback: true,
+    canSeeValidationPrompts: true
+  }
+};
+
+function resolveStoredCapabilities(
+  planTier: PlanTier,
+  overrides?: Partial<PilotFeatureOverrides> | null
+): EffectiveCapabilities {
+  const config = getConfig();
+  const defaults = PLAN_FEATURE_DEFAULTS[planTier];
+  const mergedOverrides = mergePilotFeatures(overrides);
+
+  const canShareSnapshots =
+    defaults.canShareSnapshots &&
+    config.validation.enabled &&
+    config.validation.sharedSnapshotsEnabled &&
+    config.security.publicSharedViewsEnabled &&
+    mergedOverrides.sharedSnapshotsEnabled;
+  const canShareShortlists =
+    defaults.canShareShortlists &&
+    config.workflow.shortlistsEnabled &&
+    config.workflow.sharedShortlistsEnabled &&
+    config.security.publicSharedShortlistsEnabled &&
+    mergedOverrides.sharedShortlistsEnabled;
+  const canUseCollaboration =
+    defaults.canUseCollaboration &&
+    canShareShortlists &&
+    (config.workflow.sharedCommentsEnabled || config.workflow.reviewerDecisionsEnabled) &&
+    mergedOverrides.shortlistCollaborationEnabled;
+
+  return {
+    planTier,
+    canShareSnapshots,
+    canShareShortlists,
+    canUseDemoMode:
+      defaults.canUseDemoMode &&
+      config.validation.enabled &&
+      config.validation.demoScenariosEnabled &&
+      mergedOverrides.demoModeEnabled,
+    canExportResults:
+      defaults.canExportResults &&
+      config.validation.enabled &&
+      mergedOverrides.exportResultsEnabled,
+    canUseCollaboration,
+    canUseOpsViews:
+      defaults.canUseOpsViews &&
+      config.ops.pilotOpsEnabled,
+    canSubmitFeedback:
+      defaults.canSubmitFeedback &&
+      config.validation.enabled &&
+      config.validation.feedbackEnabled &&
+      mergedOverrides.feedbackEnabled,
+    canSeeValidationPrompts:
+      defaults.canSeeValidationPrompts &&
+      config.validation.enabled &&
+      mergedOverrides.validationPromptsEnabled,
+    limits: {
+      savedSearches: planTier === "internal" ? null : config.product.maxSavedSearchesPerSession,
+      shortlists: planTier === "internal" ? null : config.product.maxShortlistsPerSession,
+      shareLinks: planTier === "internal" ? null : config.product.maxShareLinksPerSession,
+      exportsPerSession:
+        planTier === "internal" || !config.product.exportLimitsEnabled
+          ? null
+          : config.product.maxExportsPerSession
+    }
   };
 }
 
@@ -249,13 +388,18 @@ function summarizePartnerUsage(options: {
     const created: PartnerUsageSummary = {
       partnerId: id,
       partnerName: partner?.name ?? null,
+      planTier: partner?.planTier,
       searches: 0,
       liveProviderCalls: 0,
       cacheHitRate: 0,
       sharedSnapshotCreates: 0,
       sharedSnapshotOpens: 0,
       qualityEventCount: 0,
-      pilotLinkOpens: 0
+      pilotLinkOpens: 0,
+      shortlistActivityCount: 0,
+      collaborationActivityCount: 0,
+      exportUsageCount: 0,
+      featureLimitHitCount: 0
     };
     summaryByPartner.set(id, created);
     return created;
@@ -296,6 +440,28 @@ function summarizePartnerUsage(options: {
     if (event.eventName === "pilot_link_opened") {
       summary.pilotLinkOpens += 1;
     }
+    if (
+      event.eventName === "shortlist_created" ||
+      event.eventName === "shortlist_updated" ||
+      event.eventName === "shortlist_item_added" ||
+      event.eventName === "shortlist_item_removed" ||
+      event.eventName === "shortlist_feature_used"
+    ) {
+      summary.shortlistActivityCount += 1;
+    }
+    if (
+      event.eventName === "shared_comment_added" ||
+      event.eventName === "reviewer_decision_submitted" ||
+      event.eventName === "shared_shortlist_opened"
+    ) {
+      summary.collaborationActivityCount += 1;
+    }
+    if (event.eventName === "export_generated") {
+      summary.exportUsageCount += 1;
+    }
+    if (event.eventName === "capability_limit_hit") {
+      summary.featureLimitHitCount += 1;
+    }
   }
 
   for (const event of options.dataQualityEvents) {
@@ -320,6 +486,220 @@ function summarizePartnerUsage(options: {
     : summaries;
 
   return filtered.sort((left, right) => right.searches - left.searches);
+}
+
+const USAGE_FUNNEL_DEFINITIONS: UsageFunnelSummary["steps"] = [
+  { key: "search_started", label: "Search started", count: 0, conversionFromPrevious: null },
+  { key: "search_completed", label: "Search completed", count: 0, conversionFromPrevious: null },
+  { key: "result_opened", label: "Result opened", count: 0, conversionFromPrevious: null },
+  { key: "comparison_started", label: "Comparison started", count: 0, conversionFromPrevious: null },
+  { key: "shortlist_created", label: "Shortlist created", count: 0, conversionFromPrevious: null },
+  { key: "snapshot_created", label: "Snapshot created", count: 0, conversionFromPrevious: null },
+  { key: "snapshot_shared", label: "Snapshot shared", count: 0, conversionFromPrevious: null },
+  { key: "feedback_submitted", label: "Feedback submitted", count: 0, conversionFromPrevious: null },
+  { key: "rerun_executed", label: "Rerun executed", count: 0, conversionFromPrevious: null },
+  { key: "shared_shortlist_opened", label: "Shared shortlist opened", count: 0, conversionFromPrevious: null }
+];
+
+function buildUsageFunnelSummary(events: ValidationEventRecord[], snapshotCount: number): UsageFunnelSummary {
+  const counts = new Map<UsageFunnelSummary["steps"][number]["key"], number>();
+  for (const step of USAGE_FUNNEL_DEFINITIONS) {
+    counts.set(step.key, 0);
+  }
+  for (const event of events) {
+    if (counts.has(event.eventName as UsageFunnelSummary["steps"][number]["key"])) {
+      counts.set(
+        event.eventName as UsageFunnelSummary["steps"][number]["key"],
+        (counts.get(event.eventName as UsageFunnelSummary["steps"][number]["key"]) ?? 0) + 1
+      );
+    }
+  }
+  counts.set("snapshot_created", snapshotCount);
+
+  let previousCount: number | null = null;
+  return {
+    steps: USAGE_FUNNEL_DEFINITIONS.map((step) => {
+      const count = counts.get(step.key) ?? 0;
+      const conversionFromPrevious =
+        previousCount === null || previousCount === 0 ? null : Number((count / previousCount).toFixed(4));
+      previousCount = count;
+      return {
+        ...step,
+        count,
+        conversionFromPrevious
+      };
+    })
+  };
+}
+
+function buildUsageFrictionSummary(args: {
+  searches: Array<{
+    id: string;
+    locationType: SearchRequest["locationType"];
+    returnedCount: number;
+    topOverallConfidence: SearchResponse["homes"][number]["scores"]["overallConfidence"] | null;
+  }>;
+  snapshots: SearchSnapshotRecord[];
+  shortlists: Shortlist[];
+  validationEvents: ValidationEventRecord[];
+}): UsageFrictionSummary {
+  const emptyResultRateBySearchType: UsageFrictionSummary["emptyResultRateBySearchType"] = {
+    city: { searches: 0, emptyResults: 0, rate: 0 },
+    zip: { searches: 0, emptyResults: 0, rate: 0 },
+    address: { searches: 0, emptyResults: 0, rate: 0 }
+  };
+
+  let lowConfidenceTopResults = 0;
+  let searchesWithoutShortlistActivity = 0;
+  const shortlistActivityHistoryIds = new Set(
+    args.validationEvents
+      .filter((event) =>
+        event.eventName === "shortlist_created" ||
+        event.eventName === "shortlist_item_added" ||
+        event.eventName === "shortlist_feature_used"
+      )
+      .map((event) => event.historyRecordId)
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+  );
+  const rerunCountBySource = new Map<string, number>();
+  const savedOutcomeBySource = new Set<string>();
+
+  for (const event of args.validationEvents) {
+    if (event.eventName === "rerun_executed") {
+      const sourceId =
+        typeof event.payload?.sourceId === "string" ? event.payload.sourceId : event.historyRecordId ?? null;
+      if (sourceId) {
+        rerunCountBySource.set(sourceId, (rerunCountBySource.get(sourceId) ?? 0) + 1);
+      }
+    }
+    if (event.eventName === "snapshot_shared" || event.eventName === "snapshot_created") {
+      const sourceId =
+        typeof event.payload?.sourceId === "string" ? event.payload.sourceId : event.historyRecordId ?? null;
+      if (sourceId) {
+        savedOutcomeBySource.add(sourceId);
+      }
+    }
+  }
+
+  for (const search of args.searches) {
+    const bucket = emptyResultRateBySearchType[search.locationType];
+    bucket.searches += 1;
+    if (search.returnedCount === 0) {
+      bucket.emptyResults += 1;
+    }
+    if (search.topOverallConfidence === "low" || search.topOverallConfidence === "none") {
+      lowConfidenceTopResults += 1;
+    }
+    if (!shortlistActivityHistoryIds.has(search.id)) {
+      searchesWithoutShortlistActivity += 1;
+    }
+  }
+
+  for (const key of Object.keys(emptyResultRateBySearchType) as Array<keyof typeof emptyResultRateBySearchType>) {
+    const bucket = emptyResultRateBySearchType[key];
+    bucket.rate = bucket.searches === 0 ? 0 : Number((bucket.emptyResults / bucket.searches).toFixed(4));
+  }
+
+  const neverOpenedSnapshots = args.snapshots.filter(
+    (snapshot) => (snapshot.validationMetadata?.shareCount ?? 0) > 0 &&
+      !args.validationEvents.some((event) => event.eventName === "snapshot_opened" && event.snapshotId === snapshot.id)
+  ).length;
+
+  const repeatedWithoutSavedOutcome = [...rerunCountBySource.entries()].filter(
+    ([sourceId, count]) => count > 1 && !savedOutcomeBySource.has(sourceId)
+  ).length;
+
+  return {
+    emptyResultRateBySearchType,
+    lowConfidenceResultRate: {
+      searches: args.searches.length,
+      lowConfidenceTopResults,
+      rate: args.searches.length === 0 ? 0 : Number((lowConfidenceTopResults / args.searches.length).toFixed(4))
+    },
+    searchesWithoutShortlistActivity: {
+      searches: args.searches.length,
+      withoutShortlistActivity: searchesWithoutShortlistActivity,
+      rate:
+        args.searches.length === 0
+          ? 0
+          : Number((searchesWithoutShortlistActivity / args.searches.length).toFixed(4))
+    },
+    sharedSnapshotsNeverOpened: {
+      total: args.snapshots.filter((snapshot) => (snapshot.validationMetadata?.shareCount ?? 0) > 0).length,
+      neverOpened: neverOpenedSnapshots,
+      rate:
+        args.snapshots.filter((snapshot) => (snapshot.validationMetadata?.shareCount ?? 0) > 0).length === 0
+          ? 0
+          : Number(
+              (
+                neverOpenedSnapshots /
+                args.snapshots.filter((snapshot) => (snapshot.validationMetadata?.shareCount ?? 0) > 0).length
+              ).toFixed(4)
+            )
+    },
+    shortlistsWithoutReviewerActivity: {
+      total: args.shortlists.length,
+      withoutReviewerActivity: args.shortlists.filter(
+        (shortlist) =>
+          !args.validationEvents.some(
+            (event) =>
+              event.eventName === "reviewer_decision_submitted" &&
+              event.payload?.shortlistId === shortlist.id
+          )
+      ).length,
+      rate:
+        args.shortlists.length === 0
+          ? 0
+          : Number(
+              (
+                args.shortlists.filter(
+                  (shortlist) =>
+                    !args.validationEvents.some(
+                      (event) =>
+                        event.eventName === "reviewer_decision_submitted" &&
+                        event.payload?.shortlistId === shortlist.id
+                    )
+                ).length / args.shortlists.length
+              ).toFixed(4)
+            )
+    },
+    repeatedRerunsWithoutSavedOutcome: {
+      rerunSources: rerunCountBySource.size,
+      repeatedWithoutSavedOutcome,
+      rate:
+        rerunCountBySource.size === 0
+          ? 0
+          : Number((repeatedWithoutSavedOutcome / rerunCountBySource.size).toFixed(4))
+    }
+  };
+}
+
+function buildPlanSummary(partners: PilotPartner[]): PlanSummary {
+  const planDistribution: PlanSummary["planDistribution"] = {
+    free_demo: 0,
+    pilot: 0,
+    partner: 0,
+    internal: 0
+  };
+  const capabilityEnabledCounts: Record<string, number> = {};
+
+  for (const partner of partners) {
+    planDistribution[partner.planTier] += 1;
+    const capabilities = resolveStoredCapabilities(partner.planTier, partner.featureOverrides);
+    for (const [key, value] of Object.entries(capabilities)) {
+      if (key === "planTier" || key === "limits") {
+        continue;
+      }
+      if (value) {
+        capabilityEnabledCounts[key] = (capabilityEnabledCounts[key] ?? 0) + 1;
+      }
+    }
+  }
+
+  return {
+    planDistribution,
+    capabilityEnabledCounts
+  };
 }
 
 function toAuditRecord(
@@ -1375,7 +1755,7 @@ export class InMemorySearchRepository implements SearchRepository {
 
     const record: SharedSnapshotRecord = {
       id: createId("share"),
-      shareId: createId("public"),
+      shareId: createSensitiveToken("public"),
       snapshotId: payload.snapshotId,
       sessionId: payload.sessionId ?? null,
       expiresAt: payload.expiresAt ?? null,
@@ -1429,7 +1809,7 @@ export class InMemorySearchRepository implements SearchRepository {
 
     const record: SharedShortlist = {
       id: createId("shared-shortlist"),
-      shareId: createId("shortlist-share"),
+      shareId: createSensitiveToken("shortlist-share"),
       shortlistId: payload.shortlistId,
       sessionId: payload.sessionId ?? shortlist.sessionId ?? null,
       shareMode: payload.shareMode,
@@ -1545,6 +1925,7 @@ export class InMemorySearchRepository implements SearchRepository {
   async createPilotPartner(payload: {
     name: string;
     slug: string;
+    planTier?: PlanTier;
     status?: PilotPartnerStatus;
     contactLabel?: string | null;
     notes?: string | null;
@@ -1555,6 +1936,7 @@ export class InMemorySearchRepository implements SearchRepository {
       id: createId("pilot-partner"),
       name: payload.name,
       slug: payload.slug,
+      planTier: payload.planTier ?? getConfig().product.defaultPlanTier,
       status: payload.status ?? "active",
       contactLabel: payload.contactLabel ?? null,
       notes: payload.notes ?? null,
@@ -1582,6 +1964,7 @@ export class InMemorySearchRepository implements SearchRepository {
     id: string,
     patch: {
       name?: string;
+      planTier?: PlanTier;
       status?: PilotPartnerStatus;
       contactLabel?: string | null;
       notes?: string | null;
@@ -1593,6 +1976,7 @@ export class InMemorySearchRepository implements SearchRepository {
       return null;
     }
     if (patch.name !== undefined) partner.name = patch.name;
+    if (patch.planTier !== undefined) partner.planTier = patch.planTier;
     if (patch.status !== undefined) partner.status = patch.status;
     if (patch.contactLabel !== undefined) partner.contactLabel = patch.contactLabel;
     if (patch.notes !== undefined) partner.notes = patch.notes;
@@ -1618,7 +2002,7 @@ export class InMemorySearchRepository implements SearchRepository {
     const record: PilotLinkRecord = {
       id: createId("pilot-link"),
       partnerId: payload.partnerId,
-      token: createId("pilot"),
+      token: createSensitiveToken("pilot"),
       allowedFeatures: mergePilotFeatures({
         ...partner.featureOverrides,
         ...payload.allowedFeatures
@@ -1670,10 +2054,12 @@ export class InMemorySearchRepository implements SearchRepository {
         partnerId: partner.id,
         partnerSlug: partner.slug,
         partnerName: partner.name,
+        planTier: partner.planTier,
         status: partner.status,
         pilotLinkId: link.id,
         pilotToken: link.token,
-        allowedFeatures: clone(link.allowedFeatures)
+        allowedFeatures: clone(link.allowedFeatures),
+        capabilities: resolveStoredCapabilities(partner.planTier, link.allowedFeatures)
       }
     };
   }
@@ -1745,6 +2131,11 @@ export class InMemorySearchRepository implements SearchRepository {
       })
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map((entry) => mapStoredSharedComment(entry));
+  }
+
+  async getSharedComment(id: string): Promise<SharedComment | null> {
+    const record = this.sharedComments.find((entry) => entry.id === id) ?? null;
+    return record ? mapStoredSharedComment(record) : null;
   }
 
   async updateSharedComment(
@@ -1877,6 +2268,11 @@ export class InMemorySearchRepository implements SearchRepository {
       })
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map((entry) => mapStoredReviewerDecision(entry));
+  }
+
+  async getReviewerDecision(id: string): Promise<ReviewerDecision | null> {
+    const record = this.reviewerDecisions.find((entry) => entry.id === id) ?? null;
+    return record ? mapStoredReviewerDecision(record) : null;
   }
 
   async updateReviewerDecision(
@@ -2050,6 +2446,28 @@ export class InMemorySearchRepository implements SearchRepository {
       dataQualityEvents: this.dataQualityEvents,
       partnerId
     });
+  }
+
+  async getUsageFunnelSummary(): Promise<UsageFunnelSummary> {
+    return buildUsageFunnelSummary(this.validationEvents, this.searchSnapshots.length);
+  }
+
+  async getUsageFrictionSummary(): Promise<UsageFrictionSummary> {
+    return buildUsageFrictionSummary({
+      searches: this.searches.map((entry) => ({
+        id: entry.id,
+        locationType: entry.payload.request.locationType,
+        returnedCount: entry.payload.response.metadata.returnedCount,
+        topOverallConfidence: entry.payload.response.homes[0]?.scores.overallConfidence ?? null
+      })),
+      snapshots: await this.listSearchSnapshots(undefined, Math.max(this.searchSnapshots.length, 1_000)),
+      shortlists: await this.listShortlists(),
+      validationEvents: this.validationEvents
+    });
+  }
+
+  async getPlanSummary(): Promise<PlanSummary> {
+    return buildPlanSummary(this.pilotPartners);
   }
 
   async createFeedback(payload: {
@@ -2659,6 +3077,7 @@ function mapPrismaPilotPartner(record: Record<string, unknown>): PilotPartner {
     id: record.id as string,
     name: record.name as string,
     slug: record.slug as string,
+    planTier: (record.planTier as PlanTier | null) ?? getConfig().product.defaultPlanTier,
     status: record.status as PilotPartnerStatus,
     contactLabel: (record.contactLabel as string | null) ?? null,
     notes: (record.notes as string | null) ?? null,
@@ -3911,7 +4330,7 @@ export class PrismaSearchRepository implements SearchRepository {
   }): Promise<SharedSnapshotRecord> {
     const record = await this.client.sharedSnapshotLink.create({
       data: {
-        shareId: createId("public"),
+        shareId: createSensitiveToken("public"),
         snapshotId: payload.snapshotId,
         sessionId: payload.sessionId ?? null,
         expiresAt: payload.expiresAt ? new Date(payload.expiresAt) : null
@@ -3975,7 +4394,7 @@ export class PrismaSearchRepository implements SearchRepository {
 
     const record = await this.client.sharedShortlistLink.create({
       data: {
-        shareId: createId("shortlist-share"),
+        shareId: createSensitiveToken("shortlist-share"),
         shortlistId: payload.shortlistId,
         sessionId: payload.sessionId ?? shortlist.sessionId ?? null,
         shareMode: payload.shareMode,
@@ -4126,6 +4545,7 @@ export class PrismaSearchRepository implements SearchRepository {
   async createPilotPartner(payload: {
     name: string;
     slug: string;
+    planTier?: PlanTier;
     status?: PilotPartnerStatus;
     contactLabel?: string | null;
     notes?: string | null;
@@ -4135,6 +4555,7 @@ export class PrismaSearchRepository implements SearchRepository {
       data: {
         name: payload.name,
         slug: payload.slug,
+        planTier: payload.planTier ?? getConfig().product.defaultPlanTier,
         status: payload.status ?? "active",
         contactLabel: payload.contactLabel ?? null,
         notes: payload.notes ?? null,
@@ -4164,6 +4585,7 @@ export class PrismaSearchRepository implements SearchRepository {
     id: string,
     patch: {
       name?: string;
+      planTier?: PlanTier;
       status?: PilotPartnerStatus;
       contactLabel?: string | null;
       notes?: string | null;
@@ -4178,6 +4600,7 @@ export class PrismaSearchRepository implements SearchRepository {
       where: { id },
       data: {
         ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.planTier !== undefined ? { planTier: patch.planTier } : {}),
         ...(patch.status !== undefined ? { status: patch.status } : {}),
         ...(patch.contactLabel !== undefined ? { contactLabel: patch.contactLabel } : {}),
         ...(patch.notes !== undefined ? { notes: patch.notes } : {}),
@@ -4206,7 +4629,7 @@ export class PrismaSearchRepository implements SearchRepository {
     const record = await this.client.pilotLink.create({
       data: {
         partnerId: payload.partnerId,
-        token: createId("pilot"),
+        token: createSensitiveToken("pilot"),
         allowedFeatures: mergePilotFeatures({
           ...partner.featureOverrides,
           ...payload.allowedFeatures
@@ -4256,10 +4679,12 @@ export class PrismaSearchRepository implements SearchRepository {
           partnerId: partner.id,
           partnerSlug: partner.slug,
           partnerName: partner.name,
+          planTier: partner.planTier,
           status: partner.status,
           pilotLinkId: mapped.id,
           pilotToken: mapped.token,
-          allowedFeatures: mapped.allowedFeatures
+          allowedFeatures: mapped.allowedFeatures,
+          capabilities: resolveStoredCapabilities(partner.planTier, mapped.allowedFeatures)
         }
       };
     }
@@ -4270,10 +4695,12 @@ export class PrismaSearchRepository implements SearchRepository {
         partnerId: partner.id,
         partnerSlug: partner.slug,
         partnerName: partner.name,
+        planTier: partner.planTier,
         status: partner.status,
         pilotLinkId: link.id,
         pilotToken: link.token,
-        allowedFeatures: link.allowedFeatures
+        allowedFeatures: link.allowedFeatures,
+        capabilities: resolveStoredCapabilities(partner.planTier, link.allowedFeatures)
       }
     };
   }
@@ -4346,6 +4773,14 @@ export class PrismaSearchRepository implements SearchRepository {
     });
 
     return records.map((record) => mapPrismaSharedComment(record));
+  }
+
+  async getSharedComment(id: string): Promise<SharedComment | null> {
+    const record = await this.client.sharedComment.findUnique({
+      where: { id }
+    });
+
+    return record ? mapPrismaSharedComment(record) : null;
   }
 
   async updateSharedComment(
@@ -4492,6 +4927,14 @@ export class PrismaSearchRepository implements SearchRepository {
       }
     });
     return records.map((record) => mapPrismaReviewerDecision(record));
+  }
+
+  async getReviewerDecision(id: string): Promise<ReviewerDecision | null> {
+    const record = await this.client.reviewerDecision.findUnique({
+      where: { id }
+    });
+
+    return record ? mapPrismaReviewerDecision(record) : null;
   }
 
   async updateReviewerDecision(
@@ -4727,6 +5170,104 @@ export class PrismaSearchRepository implements SearchRepository {
       dataQualityEvents: dataQualityEvents.map((entry) => mapPrismaDataQualityEvent(entry)),
       partnerId
     });
+  }
+
+  async getUsageFunnelSummary(): Promise<UsageFunnelSummary> {
+    const [events, snapshotCount] = await Promise.all([
+      this.client.validationEvent.findMany({
+        select: {
+          eventName: true,
+          sessionId: true,
+          snapshotId: true,
+          historyRecordId: true,
+          searchDefinitionId: true,
+          demoScenarioId: true,
+          payload: true,
+          createdAt: true,
+          id: true
+        }
+      }),
+      this.client.searchSnapshot.count()
+    ]);
+
+    return buildUsageFunnelSummary(events.map((entry) => mapPrismaValidationEvent(entry)), snapshotCount);
+  }
+
+  async getUsageFrictionSummary(): Promise<UsageFrictionSummary> {
+    const [searches, scoreSnapshots, snapshots, shortlists, validationEvents] = await Promise.all([
+      this.client.searchRequest.findMany({
+        select: {
+          id: true,
+          locationType: true,
+          returnedCount: true
+        }
+      }),
+      this.client.scoreSnapshot.findMany({
+        select: {
+          searchRequestId: true,
+          nhaloScore: true,
+          overallConfidence: true
+        }
+      }),
+      this.listSearchSnapshots(undefined, 1_000),
+      this.listShortlists(),
+      this.client.validationEvent.findMany({
+        select: {
+          eventName: true,
+          sessionId: true,
+          snapshotId: true,
+          historyRecordId: true,
+          searchDefinitionId: true,
+          demoScenarioId: true,
+          payload: true,
+          createdAt: true,
+          id: true
+        }
+      })
+    ]);
+
+    const topConfidenceBySearchId = new Map<string, SearchResponse["homes"][number]["scores"]["overallConfidence"]>();
+    for (const snapshot of scoreSnapshots) {
+      const existing = topConfidenceBySearchId.get(snapshot.searchRequestId as string);
+      if (existing === undefined) {
+        topConfidenceBySearchId.set(
+          snapshot.searchRequestId as string,
+          snapshot.overallConfidence as SearchResponse["homes"][number]["scores"]["overallConfidence"]
+        );
+        continue;
+      }
+    }
+
+    const bestScoreBySearchId = new Map<string, number>();
+    for (const snapshot of scoreSnapshots) {
+      const searchId = snapshot.searchRequestId as string;
+      const score = Number(snapshot.nhaloScore);
+      const bestScore = bestScoreBySearchId.get(searchId);
+      if (bestScore === undefined || score > bestScore) {
+        bestScoreBySearchId.set(searchId, score);
+        topConfidenceBySearchId.set(
+          searchId,
+          snapshot.overallConfidence as SearchResponse["homes"][number]["scores"]["overallConfidence"]
+        );
+      }
+    }
+
+    return buildUsageFrictionSummary({
+      searches: searches.map((entry) => ({
+        id: entry.id as string,
+        locationType: entry.locationType as SearchRequest["locationType"],
+        returnedCount: Number(entry.returnedCount ?? 0),
+        topOverallConfidence: topConfidenceBySearchId.get(entry.id as string) ?? null
+      })),
+      snapshots,
+      shortlists,
+      validationEvents: validationEvents.map((entry) => mapPrismaValidationEvent(entry))
+    });
+  }
+
+  async getPlanSummary(): Promise<PlanSummary> {
+    const partners = await this.client.pilotPartner.findMany();
+    return buildPlanSummary(partners.map((entry) => mapPrismaPilotPartner(entry)));
   }
 
   async createFeedback(payload: {

@@ -5,6 +5,7 @@ import type {
   DemoScenario,
   FeedbackCategory,
   FeedbackRecord,
+  GoLiveCheckSummary,
   OpsActionRecord,
   OpsSummary,
   PilotContext,
@@ -16,6 +17,8 @@ import type {
   PilotActivityRecord,
   ReviewerDecision,
   ReviewerDecisionValue,
+  ReliabilityStateSummary,
+  ReleaseSummary,
   ResultNote,
   ScoreAuditRecord,
   SearchMetrics,
@@ -24,6 +27,7 @@ import type {
   SharedShortlistView,
   Shortlist,
   ShortlistItem,
+  SupportContextSummary,
   SearchDefinition,
   SearchHistoryRecord,
   SearchRequest,
@@ -828,6 +832,7 @@ export async function fetchValidationSummary(): Promise<ValidationSummary> {
 export async function createPilotPartner(payload: {
   name: string;
   slug: string;
+  planTier?: PilotPartner["planTier"];
   status?: PilotPartnerStatus;
   contactLabel?: string | null;
   notes?: string | null;
@@ -877,6 +882,7 @@ export async function updatePilotPartner(
   id: string,
   patch: {
     name?: string;
+    planTier?: PilotPartner["planTier"];
     status?: PilotPartnerStatus;
     contactLabel?: string | null;
     notes?: string | null;
@@ -947,7 +953,11 @@ export async function fetchOpsSummary(): Promise<{
     liveFetchBudgetExhaustionCount: SearchMetrics["liveFetchBudgetExhaustionCount"];
     heavyEndpointReadCounts: SearchMetrics["heavyEndpointReadCounts"];
   } | null;
+  reliability: ReliabilityStateSummary | null;
   dataQualitySummary: DataQualitySummary;
+  goLiveCheck: GoLiveCheckSummary;
+  support: SupportContextSummary;
+  releaseSummary: ReleaseSummary;
   errors: SearchMetrics["errorRateByCategory"];
   providers: unknown[];
 }> {

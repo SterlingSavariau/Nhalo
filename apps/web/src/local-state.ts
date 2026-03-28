@@ -42,8 +42,69 @@ function safeParse<T>(value: string | null): T | null {
   }
 }
 
+// Session ids are continuity hints for anonymous flows, not proof of identity.
+function randomHex(bytes: number): string {
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const buffer = new Uint8Array(bytes);
+    globalThis.crypto.getRandomValues(buffer);
+    return Array.from(buffer, (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  return "";
+}
+
 function generateSessionId(): string {
-  return `nhalo_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return `nhalo_${globalThis.crypto.randomUUID()}`;
+  }
+
+  const token = randomHex(16);
+  if (token) {
+    return `nhalo_${token}`;
+  }
+
+  return `nhalo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isBooleanRecord(value: unknown): value is Record<string, boolean> {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      Object.values(value as Record<string, unknown>).every((entry) => typeof entry === "boolean")
+  );
+}
+
+function sanitizePilotContext(raw: unknown): PilotContext | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const value = raw as Record<string, unknown>;
+  if (
+    !isNonEmptyString(value.partnerId) ||
+    !isNonEmptyString(value.partnerSlug) ||
+    !isNonEmptyString(value.partnerName) ||
+    !isNonEmptyString(value.pilotLinkId) ||
+    !isNonEmptyString(value.pilotToken) ||
+    !["active", "paused", "inactive"].includes(String(value.status)) ||
+    !isBooleanRecord(value.allowedFeatures)
+  ) {
+    return null;
+  }
+
+  return {
+    partnerId: value.partnerId,
+    partnerSlug: value.partnerSlug,
+    partnerName: value.partnerName,
+    status: value.status as PilotContext["status"],
+    pilotLinkId: value.pilotLinkId,
+    pilotToken: value.pilotToken,
+    allowedFeatures: value.allowedFeatures as PilotContext["allowedFeatures"]
+  };
 }
 
 export function getOrCreateSessionIdentity(storage: Pick<Storage, "getItem" | "setItem"> | null): SessionIdentity {
@@ -54,12 +115,12 @@ export function getOrCreateSessionIdentity(storage: Pick<Storage, "getItem" | "s
     };
   }
 
-  const existing = safeParse<{ sessionId?: string }>(storage.getItem(SESSION_KEY));
-  if (existing?.sessionId) {
+  const existing = safeParse<Record<string, unknown>>(storage.getItem(SESSION_KEY));
+  if (isNonEmptyString(existing?.sessionId)) {
     return {
       sessionId: existing.sessionId,
-      partnerId: existing.partnerId ?? null,
-      pilotLinkId: existing.pilotLinkId ?? null,
+      partnerId: isNonEmptyString(existing.partnerId) ? existing.partnerId : null,
+      pilotLinkId: isNonEmptyString(existing.pilotLinkId) ? existing.pilotLinkId : null,
       source: "local_storage"
     };
   }
@@ -77,7 +138,9 @@ export function loadPilotContext(storage: Pick<Storage, "getItem"> | null): Pilo
   if (!storage) {
     return null;
   }
-  return safeParse<PilotContext>(storage.getItem(PILOT_CONTEXT_KEY));
+
+  // Pilot context is convenience state only; corrupted local data should be ignored.
+  return sanitizePilotContext(safeParse<unknown>(storage.getItem(PILOT_CONTEXT_KEY)));
 }
 
 export function savePilotContext(

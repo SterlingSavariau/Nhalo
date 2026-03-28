@@ -13,6 +13,9 @@
     "build": "npm run build:api && npm run build:web",
     "test": "vitest run",
     "test:watch": "vitest",
+    "ops:check": "tsx scripts/ops-check.ts",
+    "ops:summary": "tsx scripts/ops-summary.ts",
+    "ops:seed:verify": "tsx scripts/ops-seed-verify.ts",
     "db:generate": "prisma generate --schema packages/db/prisma/schema.prisma",
     "db:migrate": "prisma migrate dev --schema packages/db/prisma/schema.prisma",
     "db:push": "prisma db push --schema packages/db/prisma/schema.prisma"

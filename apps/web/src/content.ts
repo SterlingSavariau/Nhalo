@@ -126,6 +126,7 @@ export const COLLABORATION_COPY = {
 
 export const PILOT_OPS_COPY = {
   contextLabel: "Pilot context",
+  planLabel: "Plan",
   internalLabel: "Internal pilot ops",
   inactiveLabel: "Inactive",
   pausedLabel: "Paused",
@@ -136,7 +137,14 @@ export const PILOT_OPS_COPY = {
   opsWarning: "These controls manage pilot packaging and access only. They never mutate stored scores or snapshot payloads.",
   createPartnerTitle: "Add pilot partner",
   createLinkAction: "Create pilot link",
-  revokeLinkAction: "Revoke link"
+  revokeLinkAction: "Revoke link",
+  capabilityLabels: {
+    canShareSnapshots: "Snapshot sharing",
+    canShareShortlists: "Shortlist sharing",
+    canUseDemoMode: "Demo mode",
+    canExportResults: "Exports",
+    canUseCollaboration: "Collaboration"
+  }
 } as const;
 
 export const DEMO_SCENARIO_COPY: DemoScenario[] = [

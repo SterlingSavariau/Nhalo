@@ -98,6 +98,8 @@ describe("provider runtime controls", () => {
     process.env.PROVIDER_BUDGETS_ENABLED = "true";
     process.env.GEOCODER_PROVIDER_MODE = "live";
     process.env.GEOCODER_PROVIDER_MAX_CALLS_PER_MINUTE = "1";
+    process.env.GEOCODER_PROVIDER_BASE_URL = "https://example.test/geocode";
+    process.env.GEOCODER_PROVIDER_API_KEY = "test-key";
     resetConfigCache();
 
     let attempts = 0;

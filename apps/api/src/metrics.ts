@@ -164,11 +164,53 @@ export class MetricsCollector {
   private readonly walkthroughViews = { count: 0 };
   private readonly walkthroughDismisses = { count: 0 };
   private readonly exportUsage = { count: 0 };
+  private readonly usageFunnelReads = { count: 0 };
+  private readonly usageFrictionReads = { count: 0 };
+  private readonly capabilityLimitHits = { count: 0 };
+  private readonly exportGenerates = { count: 0 };
+  private readonly planCapabilityResolutions = { count: 0 };
+  private readonly planSummaryReads = { count: 0 };
+  private readonly partnerUsageSummaryReads = { count: 0 };
+  private readonly featureUsageByCapability = new Map<string, number>();
   private readonly ctaClicks = { count: 0 };
   private readonly validationPromptViews = { count: 0 };
   private readonly validationPromptResponses = { count: 0 };
   private readonly sharedSnapshotExpired = { count: 0 };
   private readonly validationSummaryReads = { count: 0 };
+  private readonly revokedLinkOpenAttempts = { count: 0 };
+  private readonly expiredLinkOpenAttempts = { count: 0 };
+  private readonly invalidTokenAccesses = { count: 0 };
+  private readonly internalRouteDenied = { count: 0 };
+  private readonly rateLimitTriggers = new Map<string, number>();
+  private readonly validationRejects = new Map<string, number>();
+  private readonly malformedPayloads = { count: 0 };
+  private readonly shareRevocationEnforcements = { count: 0 };
+  private readonly securityConfigErrors = { count: 0 };
+  private readonly startupOutcomes = {
+    success: 0,
+    degraded: 0,
+    failure: 0
+  };
+  private readonly runtimeReliabilityStateChanges = { count: 0 };
+  private readonly backgroundJobRuns = { count: 0 };
+  private readonly backgroundJobFailures = { count: 0 };
+  private readonly cacheOnlyModeEntries = { count: 0 };
+  private readonly providerOutageFallbacks = { count: 0 };
+  private readonly readOnlyDegradedModeEntries = { count: 0 };
+  private readonly versionEndpointReads = { count: 0 };
+  private readonly goLiveCheckReads = { count: 0 };
+  private readonly supportContextReads = { count: 0 };
+  private readonly releaseSummaryReads = { count: 0 };
+  private readonly readinessOutcomes = {
+    fail: 0,
+    warn: 0
+  };
+  private readonly launchGuardrailOutcomes = {
+    block: 0,
+    warn: 0
+  };
+  private readonly opsCheckScriptRuns = { count: 0 };
+  private readonly demoProfileLoads = { count: 0 };
   private readonly searchOutcomes = {
     successes: 0,
     failures: 0
@@ -602,6 +644,45 @@ export class MetricsCollector {
     this.exportUsage.count += 1;
   }
 
+  recordUsageFunnelRead(): void {
+    this.usageFunnelReads.count += 1;
+  }
+
+  recordUsageFrictionRead(): void {
+    this.usageFrictionReads.count += 1;
+  }
+
+  recordCapabilityLimitHit(capability: string): void {
+    this.capabilityLimitHits.count += 1;
+    this.featureUsageByCapability.set(
+      `limit:${capability}`,
+      (this.featureUsageByCapability.get(`limit:${capability}`) ?? 0) + 1
+    );
+  }
+
+  recordExportGenerate(): void {
+    this.exportGenerates.count += 1;
+  }
+
+  recordPlanCapabilityResolution(): void {
+    this.planCapabilityResolutions.count += 1;
+  }
+
+  recordPlanSummaryRead(): void {
+    this.planSummaryReads.count += 1;
+  }
+
+  recordPartnerUsageSummaryRead(): void {
+    this.partnerUsageSummaryReads.count += 1;
+  }
+
+  recordFeatureUsage(capability: string): void {
+    this.featureUsageByCapability.set(
+      capability,
+      (this.featureUsageByCapability.get(capability) ?? 0) + 1
+    );
+  }
+
   recordCtaClick(): void {
     this.ctaClicks.count += 1;
   }
@@ -620,6 +701,102 @@ export class MetricsCollector {
 
   recordValidationSummaryRead(): void {
     this.validationSummaryReads.count += 1;
+  }
+
+  recordRevokedLinkOpenAttempt(): void {
+    this.revokedLinkOpenAttempts.count += 1;
+  }
+
+  recordExpiredLinkOpenAttempt(): void {
+    this.expiredLinkOpenAttempts.count += 1;
+  }
+
+  recordInvalidTokenAccess(): void {
+    this.invalidTokenAccesses.count += 1;
+  }
+
+  recordInternalRouteDenied(): void {
+    this.internalRouteDenied.count += 1;
+  }
+
+  recordRateLimitTrigger(endpoint: string): void {
+    this.rateLimitTriggers.set(endpoint, (this.rateLimitTriggers.get(endpoint) ?? 0) + 1);
+  }
+
+  recordValidationReject(category: string): void {
+    this.validationRejects.set(category, (this.validationRejects.get(category) ?? 0) + 1);
+  }
+
+  recordMalformedPayload(): void {
+    this.malformedPayloads.count += 1;
+  }
+
+  recordShareRevocationEnforcement(): void {
+    this.shareRevocationEnforcements.count += 1;
+  }
+
+  recordSecurityConfigError(): void {
+    this.securityConfigErrors.count += 1;
+  }
+
+  recordStartupOutcome(outcome: "success" | "degraded" | "failure"): void {
+    this.startupOutcomes[outcome] += 1;
+  }
+
+  recordRuntimeReliabilityStateChange(): void {
+    this.runtimeReliabilityStateChanges.count += 1;
+  }
+
+  recordBackgroundJobRun(): void {
+    this.backgroundJobRuns.count += 1;
+  }
+
+  recordBackgroundJobFailure(): void {
+    this.backgroundJobFailures.count += 1;
+  }
+
+  recordCacheOnlyMode(): void {
+    this.cacheOnlyModeEntries.count += 1;
+  }
+
+  recordProviderOutageFallback(): void {
+    this.providerOutageFallbacks.count += 1;
+  }
+
+  recordReadOnlyDegradedMode(): void {
+    this.readOnlyDegradedModeEntries.count += 1;
+  }
+
+  recordVersionEndpointRead(): void {
+    this.versionEndpointReads.count += 1;
+  }
+
+  recordGoLiveCheckRead(): void {
+    this.goLiveCheckReads.count += 1;
+  }
+
+  recordSupportContextRead(): void {
+    this.supportContextReads.count += 1;
+  }
+
+  recordReleaseSummaryRead(): void {
+    this.releaseSummaryReads.count += 1;
+  }
+
+  recordReadinessOutcome(outcome: "fail" | "warn"): void {
+    this.readinessOutcomes[outcome] += 1;
+  }
+
+  recordLaunchGuardrail(status: "block" | "warn"): void {
+    this.launchGuardrailOutcomes[status] += 1;
+  }
+
+  recordOpsCheckScriptRun(): void {
+    this.opsCheckScriptRuns.count += 1;
+  }
+
+  recordDemoProfileLoad(): void {
+    this.demoProfileLoads.count += 1;
   }
 
   recordSearchOutcome(success: boolean): void {
@@ -1089,11 +1266,73 @@ export class MetricsCollector {
       walkthroughViewCount: this.walkthroughViews.count,
       walkthroughDismissCount: this.walkthroughDismisses.count,
       exportUsageCount: this.exportUsage.count,
+      usageFunnelReadCount: this.usageFunnelReads.count,
+      usageFrictionReadCount: this.usageFrictionReads.count,
+      capabilityLimitHitCount: this.capabilityLimitHits.count,
+      exportGenerateCount: this.exportGenerates.count,
+      planCapabilityResolutionCount: this.planCapabilityResolutions.count,
+      planSummaryReadCount: this.planSummaryReads.count,
+      partnerUsageSummaryReadCount: this.partnerUsageSummaryReads.count,
+      featureUsageCountByCapability: Object.fromEntries(this.featureUsageByCapability.entries()),
+      shareToOpenConversionRate: {
+        opens: this.sharedSnapshotOpens.count + this.shortlistShareOpens.count,
+        shares: this.sharedSnapshotCreates.count + this.shortlistShareCreates.count,
+        rate:
+          this.sharedSnapshotCreates.count + this.shortlistShareCreates.count === 0
+            ? 0
+            : Number(
+                (
+                  (this.sharedSnapshotOpens.count + this.shortlistShareOpens.count) /
+                  (this.sharedSnapshotCreates.count + this.shortlistShareCreates.count)
+                ).toFixed(4)
+              )
+      },
+      shortlistToReviewConversionRate: {
+        reviewed: this.reviewStateChanges.count + this.reviewerDecisionCreates.count,
+        shortlistAdds: this.shortlistItemAdds.count,
+        rate:
+          this.shortlistItemAdds.count === 0
+            ? 0
+            : Number(
+                (
+                  (this.reviewStateChanges.count + this.reviewerDecisionCreates.count) /
+                  this.shortlistItemAdds.count
+                ).toFixed(4)
+              )
+      },
       ctaClickCount: this.ctaClicks.count,
       validationPromptViewCount: this.validationPromptViews.count,
       validationPromptResponseCount: this.validationPromptResponses.count,
       sharedSnapshotExpiredCount: this.sharedSnapshotExpired.count,
       validationSummaryReadCount: this.validationSummaryReads.count,
+      revokedLinkOpenAttemptCount: this.revokedLinkOpenAttempts.count,
+      expiredLinkOpenAttemptCount: this.expiredLinkOpenAttempts.count,
+      invalidTokenAccessCount: this.invalidTokenAccesses.count,
+      internalRouteDeniedCount: this.internalRouteDenied.count,
+      rateLimitTriggerCountByEndpoint: Object.fromEntries(this.rateLimitTriggers.entries()),
+      validationRejectCountByCategory: Object.fromEntries(this.validationRejects.entries()),
+      malformedPayloadCount: this.malformedPayloads.count,
+      shareRevocationEnforcementCount: this.shareRevocationEnforcements.count,
+      securityConfigErrorCount: this.securityConfigErrors.count,
+      startupSuccessCount: this.startupOutcomes.success,
+      startupDegradedCount: this.startupOutcomes.degraded,
+      startupFailureCount: this.startupOutcomes.failure,
+      runtimeReliabilityStateChanges: this.runtimeReliabilityStateChanges.count,
+      backgroundJobRunCount: this.backgroundJobRuns.count,
+      backgroundJobFailureCount: this.backgroundJobFailures.count,
+      cacheOnlyModeCount: this.cacheOnlyModeEntries.count,
+      providerOutageFallbackCount: this.providerOutageFallbacks.count,
+      readOnlyDegradedModeCount: this.readOnlyDegradedModeEntries.count,
+      versionEndpointReadCount: this.versionEndpointReads.count,
+      goLiveCheckReadCount: this.goLiveCheckReads.count,
+      supportContextReadCount: this.supportContextReads.count,
+      releaseSummaryReadCount: this.releaseSummaryReads.count,
+      readinessFailCount: this.readinessOutcomes.fail,
+      readinessWarnCount: this.readinessOutcomes.warn,
+      launchGuardrailBlockCount: this.launchGuardrailOutcomes.block,
+      launchGuardrailWarnCount: this.launchGuardrailOutcomes.warn,
+      opsCheckScriptRunCount: this.opsCheckScriptRuns.count,
+      demoProfileLoadCount: this.demoProfileLoads.count,
       dataQualityEventCount: this.dataQuality.totalEvents,
       integrityIncidentOpenCount: this.dataQuality.openCount,
       integrityIncidentResolvedCount: this.dataQuality.resolvedCount,

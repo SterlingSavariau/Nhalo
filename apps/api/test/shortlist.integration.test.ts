@@ -327,4 +327,87 @@ describe("shortlist workflow", () => {
     expect(payload.reviewerDecisionCreateCount).toBeGreaterThan(0);
     expect(payload.collaborationActivityReadCount).toBeGreaterThan(0);
   });
+
+  it("sanitizes shared shortlist output and blocks writes after revocation", async () => {
+    const createShortlistResponse = await app.inject({
+      method: "POST",
+      url: "/shortlists",
+      headers: {
+        "x-nhalo-session-id": sessionId
+      },
+      payload: {
+        title: "Security shortlist"
+      }
+    });
+    const shortlist = createShortlistResponse.json();
+
+    const addItemResponse = await app.inject({
+      method: "POST",
+      url: `/shortlists/${shortlist.id}/items`,
+      payload: {
+        canonicalPropertyId: capturedHome.canonicalPropertyId,
+        sourceSnapshotId: "snapshot-123",
+        sourceHistoryId: "history-123",
+        sourceSearchDefinitionId: "definition-123",
+        capturedHome
+      }
+    });
+    const shortlistItem = addItemResponse.json();
+
+    const shareResponse = await app.inject({
+      method: "POST",
+      url: `/shortlists/${shortlist.id}/share`,
+      headers: {
+        "x-nhalo-session-id": sessionId
+      },
+      payload: {
+        shareMode: "comment_only"
+      }
+    });
+    const shareId = shareResponse.json().share.shareId;
+
+    const sharedOpen = await app.inject({
+      method: "GET",
+      url: `/shared/shortlists/${shareId}`
+    });
+    expect(sharedOpen.statusCode).toBe(200);
+    expect(sharedOpen.json().share.sessionId).toBeUndefined();
+    expect(sharedOpen.json().shortlist.sessionId).toBeUndefined();
+    expect(sharedOpen.json().items[0].sourceSnapshotId).toBeUndefined();
+    expect(sharedOpen.json().items[0].sourceHistoryId).toBeUndefined();
+    expect(sharedOpen.json().items[0].sourceSearchDefinitionId).toBeUndefined();
+
+    const commentResponse = await app.inject({
+      method: "POST",
+      url: "/comments",
+      payload: {
+        shareId,
+        entityType: "shared_shortlist_item",
+        entityId: shortlistItem.id,
+        body: "Leave this on the list."
+      }
+    });
+    expect(commentResponse.statusCode).toBe(201);
+
+    const revokeResponse = await app.inject({
+      method: "POST",
+      url: `/shortlists/shares/${shareId}/revoke`
+    });
+    expect(revokeResponse.statusCode).toBe(200);
+
+    const blockedCommentUpdate = await app.inject({
+      method: "PATCH",
+      url: `/comments/${commentResponse.json().id}`,
+      payload: {
+        body: "This should be blocked."
+      }
+    });
+    expect(blockedCommentUpdate.statusCode).toBe(410);
+
+    const metricsResponse = await app.inject({
+      method: "GET",
+      url: "/metrics"
+    });
+    expect(metricsResponse.json().shareRevocationEnforcementCount).toBeGreaterThanOrEqual(1);
+  });
 });

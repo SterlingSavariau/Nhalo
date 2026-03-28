@@ -221,16 +221,18 @@ export default function App() {
     }
     return `search:${formState.locationType}:${formState.locationValue}`;
   }, [activeDemoScenarioId, formState.locationType, formState.locationValue, sharedSnapshotView, snapshot]);
-  const pilotFeatures = pilotContext?.allowedFeatures;
-  const demoModeEnabled = branding.enableDemoMode && (pilotFeatures?.demoModeEnabled ?? true);
-  const feedbackEnabled = pilotFeatures?.feedbackEnabled ?? true;
-  const sharedSnapshotsEnabled = pilotFeatures?.sharedSnapshotsEnabled ?? true;
+  const pilotCapabilities = pilotContext?.capabilities;
+  const demoModeEnabled = branding.enableDemoMode && (pilotCapabilities?.canUseDemoMode ?? true);
+  const feedbackEnabled = pilotCapabilities?.canSubmitFeedback ?? true;
+  const sharedSnapshotsEnabled = pilotCapabilities?.canShareSnapshots ?? true;
   const sharedShortlistsEnabled =
-    branding.enableSharedShortlists && (pilotFeatures?.sharedShortlistsEnabled ?? true);
-  const shortlistCollaborationEnabled = pilotFeatures?.shortlistCollaborationEnabled ?? true;
+    branding.enableSharedShortlists && (pilotCapabilities?.canShareShortlists ?? true);
+  const shortlistCollaborationEnabled = pilotCapabilities?.canUseCollaboration ?? true;
   const sharedCommentsEnabled = branding.enableSharedComments && shortlistCollaborationEnabled;
   const reviewerDecisionsEnabled =
     branding.enableReviewerDecisions && shortlistCollaborationEnabled;
+  const exportResultsEnabled =
+    branding.enableSharedExports && (pilotCapabilities?.canExportResults ?? true);
 
   async function refreshRecentActivity(sessionId = sessionIdentity.sessionId) {
     if (!sessionId) {
@@ -807,7 +809,7 @@ export default function App() {
 
   async function handleCopySummary() {
     const targetSnapshot = sharedSnapshotView?.snapshot ?? snapshot;
-    if (!targetSnapshot) {
+    if (!targetSnapshot || !exportResultsEnabled) {
       return;
     }
 
@@ -816,11 +818,19 @@ export default function App() {
       await navigator.clipboard.writeText(text);
     }
     await trackUiMetric("export_use");
+    await recordValidationEvent({
+      eventName: "export_generated",
+      sessionId: sessionIdentity.sessionId,
+      snapshotId: targetSnapshot.id,
+      payload: {
+        format: "summary_text"
+      }
+    }).catch(() => undefined);
   }
 
   async function handleDownloadJson() {
     const targetSnapshot = sharedSnapshotView?.snapshot ?? snapshot;
-    if (!targetSnapshot || typeof document === "undefined") {
+    if (!targetSnapshot || !exportResultsEnabled || typeof document === "undefined") {
       return;
     }
 
@@ -834,13 +844,34 @@ export default function App() {
     link.click();
     URL.revokeObjectURL(url);
     await trackUiMetric("export_use");
+    await recordValidationEvent({
+      eventName: "export_generated",
+      sessionId: sessionIdentity.sessionId,
+      snapshotId: targetSnapshot.id,
+      payload: {
+        format: "json"
+      }
+    }).catch(() => undefined);
   }
 
   async function handlePrintView() {
+    if (!exportResultsEnabled) {
+      return;
+    }
+
     if (typeof window !== "undefined") {
       window.print();
     }
     await trackUiMetric("export_use");
+    const targetSnapshot = sharedSnapshotView?.snapshot ?? snapshot;
+    await recordValidationEvent({
+      eventName: "export_generated",
+      sessionId: sessionIdentity.sessionId,
+      snapshotId: targetSnapshot?.id ?? null,
+      payload: {
+        format: "print"
+      }
+    }).catch(() => undefined);
   }
 
   async function handleViewAudit(propertyId: string) {
@@ -1602,6 +1633,9 @@ export default function App() {
                           summary: opsSummary.summary,
                           performance: opsSummary.performance,
                           dataQualitySummary: opsSummary.dataQualitySummary,
+                          goLiveCheck: opsSummary.goLiveCheck,
+                          support: opsSummary.support,
+                          releaseSummary: opsSummary.releaseSummary,
                           errors: opsSummary.errors
                         }
                       : null
@@ -1658,7 +1692,7 @@ export default function App() {
               />
 
               <ExportPanel
-                exportDisabled={!branding.enableSharedExports}
+                exportDisabled={!exportResultsEnabled}
                 onCopySummary={handleCopySummary}
                 onDownloadJson={handleDownloadJson}
                 onPrintView={handlePrintView}
