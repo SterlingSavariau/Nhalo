@@ -316,6 +316,18 @@ textarea {
   gap: 0.55rem;
 }
 
+.offer-readiness-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.checkbox-row {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+}
+
 .note-editor textarea,
 .activity-save textarea {
   min-height: 5.5rem;
@@ -637,6 +649,7 @@ a {
   .content-grid,
   .field-grid,
   .weight-grid,
+  .offer-readiness-grid,
   .summary-grid,
   .provenance-grid,
   .two-column-list,

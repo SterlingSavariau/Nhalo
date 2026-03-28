@@ -23,6 +23,13 @@ import type {
   HistoricalComparisonPayload,
   ListingCacheRecord,
   ListingCacheRepository,
+  OfferFinancingReadiness,
+  OfferPropertyFitConfidence,
+  OfferReadiness,
+  OfferReadinessRecommendation,
+  OfferReadinessStatus,
+  OfferRiskLevel,
+  OfferRiskToleranceAlignment,
   ReviewerDecision,
   ReviewerDecisionValue,
   ShareMode,
@@ -66,6 +73,10 @@ import type {
   UsageFunnelSummary,
   WorkflowActivityRecord
 } from "@nhalo/types";
+import {
+  evaluateOfferReadiness,
+  toOfferReadinessRecommendation
+} from "./offer-readiness";
 
 function randomToken(length = 32): string {
   let token = "";
@@ -135,6 +146,7 @@ type StoredResultNote = ResultNote;
 type StoredSharedShortlist = SharedShortlist;
 type StoredSharedComment = SharedComment;
 type StoredReviewerDecision = ReviewerDecision;
+type StoredOfferReadiness = OfferReadiness;
 type StoredPilotPartner = PilotPartner;
 type StoredPilotLink = PilotLinkRecord;
 type StoredOpsAction = OpsActionRecord;
@@ -817,6 +829,10 @@ function mapStoredShortlistItem(item: StoredShortlistItem): ShortlistItem {
   return clone(item);
 }
 
+function mapStoredOfferReadiness(record: StoredOfferReadiness): OfferReadiness {
+  return clone(record);
+}
+
 function mapStoredResultNote(note: StoredResultNote): ResultNote {
   return clone(note);
 }
@@ -844,6 +860,9 @@ function workflowEventNames(): WorkflowActivityRecord["eventType"][] {
     "shortlist_deleted",
     "shortlist_item_added",
     "shortlist_item_removed",
+    "offer_readiness_created",
+    "offer_readiness_updated",
+    "offer_status_changed",
     "note_created",
     "note_updated",
     "note_deleted",
@@ -876,6 +895,7 @@ function toWorkflowActivity(event: StoredValidationEvent): WorkflowActivityRecor
     eventType: event.eventName as WorkflowActivityRecord["eventType"],
     shortlistId: (event.payload?.shortlistId as string | null | undefined) ?? null,
     shortlistItemId: (event.payload?.shortlistItemId as string | null | undefined) ?? null,
+    offerReadinessId: (event.payload?.offerReadinessId as string | null | undefined) ?? null,
     noteId: (event.payload?.noteId as string | null | undefined) ?? null,
     payload: event.payload ?? null,
     createdAt: event.createdAt
@@ -1018,6 +1038,7 @@ export class InMemorySearchRepository implements SearchRepository {
   public readonly searchDefinitions: SearchDefinition[] = [];
   public readonly shortlists: StoredShortlist[] = [];
   public readonly shortlistItems: StoredShortlistItem[] = [];
+  public readonly offerReadinessRecords: StoredOfferReadiness[] = [];
   public readonly resultNotes: StoredResultNote[] = [];
   public readonly sharedSnapshots: StoredSharedSnapshot[] = [];
   public readonly sharedShortlists: StoredSharedShortlist[] = [];
@@ -1489,6 +1510,11 @@ export class InMemorySearchRepository implements SearchRepository {
       this.shortlistItems.length,
       ...this.shortlistItems.filter((entry) => entry.shortlistId !== id)
     );
+    this.offerReadinessRecords.splice(
+      0,
+      this.offerReadinessRecords.length,
+      ...this.offerReadinessRecords.filter((entry) => entry.shortlistId !== id)
+    );
     this.resultNotes.splice(
       0,
       this.resultNotes.length,
@@ -1569,6 +1595,162 @@ export class InMemorySearchRepository implements SearchRepository {
       .map((entry) => mapStoredShortlistItem(entry));
   }
 
+  async createOfferReadiness(payload: {
+    shortlistId: string;
+    propertyId: string;
+    status?: OfferReadinessStatus;
+    financingReadiness?: OfferFinancingReadiness;
+    propertyFitConfidence?: OfferPropertyFitConfidence;
+    riskToleranceAlignment?: OfferRiskToleranceAlignment;
+    riskLevel?: OfferRiskLevel;
+    userConfirmed?: boolean;
+  }): Promise<OfferReadiness | null> {
+    const item = this.shortlistItems.find(
+      (entry) =>
+        entry.shortlistId === payload.shortlistId && entry.canonicalPropertyId === payload.propertyId
+    );
+    if (!item) {
+      return null;
+    }
+
+    const existing = this.offerReadinessRecords.find(
+      (entry) => entry.shortlistId === payload.shortlistId && entry.propertyId === payload.propertyId
+    );
+    if (existing) {
+      return mapStoredOfferReadiness(existing);
+    }
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateOfferReadiness({
+      item,
+      now,
+      patch: {
+        status: payload.status,
+        financingReadiness: payload.financingReadiness,
+        propertyFitConfidence: payload.propertyFitConfidence,
+        riskToleranceAlignment: payload.riskToleranceAlignment,
+        riskLevel: payload.riskLevel,
+        userConfirmed: payload.userConfirmed
+      }
+    });
+
+    const record: OfferReadiness = {
+      id: createId("offer-readiness"),
+      ...evaluation,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.offerReadinessRecords.push(record);
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "offer_readiness_created",
+      sessionId: this.shortlists.find((entry) => entry.id === payload.shortlistId)?.sessionId ?? null,
+      payload: {
+        shortlistId: payload.shortlistId,
+        shortlistItemId: item.id,
+        offerReadinessId: record.id,
+        propertyId: payload.propertyId,
+        status: record.status
+      },
+      createdAt: now
+    });
+
+    return mapStoredOfferReadiness(record);
+  }
+
+  async listOfferReadiness(shortlistId: string): Promise<OfferReadiness[]> {
+    return this.offerReadinessRecords
+      .filter((entry) => entry.shortlistId === shortlistId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map((entry) => mapStoredOfferReadiness(entry));
+  }
+
+  async getOfferReadiness(propertyId: string, shortlistId?: string): Promise<OfferReadiness | null> {
+    const record = this.offerReadinessRecords
+      .filter((entry) => entry.propertyId === propertyId && (!shortlistId || entry.shortlistId === shortlistId))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
+
+    return record ? mapStoredOfferReadiness(record) : null;
+  }
+
+  async updateOfferReadiness(
+    id: string,
+    patch: {
+      status?: OfferReadinessStatus;
+      financingReadiness?: OfferFinancingReadiness;
+      propertyFitConfidence?: OfferPropertyFitConfidence;
+      riskToleranceAlignment?: OfferRiskToleranceAlignment;
+      riskLevel?: OfferRiskLevel;
+      userConfirmed?: boolean;
+    }
+  ): Promise<OfferReadiness | null> {
+    const record = this.offerReadinessRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const item = this.shortlistItems.find((entry) => entry.id === record.shortlistItemId);
+    if (!item) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const previousStatus = record.status;
+    const evaluation = evaluateOfferReadiness({
+      item,
+      now,
+      current: record,
+      patch
+    });
+
+    Object.assign(record, evaluation, {
+      updatedAt: now
+    });
+
+    const sessionId = this.shortlists.find((entry) => entry.id === record.shortlistId)?.sessionId ?? null;
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "offer_readiness_updated",
+      sessionId,
+      payload: {
+        shortlistId: record.shortlistId,
+        shortlistItemId: record.shortlistItemId,
+        offerReadinessId: record.id,
+        propertyId: record.propertyId,
+        status: record.status
+      },
+      createdAt: now
+    });
+
+    if (previousStatus !== record.status) {
+      this.validationEvents.push({
+        id: createId("workflow"),
+        eventName: "offer_status_changed",
+        sessionId,
+        payload: {
+          shortlistId: record.shortlistId,
+          shortlistItemId: record.shortlistItemId,
+          offerReadinessId: record.id,
+          propertyId: record.propertyId,
+          fromStatus: previousStatus,
+          toStatus: record.status
+        },
+        createdAt: now
+      });
+    }
+
+    return mapStoredOfferReadiness(record);
+  }
+
+  async getOfferReadinessRecommendation(
+    propertyId: string,
+    shortlistId?: string
+  ): Promise<OfferReadinessRecommendation | null> {
+    const record = await this.getOfferReadiness(propertyId, shortlistId);
+    return record ? toOfferReadinessRecommendation(record) : null;
+  }
+
   async updateShortlistItem(
     shortlistId: string,
     itemId: string,
@@ -1615,6 +1797,11 @@ export class InMemorySearchRepository implements SearchRepository {
       0,
       this.resultNotes.length,
       ...this.resultNotes.filter((entry) => entry.entityId !== item.id)
+    );
+    this.offerReadinessRecords.splice(
+      0,
+      this.offerReadinessRecords.length,
+      ...this.offerReadinessRecords.filter((entry) => entry.shortlistItemId !== item.id)
     );
     this.validationEvents.push({
       id: createId("workflow"),
@@ -2858,6 +3045,13 @@ type PrismaClientLike = {
     update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     delete(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   };
+  offerReadiness: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
   resultNote: {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
@@ -3010,6 +3204,32 @@ function mapPrismaShortlistItem(record: Record<string, unknown>): ShortlistItem 
     capturedHome: clone(record.capturedHomePayload as ShortlistItem["capturedHome"]),
     reviewState: record.reviewState as ReviewState,
     addedAt: (record.addedAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaOfferReadiness(record: Record<string, unknown>): OfferReadiness {
+  return {
+    id: record.id as string,
+    propertyId: record.propertyId as string,
+    shortlistId: record.shortlistId as string,
+    shortlistItemId: (record.shortlistItemId as string | null) ?? null,
+    status: record.status as OfferReadinessStatus,
+    readinessScore: Number(record.readinessScore ?? 0),
+    recommendedOfferPrice: Number(record.recommendedOfferPrice ?? 0),
+    confidence: record.confidence as OfferReadiness["confidence"],
+    inputs: {
+      financingReadiness: record.financingReadiness as OfferFinancingReadiness,
+      propertyFitConfidence: record.propertyFitConfidence as OfferPropertyFitConfidence,
+      riskToleranceAlignment: record.riskToleranceAlignment as OfferRiskToleranceAlignment,
+      riskLevel: record.riskLevel as OfferRiskLevel,
+      userConfirmed: Boolean(record.userConfirmed),
+      dataCompletenessScore: Number(record.dataCompletenessScore ?? 0)
+    },
+    blockingIssues: clone((record.blockingIssuesJson as string[] | null) ?? []),
+    nextSteps: clone((record.nextStepsJson as string[] | null) ?? []),
+    lastEvaluatedAt: (record.lastEvaluatedAt as Date).toISOString(),
+    createdAt: (record.createdAt as Date).toISOString(),
     updatedAt: (record.updatedAt as Date).toISOString()
   };
 }
@@ -4119,6 +4339,216 @@ export class PrismaSearchRepository implements SearchRepository {
     });
 
     return records.map((record) => mapPrismaShortlistItem(record));
+  }
+
+  async createOfferReadiness(payload: {
+    shortlistId: string;
+    propertyId: string;
+    status?: OfferReadinessStatus;
+    financingReadiness?: OfferFinancingReadiness;
+    propertyFitConfidence?: OfferPropertyFitConfidence;
+    riskToleranceAlignment?: OfferRiskToleranceAlignment;
+    riskLevel?: OfferRiskLevel;
+    userConfirmed?: boolean;
+  }): Promise<OfferReadiness | null> {
+    const itemRecord = await this.client.shortlistItem.findUnique({
+      where: {
+        shortlistId_canonicalPropertyId: {
+          shortlistId: payload.shortlistId,
+          canonicalPropertyId: payload.propertyId
+        }
+      }
+    });
+    if (!itemRecord) {
+      return null;
+    }
+
+    const existing = await this.client.offerReadiness.findFirst({
+      where: {
+        shortlistId: payload.shortlistId,
+        propertyId: payload.propertyId
+      }
+    });
+    if (existing) {
+      return mapPrismaOfferReadiness(existing);
+    }
+
+    const item = mapPrismaShortlistItem(itemRecord);
+    const now = new Date().toISOString();
+    const evaluation = evaluateOfferReadiness({
+      item,
+      now,
+      patch: {
+        status: payload.status,
+        financingReadiness: payload.financingReadiness,
+        propertyFitConfidence: payload.propertyFitConfidence,
+        riskToleranceAlignment: payload.riskToleranceAlignment,
+        riskLevel: payload.riskLevel,
+        userConfirmed: payload.userConfirmed
+      }
+    });
+
+    const record = await this.client.offerReadiness.create({
+      data: {
+        propertyId: payload.propertyId,
+        shortlistId: payload.shortlistId,
+        shortlistItemId: item.id,
+        status: evaluation.status,
+        readinessScore: evaluation.readinessScore,
+        recommendedOfferPrice: evaluation.recommendedOfferPrice,
+        confidence: evaluation.confidence,
+        financingReadiness: evaluation.inputs.financingReadiness,
+        propertyFitConfidence: evaluation.inputs.propertyFitConfidence,
+        riskToleranceAlignment: evaluation.inputs.riskToleranceAlignment,
+        riskLevel: evaluation.inputs.riskLevel,
+        userConfirmed: evaluation.inputs.userConfirmed,
+        dataCompletenessScore: evaluation.inputs.dataCompletenessScore,
+        blockingIssuesJson: evaluation.blockingIssues,
+        nextStepsJson: evaluation.nextSteps,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    const shortlist = await this.getShortlist(payload.shortlistId);
+    await this.recordValidationEvent({
+      eventName: "offer_readiness_created",
+      sessionId: shortlist?.sessionId ?? null,
+      payload: {
+        shortlistId: payload.shortlistId,
+        shortlistItemId: item.id,
+        offerReadinessId: record.id as string,
+        propertyId: payload.propertyId,
+        status: evaluation.status
+      }
+    });
+
+    return mapPrismaOfferReadiness(record);
+  }
+
+  async listOfferReadiness(shortlistId: string): Promise<OfferReadiness[]> {
+    const records = await this.client.offerReadiness.findMany({
+      where: {
+        shortlistId
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+
+    return records.map((record) => mapPrismaOfferReadiness(record));
+  }
+
+  async getOfferReadiness(propertyId: string, shortlistId?: string): Promise<OfferReadiness | null> {
+    const record = await this.client.offerReadiness.findFirst({
+      where: {
+        propertyId,
+        ...(shortlistId ? { shortlistId } : {})
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+
+    return record ? mapPrismaOfferReadiness(record) : null;
+  }
+
+  async updateOfferReadiness(
+    id: string,
+    patch: {
+      status?: OfferReadinessStatus;
+      financingReadiness?: OfferFinancingReadiness;
+      propertyFitConfidence?: OfferPropertyFitConfidence;
+      riskToleranceAlignment?: OfferRiskToleranceAlignment;
+      riskLevel?: OfferRiskLevel;
+      userConfirmed?: boolean;
+    }
+  ): Promise<OfferReadiness | null> {
+    const existing = await this.client.offerReadiness.findUnique({
+      where: {
+        id
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const itemRecord = await this.client.shortlistItem.findUnique({
+      where: {
+        id: existing.shortlistItemId as string
+      }
+    });
+    if (!itemRecord) {
+      return null;
+    }
+
+    const current = mapPrismaOfferReadiness(existing);
+    const item = mapPrismaShortlistItem(itemRecord);
+    const now = new Date().toISOString();
+    const evaluation = evaluateOfferReadiness({
+      item,
+      now,
+      current,
+      patch
+    });
+
+    const record = await this.client.offerReadiness.update({
+      where: {
+        id
+      },
+      data: {
+        status: evaluation.status,
+        readinessScore: evaluation.readinessScore,
+        recommendedOfferPrice: evaluation.recommendedOfferPrice,
+        confidence: evaluation.confidence,
+        financingReadiness: evaluation.inputs.financingReadiness,
+        propertyFitConfidence: evaluation.inputs.propertyFitConfidence,
+        riskToleranceAlignment: evaluation.inputs.riskToleranceAlignment,
+        riskLevel: evaluation.inputs.riskLevel,
+        userConfirmed: evaluation.inputs.userConfirmed,
+        dataCompletenessScore: evaluation.inputs.dataCompletenessScore,
+        blockingIssuesJson: evaluation.blockingIssues,
+        nextStepsJson: evaluation.nextSteps,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    const shortlist = await this.getShortlist(current.shortlistId);
+    await this.recordValidationEvent({
+      eventName: "offer_readiness_updated",
+      sessionId: shortlist?.sessionId ?? null,
+      payload: {
+        shortlistId: current.shortlistId,
+        shortlistItemId: current.shortlistItemId,
+        offerReadinessId: id,
+        propertyId: current.propertyId,
+        status: evaluation.status
+      }
+    });
+
+    if (current.status !== evaluation.status) {
+      await this.recordValidationEvent({
+        eventName: "offer_status_changed",
+        sessionId: shortlist?.sessionId ?? null,
+        payload: {
+          shortlistId: current.shortlistId,
+          shortlistItemId: current.shortlistItemId,
+          offerReadinessId: id,
+          propertyId: current.propertyId,
+          fromStatus: current.status,
+          toStatus: evaluation.status
+        }
+      });
+    }
+
+    return mapPrismaOfferReadiness(record);
+  }
+
+  async getOfferReadinessRecommendation(
+    propertyId: string,
+    shortlistId?: string
+  ): Promise<OfferReadinessRecommendation | null> {
+    const record = await this.getOfferReadiness(propertyId, shortlistId);
+    return record ? toOfferReadinessRecommendation(record) : null;
   }
 
   async updateShortlistItem(

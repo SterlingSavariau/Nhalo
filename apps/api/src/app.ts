@@ -196,6 +196,43 @@ const shortlistItemUpdateSchema = z.object({
   reviewState: z.enum(["undecided", "interested", "needs_review", "rejected"])
 });
 
+const offerReadinessCreateSchema = z.object({
+  shortlistId: z.string().trim().min(1, "shortlistId is required"),
+  propertyId: z.string().trim().min(1, "propertyId is required"),
+  status: z
+    .enum(["NOT_STARTED", "IN_PROGRESS", "READY", "BLOCKED", "OFFER_SUBMITTED"])
+    .optional(),
+  financingReadiness: z.enum(["not_started", "preapproved", "cash_ready"]).optional(),
+  propertyFitConfidence: z.enum(["not_assessed", "low", "medium", "high"]).optional(),
+  riskToleranceAlignment: z.enum(["not_reviewed", "partial", "aligned"]).optional(),
+  riskLevel: z.enum(["conservative", "balanced", "competitive"]).optional(),
+  userConfirmed: z.boolean().optional()
+});
+
+const offerReadinessUpdateSchema = z
+  .object({
+    status: z
+      .enum(["NOT_STARTED", "IN_PROGRESS", "READY", "BLOCKED", "OFFER_SUBMITTED"])
+      .optional(),
+    financingReadiness: z.enum(["not_started", "preapproved", "cash_ready"]).optional(),
+    propertyFitConfidence: z.enum(["not_assessed", "low", "medium", "high"]).optional(),
+    riskToleranceAlignment: z.enum(["not_reviewed", "partial", "aligned"]).optional(),
+    riskLevel: z.enum(["conservative", "balanced", "competitive"]).optional(),
+    userConfirmed: z.boolean().optional()
+  })
+  .refine(
+    (payload) =>
+      payload.status !== undefined ||
+      payload.financingReadiness !== undefined ||
+      payload.propertyFitConfidence !== undefined ||
+      payload.riskToleranceAlignment !== undefined ||
+      payload.riskLevel !== undefined ||
+      payload.userConfirmed !== undefined,
+    {
+      message: "At least one offer readiness field is required"
+    }
+  );
+
 const resultNoteCreateSchema = z.object({
   sessionId: z.string().trim().min(1).optional(),
   entityType: z.enum(["shortlist_item", "snapshot_result", "shared_snapshot_result"]),
@@ -3648,10 +3685,12 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     const items = await persistence.searchRepository.listShortlistItems(shortlistId);
+    const offerReadiness = await persistence.searchRepository.listOfferReadiness(shortlistId);
     metrics.recordShortlistView();
     return {
       shortlist,
-      items
+      items,
+      offerReadiness
     };
   });
 
@@ -3760,6 +3799,134 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
 
     metrics.recordShortlistItemRemove();
     return reply.status(204).send();
+  });
+
+  app.post("/offer-readiness", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer readiness");
+    }
+
+    ensureWriteCapable(reliability);
+    const payload = offerReadinessCreateSchema.parse(request.body);
+    const record = await persistence.searchRepository.createOfferReadiness(payload);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "SHORTLIST_ITEM_NOT_FOUND",
+          "No shortlisted property was found for this property and shortlist."
+        )
+      );
+    }
+
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    const shortlist = await persistence.searchRepository.getShortlist(payload.shortlistId);
+    await recordValidationEventWithPilot(
+      persistence.searchRepository,
+      {
+        eventName: "shortlist_feature_used",
+        sessionId: shortlist?.sessionId ?? extractSessionId(request),
+        payload: {
+          feature: "offer_readiness_created",
+          shortlistId: payload.shortlistId,
+          propertyId: payload.propertyId,
+          offerReadinessId: record.id
+        }
+      },
+      pilotContext
+    );
+    metrics.recordFeatureUsage("offer_readiness");
+    return reply.status(201).send(record);
+  });
+
+  app.get("/offer-readiness/:propertyId", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer readiness");
+    }
+
+    const params = request.params as { propertyId?: string };
+    const query = request.query as { shortlistId?: string } | undefined;
+    const propertyId = params.propertyId?.trim();
+    const shortlistId = query?.shortlistId?.trim();
+
+    if (!propertyId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid property id", [
+          { field: "propertyId", message: "propertyId is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getOfferReadiness(propertyId, shortlistId);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload("OFFER_READINESS_NOT_FOUND", "No offer readiness record was found for this property.")
+      );
+    }
+
+    return record;
+  });
+
+  app.patch("/offer-readiness/:id", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer readiness");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    const patch = offerReadinessUpdateSchema.parse(request.body);
+
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer readiness id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.updateOfferReadiness(id, patch);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload("OFFER_READINESS_NOT_FOUND", "No offer readiness record was found for this id.")
+      );
+    }
+
+    metrics.recordFeatureUsage("offer_readiness");
+    return record;
+  });
+
+  app.get("/offer-readiness/:propertyId/recommendation", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer readiness");
+    }
+
+    const params = request.params as { propertyId?: string };
+    const query = request.query as { shortlistId?: string } | undefined;
+    const propertyId = params.propertyId?.trim();
+    const shortlistId = query?.shortlistId?.trim();
+
+    if (!propertyId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid property id", [
+          { field: "propertyId", message: "propertyId is required" }
+        ])
+      );
+    }
+
+    const recommendation = await persistence.searchRepository.getOfferReadinessRecommendation(
+      propertyId,
+      shortlistId
+    );
+    if (!recommendation) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_READINESS_NOT_FOUND",
+          "No offer readiness recommendation was found for this property."
+        )
+      );
+    }
+
+    return recommendation;
   });
 
   app.post("/comments", async (request, reply) => {

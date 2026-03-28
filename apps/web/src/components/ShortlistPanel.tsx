@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type {
+  OfferReadiness,
   SharedShortlist,
   ResultNote,
   ReviewState,
@@ -12,11 +13,13 @@ import {
   SHORTLIST_COPY,
   buildWorkflowActivityLabel
 } from "../content";
+import { OfferReadinessCard } from "./OfferReadinessCard";
 
 interface ShortlistPanelProps {
   shortlists: Shortlist[];
   selectedShortlistId: string | null;
   items: ShortlistItem[];
+  offerReadiness: OfferReadiness[];
   notes: ResultNote[];
   workflowActivity: WorkflowActivityRecord[];
   onCreate(payload: { title: string; description?: string | null }): void;
@@ -25,6 +28,27 @@ interface ShortlistPanelProps {
   onDelete(shortlistId: string): void;
   onRemoveItem(shortlistId: string, itemId: string): void;
   onReviewStateChange(shortlistId: string, itemId: string, reviewState: ReviewState): void;
+  onCreateOfferReadiness(payload: {
+    shortlistId: string;
+    propertyId: string;
+    status?: OfferReadiness["status"];
+    financingReadiness?: OfferReadiness["inputs"]["financingReadiness"];
+    propertyFitConfidence?: OfferReadiness["inputs"]["propertyFitConfidence"];
+    riskToleranceAlignment?: OfferReadiness["inputs"]["riskToleranceAlignment"];
+    riskLevel?: OfferReadiness["inputs"]["riskLevel"];
+    userConfirmed?: boolean;
+  }): void;
+  onUpdateOfferReadiness(
+    id: string,
+    patch: {
+      status?: OfferReadiness["status"];
+      financingReadiness?: OfferReadiness["inputs"]["financingReadiness"];
+      propertyFitConfidence?: OfferReadiness["inputs"]["propertyFitConfidence"];
+      riskToleranceAlignment?: OfferReadiness["inputs"]["riskToleranceAlignment"];
+      riskLevel?: OfferReadiness["inputs"]["riskLevel"];
+      userConfirmed?: boolean;
+    }
+  ): void;
   onSaveNote(entityId: string, noteId: string | null, body: string): void;
   onDeleteNote(noteId: string): void;
   onOpenHistoricalCompare(itemId: string): void;
@@ -50,6 +74,7 @@ export function ShortlistPanel({
   shortlists,
   selectedShortlistId,
   items,
+  offerReadiness,
   notes,
   workflowActivity,
   onCreate,
@@ -58,6 +83,8 @@ export function ShortlistPanel({
   onDelete,
   onRemoveItem,
   onReviewStateChange,
+  onCreateOfferReadiness,
+  onUpdateOfferReadiness,
   onSaveNote,
   onDeleteNote,
   onOpenHistoricalCompare,
@@ -75,6 +102,13 @@ export function ShortlistPanel({
     () => shortlists.find((entry) => entry.id === selectedShortlistId) ?? null,
     [selectedShortlistId, shortlists]
   );
+  const offerReadinessByPropertyId = useMemo(() => {
+    const map = new Map<string, OfferReadiness>();
+    for (const entry of offerReadiness) {
+      map.set(entry.propertyId, entry);
+    }
+    return map;
+  }, [offerReadiness]);
 
   return (
     <section className="activity-panel shortlist-panel">
@@ -267,6 +301,13 @@ export function ShortlistPanel({
                       </button>
                     </div>
                   </div>
+
+                  <OfferReadinessCard
+                    item={item}
+                    offerReadiness={offerReadinessByPropertyId.get(item.canonicalPropertyId) ?? null}
+                    onCreate={onCreateOfferReadiness}
+                    onUpdate={onUpdateOfferReadiness}
+                  />
 
                   <label className="note-editor">
                     <span>{RESULT_COPY.resultNotesTitle}</span>

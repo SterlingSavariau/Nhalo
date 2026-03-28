@@ -202,6 +202,7 @@ model Shortlist {
   updatedAt      DateTime @updatedAt
   sourceSnapshot SearchSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
   items          ShortlistItem[]
+  offerReadiness OfferReadiness[]
   sharedLinks    SharedShortlistLink[]
 
   @@index([sessionId, updatedAt])
@@ -224,12 +225,41 @@ model ShortlistItem {
   sourceHistory          SearchRequest? @relation("ShortlistItemSourceHistory", fields: [sourceHistoryId], references: [id], onDelete: SetNull)
   sourceSearchDefinition SearchDefinition? @relation("ShortlistItemSourceDefinition", fields: [sourceSearchDefinitionId], references: [id], onDelete: SetNull)
   notes                  ResultNote[]
+  offerReadiness         OfferReadiness?
   reviewerDecisions      ReviewerDecision[]
   comments               SharedComment[]
 
   @@index([shortlistId, addedAt])
   @@index([canonicalPropertyId, addedAt])
   @@unique([shortlistId, canonicalPropertyId])
+}
+
+model OfferReadiness {
+  id                     String   @id @default(cuid())
+  propertyId             String
+  shortlistId            String
+  shortlistItemId        String   @unique
+  status                 String
+  readinessScore         Int
+  recommendedOfferPrice  Int
+  confidence             String
+  financingReadiness     String
+  propertyFitConfidence  String
+  riskToleranceAlignment String
+  riskLevel              String
+  userConfirmed          Boolean  @default(false)
+  dataCompletenessScore  Int
+  blockingIssuesJson     Json
+  nextStepsJson          Json
+  lastEvaluatedAt        DateTime
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  shortlist              Shortlist @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
+  shortlistItem          ShortlistItem @relation(fields: [shortlistItemId], references: [id], onDelete: Cascade)
+
+  @@index([shortlistId, updatedAt])
+  @@index([propertyId, updatedAt])
+  @@unique([shortlistId, propertyId])
 }
 
 model SharedShortlistLink {

@@ -4,6 +4,7 @@ import type {
   DemoScenario,
   FeedbackRecord,
   HistoricalComparisonPayload,
+  OfferReadiness,
   OpsActionRecord,
   PilotActivityRecord,
   PilotContext,
@@ -31,6 +32,7 @@ import { DEFAULT_WEIGHTS } from "@nhalo/config";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addShortlistItem,
+  createOfferReadiness,
   createPilotLink,
   createPilotPartner,
   createReviewerDecision,
@@ -79,6 +81,7 @@ import {
   trackUiMetric,
   revokeSharedShortlist,
   updateDataQualityEventStatus,
+  updateOfferReadiness,
   updateResultNote,
   updateReviewerDecision,
   updateSharedComment,
@@ -182,6 +185,7 @@ export default function App() {
   const [sharedShortlists, setSharedShortlists] = useState<SharedShortlist[]>([]);
   const [selectedShortlistId, setSelectedShortlistId] = useState<string | null>(null);
   const [shortlistItems, setShortlistItems] = useState<ShortlistItem[]>([]);
+  const [offerReadiness, setOfferReadiness] = useState<OfferReadiness[]>([]);
   const [resultNotes, setResultNotes] = useState<ResultNote[]>([]);
   const [workflowActivity, setWorkflowActivity] = useState<WorkflowActivityRecord[]>([]);
   const [sharedComments, setSharedComments] = useState<SharedComment[]>([]);
@@ -266,6 +270,7 @@ export default function App() {
       setShortlists([]);
       setSharedShortlists([]);
       setShortlistItems([]);
+      setOfferReadiness([]);
       setResultNotes([]);
       setWorkflowActivity([]);
       setSelectedShortlistId(null);
@@ -292,11 +297,13 @@ export default function App() {
     if (!nextSelected) {
       setSharedShortlists([]);
       setShortlistItems([]);
+      setOfferReadiness([]);
       return;
     }
 
     const shortlistPayload = await fetchShortlistItems(nextSelected);
     setShortlistItems(shortlistPayload.items);
+    setOfferReadiness(shortlistPayload.offerReadiness ?? []);
     if (sharedShortlistsEnabled) {
       const shares = await fetchSharedShortlists(nextSelected);
       setSharedShortlists(shares);
@@ -697,6 +704,13 @@ export default function App() {
     }
     return map;
   }, [shortlistItems]);
+  const offerReadinessByPropertyId = useMemo(() => {
+    const map = new Map<string, OfferReadiness>();
+    for (const entry of offerReadiness) {
+      map.set(entry.propertyId, entry);
+    }
+    return map;
+  }, [offerReadiness]);
 
   const selectedHomeNoteContext = useMemo(() => {
     if (!selectedHome) {
@@ -1152,6 +1166,7 @@ export default function App() {
     try {
       const payload = await fetchShortlistItems(shortlistId);
       setShortlistItems(payload.items);
+      setOfferReadiness(payload.offerReadiness ?? []);
     } catch (workflowError) {
       setError(workflowError instanceof Error ? workflowError.message : "Unable to load shortlist");
     }
@@ -1235,6 +1250,47 @@ export default function App() {
     } catch (workflowError) {
       setError(
         workflowError instanceof Error ? workflowError.message : "Unable to remove shortlisted home"
+      );
+    }
+  }
+
+  async function handleCreateOfferReadiness(payload: {
+    shortlistId: string;
+    propertyId: string;
+    status?: OfferReadiness["status"];
+    financingReadiness?: OfferReadiness["inputs"]["financingReadiness"];
+    propertyFitConfidence?: OfferReadiness["inputs"]["propertyFitConfidence"];
+    riskToleranceAlignment?: OfferReadiness["inputs"]["riskToleranceAlignment"];
+    riskLevel?: OfferReadiness["inputs"]["riskLevel"];
+    userConfirmed?: boolean;
+  }) {
+    try {
+      await createOfferReadiness(payload);
+      await refreshWorkflowState(sessionIdentity.sessionId, payload.shortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to start offer readiness"
+      );
+    }
+  }
+
+  async function handleUpdateOfferReadiness(
+    id: string,
+    patch: {
+      status?: OfferReadiness["status"];
+      financingReadiness?: OfferReadiness["inputs"]["financingReadiness"];
+      propertyFitConfidence?: OfferReadiness["inputs"]["propertyFitConfidence"];
+      riskToleranceAlignment?: OfferReadiness["inputs"]["riskToleranceAlignment"];
+      riskLevel?: OfferReadiness["inputs"]["riskLevel"];
+      userConfirmed?: boolean;
+    }
+  ) {
+    try {
+      const record = await updateOfferReadiness(id, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to update offer readiness"
       );
     }
   }
@@ -1584,8 +1640,10 @@ export default function App() {
                 <ShortlistPanel
                   historicalCompareEnabled={branding.enableHistoricalCompare}
                   items={shortlistItems}
+                  offerReadiness={offerReadiness}
                   notes={resultNotes.filter((entry) => entry.entityType === "shortlist_item")}
                   onCopyShareLink={handleCopyShortlistShare}
+                  onCreateOfferReadiness={handleCreateOfferReadiness}
                   onCreateShare={sharedShortlistsEnabled ? handleCreateShortlistShare : undefined}
                   onCreate={handleCreateShortlist}
                   onDelete={handleDeleteShortlist}
@@ -1597,6 +1655,7 @@ export default function App() {
                   onSaveNote={handleSaveResultNote}
                   onSelect={handleSelectShortlist}
                   onTogglePinned={handleToggleShortlistPinned}
+                  onUpdateOfferReadiness={handleUpdateOfferReadiness}
                   selectedShortlistId={selectedShortlistId}
                   sharedShortlists={sharedShortlists}
                   shortlists={shortlists}
@@ -1779,6 +1838,11 @@ export default function App() {
         allHomes={results?.homes ?? []}
         home={selectedHome}
         note={selectedHomeNote}
+        offerReadiness={
+          selectedHome
+            ? offerReadinessByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id) ?? null
+            : null
+        }
         noteEnabled={branding.enableResultNotes && Boolean(selectedHomeNoteContext)}
         onClose={() => setSelectedHomeId(null)}
         onDeleteNote={handleDeleteSelectedHomeNote}

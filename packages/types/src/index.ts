@@ -928,6 +928,52 @@ export type CollaborationRole = "owner" | "viewer" | "reviewer";
 export type SharedShortlistStatus = "active" | "expired" | "revoked";
 export type SharedCommentEntityType = "shared_shortlist_item";
 export type ReviewerDecisionValue = "agree" | "disagree" | "discuss" | "favorite" | "pass";
+export type OfferReadinessStatus =
+  | "NOT_STARTED"
+  | "IN_PROGRESS"
+  | "READY"
+  | "BLOCKED"
+  | "OFFER_SUBMITTED";
+export type OfferFinancingReadiness = "not_started" | "preapproved" | "cash_ready";
+export type OfferPropertyFitConfidence = "not_assessed" | "low" | "medium" | "high";
+export type OfferRiskToleranceAlignment = "not_reviewed" | "partial" | "aligned";
+export type OfferRiskLevel = "conservative" | "balanced" | "competitive";
+
+export interface OfferReadinessInputs {
+  financingReadiness: OfferFinancingReadiness;
+  propertyFitConfidence: OfferPropertyFitConfidence;
+  riskToleranceAlignment: OfferRiskToleranceAlignment;
+  riskLevel: OfferRiskLevel;
+  userConfirmed: boolean;
+  dataCompletenessScore: number;
+}
+
+export interface OfferReadiness {
+  id: string;
+  propertyId: string;
+  shortlistId: string;
+  shortlistItemId?: string | null;
+  status: OfferReadinessStatus;
+  readinessScore: number;
+  recommendedOfferPrice: number;
+  confidence: SafetyConfidence;
+  inputs: OfferReadinessInputs;
+  blockingIssues: string[];
+  nextSteps: string[];
+  lastEvaluatedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OfferReadinessRecommendation {
+  propertyId: string;
+  shortlistId: string;
+  readinessScore: number;
+  recommendedOfferPrice: number;
+  confidence: SafetyConfidence;
+  blockingIssues: string[];
+  nextSteps: string[];
+}
 
 export interface Shortlist {
   id: string;
@@ -1044,6 +1090,9 @@ export type WorkflowActivityType =
   | "shortlist_deleted"
   | "shortlist_item_added"
   | "shortlist_item_removed"
+  | "offer_readiness_created"
+  | "offer_readiness_updated"
+  | "offer_status_changed"
   | "note_created"
   | "note_updated"
   | "note_deleted"
@@ -1055,6 +1104,7 @@ export interface WorkflowActivityRecord {
   eventType: WorkflowActivityType;
   shortlistId?: string | null;
   shortlistItemId?: string | null;
+  offerReadinessId?: string | null;
   noteId?: string | null;
   payload?: Record<string, unknown> | null;
   createdAt: string;
@@ -1452,6 +1502,33 @@ export interface SearchRepository {
     }
   ): Promise<ShortlistItem | null>;
   listShortlistItems(shortlistId: string): Promise<ShortlistItem[]>;
+  createOfferReadiness(payload: {
+    shortlistId: string;
+    propertyId: string;
+    status?: OfferReadinessStatus;
+    financingReadiness?: OfferFinancingReadiness;
+    propertyFitConfidence?: OfferPropertyFitConfidence;
+    riskToleranceAlignment?: OfferRiskToleranceAlignment;
+    riskLevel?: OfferRiskLevel;
+    userConfirmed?: boolean;
+  }): Promise<OfferReadiness | null>;
+  listOfferReadiness(shortlistId: string): Promise<OfferReadiness[]>;
+  getOfferReadiness(propertyId: string, shortlistId?: string): Promise<OfferReadiness | null>;
+  updateOfferReadiness(
+    id: string,
+    patch: {
+      status?: OfferReadinessStatus;
+      financingReadiness?: OfferFinancingReadiness;
+      propertyFitConfidence?: OfferPropertyFitConfidence;
+      riskToleranceAlignment?: OfferRiskToleranceAlignment;
+      riskLevel?: OfferRiskLevel;
+      userConfirmed?: boolean;
+    }
+  ): Promise<OfferReadiness | null>;
+  getOfferReadinessRecommendation(
+    propertyId: string,
+    shortlistId?: string
+  ): Promise<OfferReadinessRecommendation | null>;
   updateShortlistItem(
     shortlistId: string,
     itemId: string,

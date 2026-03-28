@@ -6,6 +6,8 @@ import type {
   FeedbackCategory,
   FeedbackRecord,
   GoLiveCheckSummary,
+  OfferReadiness,
+  OfferReadinessRecommendation,
   OpsActionRecord,
   OpsSummary,
   PilotContext,
@@ -416,12 +418,98 @@ export async function fetchSharedShortlist(shareId: string): Promise<SharedShort
 export async function fetchShortlistItems(id: string): Promise<{
   shortlist: Shortlist;
   items: ShortlistItem[];
+  offerReadiness: OfferReadiness[];
 }> {
   const response = await fetch(`${API_BASE_URL}/shortlists/${id}/items`);
 
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error?.message ?? "Shortlist items fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function createOfferReadiness(payload: {
+  shortlistId: string;
+  propertyId: string;
+  status?: OfferReadiness["status"];
+  financingReadiness?: OfferReadiness["inputs"]["financingReadiness"];
+  propertyFitConfidence?: OfferReadiness["inputs"]["propertyFitConfidence"];
+  riskToleranceAlignment?: OfferReadiness["inputs"]["riskToleranceAlignment"];
+  riskLevel?: OfferReadiness["inputs"]["riskLevel"];
+  userConfirmed?: boolean;
+}): Promise<OfferReadiness> {
+  const response = await fetch(`${API_BASE_URL}/offer-readiness`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer readiness creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchOfferReadiness(
+  propertyId: string,
+  shortlistId?: string
+): Promise<OfferReadiness> {
+  const query = shortlistId ? `?shortlistId=${encodeURIComponent(shortlistId)}` : "";
+  const response = await fetch(`${API_BASE_URL}/offer-readiness/${encodeURIComponent(propertyId)}${query}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer readiness fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function updateOfferReadiness(
+  id: string,
+  patch: {
+    status?: OfferReadiness["status"];
+    financingReadiness?: OfferReadiness["inputs"]["financingReadiness"];
+    propertyFitConfidence?: OfferReadiness["inputs"]["propertyFitConfidence"];
+    riskToleranceAlignment?: OfferReadiness["inputs"]["riskToleranceAlignment"];
+    riskLevel?: OfferReadiness["inputs"]["riskLevel"];
+    userConfirmed?: boolean;
+  }
+): Promise<OfferReadiness> {
+  const response = await fetch(`${API_BASE_URL}/offer-readiness/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer readiness update failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchOfferReadinessRecommendation(
+  propertyId: string,
+  shortlistId?: string
+): Promise<OfferReadinessRecommendation> {
+  const query = shortlistId ? `?shortlistId=${encodeURIComponent(shortlistId)}` : "";
+  const response = await fetch(
+    `${API_BASE_URL}/offer-readiness/${encodeURIComponent(propertyId)}/recommendation${query}`
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer recommendation fetch failed");
   }
 
   return response.json();

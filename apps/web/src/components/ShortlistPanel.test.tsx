@@ -75,6 +75,31 @@ describe("ShortlistPanel", () => {
             }
           }
         ]}
+        offerReadiness={[
+          {
+            id: "offer-1",
+            propertyId: "canonical-1",
+            shortlistId: "shortlist-1",
+            shortlistItemId: "item-1",
+            status: "IN_PROGRESS",
+            readinessScore: 68,
+            recommendedOfferPrice: 389000,
+            confidence: "medium",
+            inputs: {
+              financingReadiness: "preapproved",
+              propertyFitConfidence: "medium",
+              riskToleranceAlignment: "partial",
+              riskLevel: "balanced",
+              userConfirmed: false,
+              dataCompletenessScore: 82
+            },
+            blockingIssues: ["Buyer confirmation is still missing."],
+            nextSteps: ["Confirm budget ceiling", "Finalize offer price"],
+            lastEvaluatedAt: "2026-03-24T12:05:00.000Z",
+            createdAt: "2026-03-24T12:00:00.000Z",
+            updatedAt: "2026-03-24T12:05:00.000Z"
+          }
+        ]}
         notes={[
           {
             id: "note-1",
@@ -87,6 +112,7 @@ describe("ShortlistPanel", () => {
           }
         ]}
         onCreate={vi.fn()}
+        onCreateOfferReadiness={vi.fn()}
         onDelete={vi.fn()}
         onDeleteNote={vi.fn()}
         onOpenHistoricalCompare={vi.fn()}
@@ -95,6 +121,7 @@ describe("ShortlistPanel", () => {
         onSaveNote={vi.fn()}
         onSelect={vi.fn()}
         onTogglePinned={vi.fn()}
+        onUpdateOfferReadiness={vi.fn()}
         selectedShortlistId="shortlist-1"
         shortlists={[
           {
@@ -128,5 +155,7 @@ describe("ShortlistPanel", () => {
     expect(markup).toContain("123 Main St");
     expect(markup).toContain("Workflow history");
     expect(markup).toContain("Compare to current");
+    expect(markup).toContain("Offer readiness");
+    expect(markup).toContain("Recommended offer");
   });
 });

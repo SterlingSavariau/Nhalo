@@ -410,4 +410,126 @@ describe("shortlist workflow", () => {
     });
     expect(metricsResponse.json().shareRevocationEnforcementCount).toBeGreaterThanOrEqual(1);
   });
+
+  it("creates offer readiness records, updates them, and returns deterministic recommendations", async () => {
+    const createShortlistResponse = await app.inject({
+      method: "POST",
+      url: "/shortlists",
+      headers: {
+        "x-nhalo-session-id": sessionId
+      },
+      payload: {
+        title: "Offer readiness shortlist"
+      }
+    });
+    expect(createShortlistResponse.statusCode).toBe(201);
+    const shortlist = createShortlistResponse.json();
+
+    const addItemResponse = await app.inject({
+      method: "POST",
+      url: `/shortlists/${shortlist.id}/items`,
+      payload: {
+        canonicalPropertyId: capturedHome.canonicalPropertyId,
+        capturedHome
+      }
+    });
+    expect(addItemResponse.statusCode).toBe(201);
+    const shortlistItem = addItemResponse.json();
+
+    const createReadinessResponse = await app.inject({
+      method: "POST",
+      url: "/offer-readiness",
+      payload: {
+        shortlistId: shortlist.id,
+        propertyId: capturedHome.canonicalPropertyId,
+        financingReadiness: "preapproved",
+        propertyFitConfidence: "medium",
+        riskToleranceAlignment: "partial",
+        riskLevel: "balanced",
+        userConfirmed: false
+      }
+    });
+    expect(createReadinessResponse.statusCode).toBe(201);
+    const createdReadiness = createReadinessResponse.json();
+    expect(createdReadiness.propertyId).toBe(capturedHome.canonicalPropertyId);
+    expect(createdReadiness.shortlistItemId).toBe(shortlistItem.id);
+    expect(createdReadiness.readinessScore).toBeGreaterThan(0);
+    expect(createdReadiness.blockingIssues.length).toBeGreaterThan(0);
+    expect(createdReadiness.nextSteps).toContain("Finalize offer price");
+
+    const getReadinessResponse = await app.inject({
+      method: "GET",
+      url: `/offer-readiness/${capturedHome.canonicalPropertyId}?shortlistId=${shortlist.id}`
+    });
+    expect(getReadinessResponse.statusCode).toBe(200);
+    expect(getReadinessResponse.json().id).toBe(createdReadiness.id);
+
+    const patchReadinessResponse = await app.inject({
+      method: "PATCH",
+      url: `/offer-readiness/${createdReadiness.id}`,
+      payload: {
+        status: "READY",
+        financingReadiness: "cash_ready",
+        propertyFitConfidence: "high",
+        riskToleranceAlignment: "aligned",
+        riskLevel: "competitive",
+        userConfirmed: true
+      }
+    });
+    expect(patchReadinessResponse.statusCode).toBe(200);
+    const updatedReadiness = patchReadinessResponse.json();
+    expect(updatedReadiness.status).toBe("READY");
+    expect(updatedReadiness.readinessScore).toBeGreaterThan(createdReadiness.readinessScore);
+    expect(updatedReadiness.blockingIssues).toHaveLength(0);
+
+    const recommendationResponse = await app.inject({
+      method: "GET",
+      url: `/offer-readiness/${capturedHome.canonicalPropertyId}/recommendation?shortlistId=${shortlist.id}`
+    });
+    expect(recommendationResponse.statusCode).toBe(200);
+    const recommendation = recommendationResponse.json();
+    expect(recommendation.propertyId).toBe(capturedHome.canonicalPropertyId);
+    expect(recommendation.shortlistId).toBe(shortlist.id);
+    expect(recommendation.readinessScore).toBe(updatedReadiness.readinessScore);
+    expect(recommendation.recommendedOfferPrice).toBe(updatedReadiness.recommendedOfferPrice);
+    expect(recommendation.blockingIssues).toEqual([]);
+    expect(recommendation.nextSteps).toContain("Finalize offer price");
+
+    const shortlistItemsResponse = await app.inject({
+      method: "GET",
+      url: `/shortlists/${shortlist.id}/items`
+    });
+    expect(shortlistItemsResponse.statusCode).toBe(200);
+    expect(shortlistItemsResponse.json().offerReadiness).toHaveLength(1);
+    expect(shortlistItemsResponse.json().offerReadiness[0].id).toBe(createdReadiness.id);
+
+    const workflowActivityResponse = await app.inject({
+      method: "GET",
+      url: "/workflow/activity?limit=20",
+      headers: {
+        "x-nhalo-session-id": sessionId
+      }
+    });
+    expect(workflowActivityResponse.statusCode).toBe(200);
+    expect(
+      workflowActivityResponse
+        .json()
+        .activity.some((entry: { eventType: string; offerReadinessId?: string | null }) => {
+          return (
+            entry.eventType === "offer_readiness_created" &&
+            entry.offerReadinessId === createdReadiness.id
+          );
+        })
+    ).toBe(true);
+    expect(
+      workflowActivityResponse
+        .json()
+        .activity.some((entry: { eventType: string; offerReadinessId?: string | null }) => {
+          return (
+            entry.eventType === "offer_status_changed" &&
+            entry.offerReadinessId === createdReadiness.id
+          );
+        })
+    ).toBe(true);
+  });
 });

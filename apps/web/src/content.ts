@@ -114,6 +114,26 @@ export const SHORTLIST_COPY = {
     "Stored home facts and scores are fixed here. Comments and reviewer decisions are separate workflow notes."
 } as const;
 
+export const OFFER_READINESS_COPY = {
+  title: "Offer readiness",
+  intro:
+    "Offer readiness is a mutable workflow layer. It helps the buyer move from interest to a disciplined offer decision without changing Nhalo scores.",
+  startAction: "Start offer readiness",
+  updateAction: "Update offer readiness",
+  scoreLabel: "Readiness score",
+  recommendedOfferLabel: "Recommended offer",
+  blockingIssuesTitle: "Blocking issues",
+  nextStepsTitle: "Next steps",
+  financingLabel: "Financing readiness",
+  propertyFitLabel: "Property fit confidence",
+  riskAlignmentLabel: "Risk tolerance alignment",
+  riskLevelLabel: "Offer risk level",
+  userConfirmedLabel: "Buyer confirmed this home as a real offer candidate",
+  dataCompletenessLabel: "Data completeness",
+  recommendationWarning:
+    "This recommendation is deterministic and based on stored shortlist data, not live negotiation or legal advice."
+} as const;
+
 export const COLLABORATION_COPY = {
   sharedShortlistTitle: "Shared shortlist review",
   readOnlyLabel: "Read-only access",
@@ -438,6 +458,12 @@ export function buildWorkflowActivityLabel(
       return "Note updated";
     case "note_deleted":
       return "Note deleted";
+    case "offer_readiness_created":
+      return "Offer readiness started";
+    case "offer_readiness_updated":
+      return "Offer readiness updated";
+    case "offer_status_changed":
+      return "Offer status changed";
     case "review_state_changed":
       return "Review state changed";
     default:

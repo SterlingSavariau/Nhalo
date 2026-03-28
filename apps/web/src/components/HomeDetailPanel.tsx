@@ -1,4 +1,4 @@
-import type { ResultNote, ScoredHome } from "@nhalo/types";
+import type { OfferReadiness, ResultNote, ScoredHome } from "@nhalo/types";
 import { RESULT_COPY, buildDecisionLabels, buildTradeoffSummary, geocodePrecisionExplanation } from "../content";
 import { sourceFreshnessLabel } from "../view-model";
 import { useEffect, useState } from "react";
@@ -7,6 +7,7 @@ interface HomeDetailPanelProps {
   home: ScoredHome | null;
   allHomes: ScoredHome[];
   note?: ResultNote | null;
+  offerReadiness?: OfferReadiness | null;
   noteEnabled?: boolean;
   onClose(): void;
   onSaveNote?(body: string): void;
@@ -18,6 +19,7 @@ export function HomeDetailPanel({
   home,
   allHomes,
   note,
+  offerReadiness,
   noteEnabled,
   onClose,
   onSaveNote,
@@ -97,6 +99,35 @@ export function HomeDetailPanel({
           <strong>{home.scores.safety}</strong>
         </div>
       </div>
+
+      {offerReadiness ? (
+        <div className="summary-grid">
+          <div className="summary-block">
+            <h3>Offer readiness</h3>
+            <p>
+              {offerReadiness.status.replaceAll("_", " ").toLowerCase()} · {offerReadiness.readinessScore} readiness
+              score
+            </p>
+            <p className="muted">
+              Recommended offer {offerReadiness.recommendedOfferPrice.toLocaleString("en-US", {
+                style: "currency",
+                currency: "USD",
+                maximumFractionDigits: 0
+              })}{" "}
+              · {offerReadiness.confidence} confidence
+            </p>
+          </div>
+          <div className="summary-block">
+            <h3>Offer blockers and next steps</h3>
+            <p className="muted">
+              {offerReadiness.blockingIssues.length > 0
+                ? offerReadiness.blockingIssues.join(" ")
+                : "No blocking issues are currently stored."}
+            </p>
+            <p className="muted">{offerReadiness.nextSteps.join(" · ")}</p>
+          </div>
+        </div>
+      ) : null}
 
       <div className="summary-block">
         <h3>{RESULT_COPY.whyThisHome}</h3>
