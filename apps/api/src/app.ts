@@ -165,11 +165,49 @@ const rerunRequestSchema = z.object({
   createSnapshot: z.boolean().optional().default(false)
 });
 
+const financialReadinessCreateSchema = z.object({
+  sessionId: z.string().trim().min(1).nullable().optional(),
+  annualHouseholdIncome: z.number().positive().nullable(),
+  monthlyDebtPayments: z.number().min(0).nullable(),
+  availableCashSavings: z.number().min(0).nullable(),
+  creditScoreRange: z
+    .enum(["excellent_760_plus", "good_720_759", "fair_680_719", "limited_620_679", "below_620"])
+    .nullable(),
+  desiredHomePrice: z.number().positive().nullable(),
+  purchaseLocation: z.string().trim().min(2).nullable(),
+  downPaymentPreferencePercent: z.number().min(0).max(100).nullable().optional(),
+  loanType: z.enum(["conventional", "fha", "va", "usda", "other"]).nullable().optional(),
+  preApprovalStatus: z.enum(["not_started", "in_progress", "verified", "expired"]).nullable(),
+  preApprovalExpiresAt: z.string().datetime().nullable().optional(),
+  proofOfFundsStatus: z.enum(["not_started", "partial", "verified"]).nullable()
+});
+
+const financialReadinessUpdateSchema = z
+  .object({
+    annualHouseholdIncome: z.number().positive().nullable().optional(),
+    monthlyDebtPayments: z.number().min(0).nullable().optional(),
+    availableCashSavings: z.number().min(0).nullable().optional(),
+    creditScoreRange: z
+      .enum(["excellent_760_plus", "good_720_759", "fair_680_719", "limited_620_679", "below_620"])
+      .nullable()
+      .optional(),
+    desiredHomePrice: z.number().positive().nullable().optional(),
+    purchaseLocation: z.string().trim().min(2).nullable().optional(),
+    downPaymentPreferencePercent: z.number().min(0).max(100).nullable().optional(),
+    loanType: z.enum(["conventional", "fha", "va", "usda", "other"]).nullable().optional(),
+    preApprovalStatus: z.enum(["not_started", "in_progress", "verified", "expired"]).nullable().optional(),
+    preApprovalExpiresAt: z.string().datetime().nullable().optional(),
+    proofOfFundsStatus: z.enum(["not_started", "partial", "verified"]).nullable().optional()
+  })
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one financial readiness field is required"
+  });
+
 const shortlistCreateSchema = z.object({
-  sessionId: z.string().trim().min(1).optional(),
+  sessionId: z.string().trim().min(1).nullable().optional(),
   title: z.string().trim().min(1, "title is required").max(160),
-  description: z.string().trim().max(500).optional(),
-  sourceSnapshotId: z.string().trim().min(1).optional(),
+  description: z.string().trim().max(500).nullable().optional(),
+  sourceSnapshotId: z.string().trim().min(1).nullable().optional(),
   pinned: z.boolean().optional()
 });
 
@@ -185,9 +223,9 @@ const shortlistUpdateSchema = z
 
 const shortlistItemCreateSchema = z.object({
   canonicalPropertyId: z.string().trim().min(1, "canonicalPropertyId is required"),
-  sourceSnapshotId: z.string().trim().min(1).optional(),
-  sourceHistoryId: z.string().trim().min(1).optional(),
-  sourceSearchDefinitionId: z.string().trim().min(1).optional(),
+  sourceSnapshotId: z.string().trim().min(1).nullable().optional(),
+  sourceHistoryId: z.string().trim().min(1).nullable().optional(),
+  sourceSearchDefinitionId: z.string().trim().min(1).nullable().optional(),
   capturedHome: z.record(z.string(), z.unknown()),
   reviewState: z.enum(["undecided", "interested", "needs_review", "rejected"]).optional()
 });
@@ -3384,6 +3422,113 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
 
     metrics.recordSearchHistoryRead();
     return historyRecord;
+  });
+
+  app.post("/financial-readiness", async (request, reply) => {
+    ensureWriteCapable(reliability);
+    const payload = financialReadinessCreateSchema.parse(request.body);
+    const sessionId = extractSessionId(request, payload.sessionId ?? null);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    const record = await persistence.searchRepository.createFinancialReadiness({
+      ...payload,
+      sessionId,
+      partnerId: pilotContext?.partner.id ?? null
+    });
+
+    metrics.recordFinancialReadinessCreate();
+    metrics.recordFeatureUsage("financial_readiness");
+
+    return reply.status(201).send(record);
+  });
+
+  app.get("/financial-readiness", async (request) => {
+    const query = request.query as { sessionId?: string } | undefined;
+    const sessionId = extractSessionId(request, query?.sessionId?.trim() || null);
+    const record = await persistence.searchRepository.getLatestFinancialReadiness(sessionId);
+
+    return {
+      record
+    };
+  });
+
+  app.get("/financial-readiness/:id", async (request, reply) => {
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid financial readiness id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getFinancialReadiness(id);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "FINANCIAL_READINESS_NOT_FOUND",
+          "No financial readiness record was found for this id."
+        )
+      );
+    }
+
+    return record;
+  });
+
+  app.patch("/financial-readiness/:id", async (request, reply) => {
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    const patch = financialReadinessUpdateSchema.parse(request.body);
+
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid financial readiness id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.updateFinancialReadiness(id, patch);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "FINANCIAL_READINESS_NOT_FOUND",
+          "No financial readiness record was found for this id."
+        )
+      );
+    }
+
+    metrics.recordFinancialReadinessUpdate();
+    metrics.recordFeatureUsage("financial_readiness");
+    return record;
+  });
+
+  app.get("/financial-readiness/:id/summary", async (request, reply) => {
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid financial readiness id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const summary = await persistence.searchRepository.getFinancialReadinessSummary(id);
+    if (!summary) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "FINANCIAL_READINESS_NOT_FOUND",
+          "No financial readiness summary was found for this id."
+        )
+      );
+    }
+
+    metrics.recordFinancialReadinessSummaryView();
+    return summary;
   });
 
   app.post("/shortlists", async (request, reply) => {

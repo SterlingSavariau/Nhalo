@@ -5,6 +5,8 @@ import type {
   DemoScenario,
   FeedbackCategory,
   FeedbackRecord,
+  FinancialReadiness,
+  FinancialReadinessSummary,
   GoLiveCheckSummary,
   NegotiationEvent,
   NegotiationRecord,
@@ -552,6 +554,110 @@ export async function fetchNegotiationSummary(
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error?.message ?? "Negotiation summary fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function createFinancialReadiness(payload: {
+  sessionId?: string | null;
+  annualHouseholdIncome: number | null;
+  monthlyDebtPayments: number | null;
+  availableCashSavings: number | null;
+  creditScoreRange: FinancialReadiness["creditScoreRange"];
+  desiredHomePrice: number | null;
+  purchaseLocation: string | null;
+  downPaymentPreferencePercent?: number | null;
+  loanType?: FinancialReadiness["loanType"];
+  preApprovalStatus: FinancialReadiness["preApprovalStatus"];
+  preApprovalExpiresAt?: string | null;
+  proofOfFundsStatus: FinancialReadiness["proofOfFundsStatus"];
+}): Promise<FinancialReadiness> {
+  const response = await fetch(`${API_BASE_URL}/financial-readiness`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Financial readiness creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchLatestFinancialReadiness(
+  sessionId?: string | null
+): Promise<FinancialReadiness | null> {
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+  const response = await fetch(`${API_BASE_URL}/financial-readiness${query}`, {
+    headers: buildSessionHeaders(sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Financial readiness fetch failed");
+  }
+
+  const payload = await response.json();
+  return payload.record ?? null;
+}
+
+export async function fetchFinancialReadiness(id: string): Promise<FinancialReadiness> {
+  const response = await fetch(`${API_BASE_URL}/financial-readiness/${encodeURIComponent(id)}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Financial readiness fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function updateFinancialReadiness(
+  id: string,
+  patch: {
+    annualHouseholdIncome?: number | null;
+    monthlyDebtPayments?: number | null;
+    availableCashSavings?: number | null;
+    creditScoreRange?: FinancialReadiness["creditScoreRange"];
+    desiredHomePrice?: number | null;
+    purchaseLocation?: string | null;
+    downPaymentPreferencePercent?: number | null;
+    loanType?: FinancialReadiness["loanType"];
+    preApprovalStatus?: FinancialReadiness["preApprovalStatus"];
+    preApprovalExpiresAt?: string | null;
+    proofOfFundsStatus?: FinancialReadiness["proofOfFundsStatus"];
+  }
+): Promise<FinancialReadiness> {
+  const response = await fetch(`${API_BASE_URL}/financial-readiness/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Financial readiness update failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchFinancialReadinessSummary(
+  id: string
+): Promise<FinancialReadinessSummary> {
+  const response = await fetch(`${API_BASE_URL}/financial-readiness/${encodeURIComponent(id)}/summary`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Financial readiness summary fetch failed");
   }
 
   return response.json();

@@ -120,6 +120,9 @@ export class MetricsCollector {
   private readonly shortlistItemAdds = { count: 0 };
   private readonly shortlistItemRemoves = { count: 0 };
   private readonly shortlistViews = { count: 0 };
+  private readonly financialReadinessCreates = { count: 0 };
+  private readonly financialReadinessUpdates = { count: 0 };
+  private readonly financialReadinessSummaryViews = { count: 0 };
   private readonly negotiationCreates = { count: 0 };
   private readonly negotiationEventCreates = { count: 0 };
   private readonly negotiationStatusChanges = { count: 0 };
@@ -482,6 +485,18 @@ export class MetricsCollector {
 
   recordShortlistView(): void {
     this.shortlistViews.count += 1;
+  }
+
+  recordFinancialReadinessCreate(): void {
+    this.financialReadinessCreates.count += 1;
+  }
+
+  recordFinancialReadinessUpdate(): void {
+    this.financialReadinessUpdates.count += 1;
+  }
+
+  recordFinancialReadinessSummaryView(): void {
+    this.financialReadinessSummaryViews.count += 1;
   }
 
   recordNegotiationCreate(): void {
@@ -1252,6 +1267,9 @@ export class MetricsCollector {
       shortlistItemAddCount: this.shortlistItemAdds.count,
       shortlistItemRemoveCount: this.shortlistItemRemoves.count,
       shortlistViewCount: this.shortlistViews.count,
+      financialReadinessCreateCount: this.financialReadinessCreates.count,
+      financialReadinessUpdateCount: this.financialReadinessUpdates.count,
+      financialReadinessSummaryViewCount: this.financialReadinessSummaryViews.count,
       negotiationCreateCount: this.negotiationCreates.count,
       negotiationEventCreateCount: this.negotiationEventCreates.count,
       negotiationStatusChangeCount: this.negotiationStatusChanges.count,

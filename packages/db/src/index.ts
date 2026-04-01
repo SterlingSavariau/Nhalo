@@ -11,13 +11,19 @@ import {
 } from "@nhalo/config";
 import { randomBytes } from "node:crypto";
 import type {
+  AffordabilityClassification,
   CollaborationActivityRecord,
   CollaborationRole,
+  CreditScoreRange,
   DataQualityEvent,
   DataQualityStatus,
   DataQualitySummary,
   EffectiveCapabilities,
   FeedbackRecord,
+  FinancialReadiness,
+  FinancialReadinessInputs,
+  FinancialReadinessState,
+  FinancialReadinessSummary,
   GeocodeCacheRecord,
   GeocodeCacheRepository,
   HistoricalComparisonPayload,
@@ -43,6 +49,7 @@ import type {
   MarketSnapshotRepository,
   OpsActionRecord,
   OpsSummary,
+  LoanType,
   PlanSummary,
   PlanTier,
   PartnerUsageSummary,
@@ -72,12 +79,18 @@ import type {
   SearchRepository,
   SharedSnapshotRecord,
   SharedSnapshotView,
+  PreApprovalStatus,
+  ProofOfFundsStatus,
   ValidationEventRecord,
   ValidationSummary,
   UsageFrictionSummary,
   UsageFunnelSummary,
   WorkflowActivityRecord
 } from "@nhalo/types";
+import {
+  evaluateFinancialReadiness,
+  toFinancialReadinessSummary
+} from "./financial-readiness";
 import {
   evaluateOfferReadiness,
   toOfferReadinessRecommendation
@@ -152,6 +165,7 @@ type StoredResultNote = ResultNote;
 type StoredSharedShortlist = SharedShortlist;
 type StoredSharedComment = SharedComment;
 type StoredReviewerDecision = ReviewerDecision;
+type StoredFinancialReadiness = FinancialReadiness;
 type StoredOfferReadiness = OfferReadiness;
 type StoredNegotiationRecord = NegotiationRecord;
 type StoredNegotiationEvent = NegotiationEvent;
@@ -869,8 +883,15 @@ function mapStoredReviewerDecision(record: StoredReviewerDecision): ReviewerDeci
   return clone(record);
 }
 
+function mapStoredFinancialReadiness(record: StoredFinancialReadiness): FinancialReadiness {
+  return clone(record);
+}
+
 function workflowEventNames(): WorkflowActivityRecord["eventType"][] {
   return [
+    "financial_readiness_created",
+    "financial_readiness_updated",
+    "financial_readiness_status_changed",
     "shortlist_created",
     "shortlist_updated",
     "shortlist_deleted",
@@ -1063,6 +1084,7 @@ export class InMemorySearchRepository implements SearchRepository {
   public readonly searchDefinitions: SearchDefinition[] = [];
   public readonly shortlists: StoredShortlist[] = [];
   public readonly shortlistItems: StoredShortlistItem[] = [];
+  public readonly financialReadinessRecords: StoredFinancialReadiness[] = [];
   public readonly offerReadinessRecords: StoredOfferReadiness[] = [];
   public readonly negotiations: StoredNegotiationRecord[] = [];
   public readonly negotiationEvents: StoredNegotiationEvent[] = [];
@@ -1635,6 +1657,137 @@ export class InMemorySearchRepository implements SearchRepository {
       .filter((entry) => entry.shortlistId === shortlistId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map((entry) => mapStoredShortlistItem(entry));
+  }
+
+  async createFinancialReadiness(payload: {
+    sessionId?: string | null;
+    partnerId?: string | null;
+    annualHouseholdIncome: number | null;
+    monthlyDebtPayments: number | null;
+    availableCashSavings: number | null;
+    creditScoreRange: CreditScoreRange | null;
+    desiredHomePrice: number | null;
+    purchaseLocation: string | null;
+    downPaymentPreferencePercent?: number | null;
+    loanType?: LoanType | null;
+    preApprovalStatus: PreApprovalStatus | null;
+    preApprovalExpiresAt?: string | null;
+    proofOfFundsStatus: ProofOfFundsStatus | null;
+  }): Promise<FinancialReadiness> {
+    const now = new Date().toISOString();
+    const evaluation = evaluateFinancialReadiness({
+      now,
+      sessionId: payload.sessionId ?? null,
+      partnerId: payload.partnerId ?? null,
+      patch: payload
+    });
+
+    const record: FinancialReadiness = {
+      id: createId("financial-readiness"),
+      ...evaluation,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.financialReadinessRecords.push(record);
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "financial_readiness_created",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        financialReadinessId: record.id,
+        readinessState: record.readinessState,
+        affordabilityClassification: record.affordabilityClassification
+      },
+      createdAt: now
+    });
+
+    return mapStoredFinancialReadiness(record);
+  }
+
+  async getFinancialReadiness(id: string): Promise<FinancialReadiness | null> {
+    const record = this.financialReadinessRecords.find((entry) => entry.id === id) ?? null;
+    return record ? mapStoredFinancialReadiness(record) : null;
+  }
+
+  async getLatestFinancialReadiness(sessionId?: string | null): Promise<FinancialReadiness | null> {
+    if (!sessionId) {
+      return null;
+    }
+
+    const record =
+      this.financialReadinessRecords
+        .filter((entry) => entry.sessionId === sessionId)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
+
+    return record ? mapStoredFinancialReadiness(record) : null;
+  }
+
+  async updateFinancialReadiness(
+    id: string,
+    patch: {
+      annualHouseholdIncome?: number | null;
+      monthlyDebtPayments?: number | null;
+      availableCashSavings?: number | null;
+      creditScoreRange?: CreditScoreRange | null;
+      desiredHomePrice?: number | null;
+      purchaseLocation?: string | null;
+      downPaymentPreferencePercent?: number | null;
+      loanType?: LoanType | null;
+      preApprovalStatus?: PreApprovalStatus | null;
+      preApprovalExpiresAt?: string | null;
+      proofOfFundsStatus?: ProofOfFundsStatus | null;
+    }
+  ): Promise<FinancialReadiness | null> {
+    const record = this.financialReadinessRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const previousState = record.readinessState;
+    const evaluation = evaluateFinancialReadiness({
+      now,
+      current: record,
+      patch
+    });
+
+    Object.assign(record, evaluation, {
+      updatedAt: now
+    });
+
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "financial_readiness_updated",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        financialReadinessId: record.id,
+        readinessState: record.readinessState,
+        affordabilityClassification: record.affordabilityClassification
+      },
+      createdAt: now
+    });
+
+    if (previousState !== record.readinessState) {
+      this.validationEvents.push({
+        id: createId("workflow"),
+        eventName: "financial_readiness_status_changed",
+        sessionId: record.sessionId ?? null,
+        payload: {
+          financialReadinessId: record.id,
+          fromState: previousState,
+          toState: record.readinessState
+        },
+        createdAt: now
+      });
+    }
+
+    return mapStoredFinancialReadiness(record);
+  }
+
+  async getFinancialReadinessSummary(id: string): Promise<FinancialReadinessSummary | null> {
+    const record = await this.getFinancialReadiness(id);
+    return record ? toFinancialReadinessSummary(record) : null;
   }
 
   async createOfferReadiness(payload: {
@@ -3334,6 +3487,13 @@ type PrismaClientLike = {
     update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     delete(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   };
+  financialReadiness: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
   offerReadiness: {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
@@ -3505,6 +3665,57 @@ function mapPrismaShortlistItem(record: Record<string, unknown>): ShortlistItem 
     capturedHome: clone(record.capturedHomePayload as ShortlistItem["capturedHome"]),
     reviewState: record.reviewState as ReviewState,
     addedAt: (record.addedAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaFinancialReadiness(record: Record<string, unknown>): FinancialReadiness {
+  return {
+    id: record.id as string,
+    sessionId: (record.sessionId as string | null) ?? null,
+    partnerId: (record.partnerId as string | null) ?? null,
+    annualHouseholdIncome: (record.annualHouseholdIncome as number | null) ?? null,
+    monthlyDebtPayments: (record.monthlyDebtPayments as number | null) ?? null,
+    availableCashSavings: (record.availableCashSavings as number | null) ?? null,
+    creditScoreRange: (record.creditScoreRange as CreditScoreRange | null) ?? null,
+    desiredHomePrice: (record.desiredHomePrice as number | null) ?? null,
+    purchaseLocation: (record.purchaseLocation as string | null) ?? null,
+    downPaymentPreferencePercent:
+      (record.downPaymentPreferencePercent as number | null) ?? null,
+    loanType: (record.loanType as LoanType | null) ?? null,
+    preApprovalStatus: (record.preApprovalStatus as PreApprovalStatus | null) ?? null,
+    preApprovalExpiresAt:
+      record.preApprovalExpiresAt instanceof Date
+        ? record.preApprovalExpiresAt.toISOString()
+        : ((record.preApprovalExpiresAt as string | null) ?? null),
+    proofOfFundsStatus: (record.proofOfFundsStatus as ProofOfFundsStatus | null) ?? null,
+    maxAffordableHomePrice: (record.maxAffordableHomePrice as number | null) ?? null,
+    estimatedMonthlyPayment: (record.estimatedMonthlyPayment as number | null) ?? null,
+    estimatedDownPayment: (record.estimatedDownPayment as number | null) ?? null,
+    estimatedClosingCosts: (record.estimatedClosingCosts as number | null) ?? null,
+    totalCashRequiredToClose: (record.totalCashRequiredToClose as number | null) ?? null,
+    debtToIncomeRatio: (record.debtToIncomeRatio as number | null) ?? null,
+    housingRatio: (record.housingRatio as number | null) ?? null,
+    affordabilityClassification: record.affordabilityClassification as AffordabilityClassification,
+    readinessState: record.readinessState as FinancialReadinessState,
+    blockers: clone((record.blockersJson as FinancialReadiness["blockers"] | null) ?? []),
+    recommendation: (record.recommendation as string | null) ?? "",
+    risk: (record.risk as string | null) ?? "",
+    alternative: (record.alternative as string | null) ?? "",
+    nextAction: (record.nextAction as string | null) ?? "",
+    nextSteps: clone((record.nextStepsJson as string[] | null) ?? []),
+    assumptionsUsed: clone(
+      (record.assumptionsJson as FinancialReadiness["assumptionsUsed"] | null) ?? {
+        interestRate: null,
+        propertyTaxRate: null,
+        insuranceMonthly: null,
+        closingCostPercent: null,
+        downPaymentPercent: null,
+        loanType: null
+      }
+    ),
+    lastEvaluatedAt: (record.lastEvaluatedAt as Date).toISOString(),
+    createdAt: (record.createdAt as Date).toISOString(),
     updatedAt: (record.updatedAt as Date).toISOString()
   };
 }
@@ -4469,6 +4680,206 @@ export class PrismaSearchRepository implements SearchRepository {
       demoScenarioId: (record.demoScenarioId as string | null) ?? null,
       rerunCount
     });
+  }
+
+  async createFinancialReadiness(payload: {
+    sessionId?: string | null;
+    partnerId?: string | null;
+    annualHouseholdIncome: number | null;
+    monthlyDebtPayments: number | null;
+    availableCashSavings: number | null;
+    creditScoreRange: CreditScoreRange | null;
+    desiredHomePrice: number | null;
+    purchaseLocation: string | null;
+    downPaymentPreferencePercent?: number | null;
+    loanType?: LoanType | null;
+    preApprovalStatus: PreApprovalStatus | null;
+    preApprovalExpiresAt?: string | null;
+    proofOfFundsStatus: ProofOfFundsStatus | null;
+  }): Promise<FinancialReadiness> {
+    const now = new Date().toISOString();
+    const evaluation = evaluateFinancialReadiness({
+      now,
+      sessionId: payload.sessionId ?? null,
+      partnerId: payload.partnerId ?? null,
+      patch: payload
+    });
+
+    const record = await this.client.financialReadiness.create({
+      data: {
+        sessionId: evaluation.sessionId ?? null,
+        partnerId: evaluation.partnerId ?? null,
+        annualHouseholdIncome: evaluation.annualHouseholdIncome,
+        monthlyDebtPayments: evaluation.monthlyDebtPayments,
+        availableCashSavings: evaluation.availableCashSavings,
+        creditScoreRange: evaluation.creditScoreRange,
+        desiredHomePrice: evaluation.desiredHomePrice,
+        purchaseLocation: evaluation.purchaseLocation,
+        downPaymentPreferencePercent: evaluation.downPaymentPreferencePercent,
+        loanType: evaluation.loanType,
+        preApprovalStatus: evaluation.preApprovalStatus,
+        preApprovalExpiresAt: evaluation.preApprovalExpiresAt ? new Date(evaluation.preApprovalExpiresAt) : null,
+        proofOfFundsStatus: evaluation.proofOfFundsStatus,
+        maxAffordableHomePrice: evaluation.maxAffordableHomePrice,
+        estimatedMonthlyPayment: evaluation.estimatedMonthlyPayment,
+        estimatedDownPayment: evaluation.estimatedDownPayment,
+        estimatedClosingCosts: evaluation.estimatedClosingCosts,
+        totalCashRequiredToClose: evaluation.totalCashRequiredToClose,
+        debtToIncomeRatio: evaluation.debtToIncomeRatio,
+        housingRatio: evaluation.housingRatio,
+        affordabilityClassification: evaluation.affordabilityClassification,
+        readinessState: evaluation.readinessState,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        assumptionsJson: evaluation.assumptionsUsed,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "financial_readiness_created",
+      sessionId: evaluation.sessionId ?? null,
+      payload: {
+        financialReadinessId: record.id as string,
+        readinessState: evaluation.readinessState,
+        affordabilityClassification: evaluation.affordabilityClassification
+      }
+    });
+
+    return mapPrismaFinancialReadiness(record);
+  }
+
+  async getFinancialReadiness(id: string): Promise<FinancialReadiness | null> {
+    const record = await this.client.financialReadiness.findUnique({
+      where: {
+        id
+      }
+    });
+
+    return record ? mapPrismaFinancialReadiness(record) : null;
+  }
+
+  async getLatestFinancialReadiness(sessionId?: string | null): Promise<FinancialReadiness | null> {
+    if (!sessionId) {
+      return null;
+    }
+
+    const record = await this.client.financialReadiness.findFirst({
+      where: {
+        sessionId
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+
+    return record ? mapPrismaFinancialReadiness(record) : null;
+  }
+
+  async updateFinancialReadiness(
+    id: string,
+    patch: {
+      annualHouseholdIncome?: number | null;
+      monthlyDebtPayments?: number | null;
+      availableCashSavings?: number | null;
+      creditScoreRange?: CreditScoreRange | null;
+      desiredHomePrice?: number | null;
+      purchaseLocation?: string | null;
+      downPaymentPreferencePercent?: number | null;
+      loanType?: LoanType | null;
+      preApprovalStatus?: PreApprovalStatus | null;
+      preApprovalExpiresAt?: string | null;
+      proofOfFundsStatus?: ProofOfFundsStatus | null;
+    }
+  ): Promise<FinancialReadiness | null> {
+    const existing = await this.client.financialReadiness.findUnique({
+      where: {
+        id
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const current = mapPrismaFinancialReadiness(existing);
+    const now = new Date().toISOString();
+    const previousState = current.readinessState;
+    const evaluation = evaluateFinancialReadiness({
+      now,
+      current,
+      patch
+    });
+
+    const record = await this.client.financialReadiness.update({
+      where: {
+        id
+      },
+      data: {
+        sessionId: evaluation.sessionId ?? null,
+        partnerId: evaluation.partnerId ?? null,
+        annualHouseholdIncome: evaluation.annualHouseholdIncome,
+        monthlyDebtPayments: evaluation.monthlyDebtPayments,
+        availableCashSavings: evaluation.availableCashSavings,
+        creditScoreRange: evaluation.creditScoreRange,
+        desiredHomePrice: evaluation.desiredHomePrice,
+        purchaseLocation: evaluation.purchaseLocation,
+        downPaymentPreferencePercent: evaluation.downPaymentPreferencePercent,
+        loanType: evaluation.loanType,
+        preApprovalStatus: evaluation.preApprovalStatus,
+        preApprovalExpiresAt: evaluation.preApprovalExpiresAt ? new Date(evaluation.preApprovalExpiresAt) : null,
+        proofOfFundsStatus: evaluation.proofOfFundsStatus,
+        maxAffordableHomePrice: evaluation.maxAffordableHomePrice,
+        estimatedMonthlyPayment: evaluation.estimatedMonthlyPayment,
+        estimatedDownPayment: evaluation.estimatedDownPayment,
+        estimatedClosingCosts: evaluation.estimatedClosingCosts,
+        totalCashRequiredToClose: evaluation.totalCashRequiredToClose,
+        debtToIncomeRatio: evaluation.debtToIncomeRatio,
+        housingRatio: evaluation.housingRatio,
+        affordabilityClassification: evaluation.affordabilityClassification,
+        readinessState: evaluation.readinessState,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        assumptionsJson: evaluation.assumptionsUsed,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "financial_readiness_updated",
+      sessionId: evaluation.sessionId ?? null,
+      payload: {
+        financialReadinessId: id,
+        readinessState: evaluation.readinessState,
+        affordabilityClassification: evaluation.affordabilityClassification
+      }
+    });
+
+    if (previousState !== evaluation.readinessState) {
+      await this.recordValidationEvent({
+        eventName: "financial_readiness_status_changed",
+        sessionId: evaluation.sessionId ?? null,
+        payload: {
+          financialReadinessId: id,
+          fromState: previousState,
+          toState: evaluation.readinessState
+        }
+      });
+    }
+
+    return mapPrismaFinancialReadiness(record);
+  }
+
+  async getFinancialReadinessSummary(id: string): Promise<FinancialReadinessSummary | null> {
+    const record = await this.getFinancialReadiness(id);
+    return record ? toFinancialReadinessSummary(record) : null;
   }
 
   async createShortlist(payload: {

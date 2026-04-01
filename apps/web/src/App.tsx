@@ -3,6 +3,7 @@ import type {
   DataQualityEvent,
   DemoScenario,
   FeedbackRecord,
+  FinancialReadiness,
   HistoricalComparisonPayload,
   NegotiationEvent,
   NegotiationRecord,
@@ -34,6 +35,7 @@ import { DEFAULT_WEIGHTS } from "@nhalo/config";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addShortlistItem,
+  createFinancialReadiness,
   createNegotiation,
   createNegotiationEvent,
   createOfferReadiness,
@@ -55,7 +57,9 @@ import {
   fetchCollaborationActivity,
   fetchDataQualityEvents,
   fetchDemoScenarios,
+  fetchLatestFinancialReadiness,
   fetchNegotiationEvents,
+  updateFinancialReadiness,
   fetchOpsActions,
   fetchOpsSummary,
   fetchPilotActivity,
@@ -101,6 +105,7 @@ import { DemoScenarioPanel } from "./components/DemoScenarioPanel";
 import { EmptyStatePanel } from "./components/EmptyStatePanel";
 import { ExportPanel } from "./components/ExportPanel";
 import { FeedbackPrompt } from "./components/FeedbackPrompt";
+import { FinancialReadinessPanel } from "./components/FinancialReadinessPanel";
 import { HistoricalComparePanel } from "./components/HistoricalComparePanel";
 import { HomeDetailPanel } from "./components/HomeDetailPanel";
 import { OnboardingModal } from "./components/OnboardingModal";
@@ -187,6 +192,7 @@ export default function App() {
   const [definitions, setDefinitions] = useState<SearchDefinition[]>([]);
   const [history, setHistory] = useState<SearchHistoryRecord[]>([]);
   const [snapshots, setSnapshots] = useState<SearchSnapshotRecord[]>([]);
+  const [financialReadiness, setFinancialReadiness] = useState<FinancialReadiness | null>(null);
   const [shortlists, setShortlists] = useState<Shortlist[]>([]);
   const [sharedShortlists, setSharedShortlists] = useState<SharedShortlist[]>([]);
   const [selectedShortlistId, setSelectedShortlistId] = useState<string | null>(null);
@@ -277,6 +283,7 @@ export default function App() {
     preferredShortlistId: string | null = selectedShortlistId
   ) {
     if (!sessionId || (!branding.enableShortlists && !branding.enableResultNotes)) {
+      setFinancialReadiness(null);
       setShortlists([]);
       setSharedShortlists([]);
       setShortlistItems([]);
@@ -289,12 +296,14 @@ export default function App() {
       return;
     }
 
-    const [nextShortlists, nextNotes, nextActivity] = await Promise.all([
+    const [nextFinancialReadiness, nextShortlists, nextNotes, nextActivity] = await Promise.all([
+      fetchLatestFinancialReadiness(sessionId),
       branding.enableShortlists ? fetchShortlists(sessionId) : Promise.resolve([]),
       branding.enableResultNotes ? fetchResultNotes({ sessionId }) : Promise.resolve([]),
       branding.enableShortlists ? fetchWorkflowActivity(sessionId, 12) : Promise.resolve([])
     ]);
 
+    setFinancialReadiness(nextFinancialReadiness);
     setShortlists(nextShortlists);
     setResultNotes(nextNotes);
     setWorkflowActivity(nextActivity);
@@ -1187,8 +1196,8 @@ export default function App() {
       const shortlist = await createShortlist({
         sessionId: sessionIdentity.sessionId,
         title: payload.title,
-        description: payload.description ?? null,
-        sourceSnapshotId: snapshot?.id ?? null
+        description: payload.description?.trim() ? payload.description.trim() : undefined,
+        sourceSnapshotId: snapshot?.id ?? undefined
       });
       await refreshWorkflowState(sessionIdentity.sessionId, shortlist.id);
     } catch (workflowError) {
@@ -1228,7 +1237,7 @@ export default function App() {
         const created = await createShortlist({
           sessionId: sessionIdentity.sessionId,
           title: `${formState.locationValue} shortlist`,
-          sourceSnapshotId: snapshot?.id ?? null
+          sourceSnapshotId: snapshot?.id ?? undefined
         });
         shortlistId = created.id;
       }
@@ -1240,9 +1249,9 @@ export default function App() {
       } else {
         await addShortlistItem(shortlistId, {
           canonicalPropertyId,
-          sourceSnapshotId: snapshot?.id ?? null,
-          sourceHistoryId: currentHistoryRecordId,
-          sourceSearchDefinitionId: currentSearchDefinitionId,
+          sourceSnapshotId: snapshot?.id ?? undefined,
+          sourceHistoryId: currentHistoryRecordId ?? undefined,
+          sourceSearchDefinitionId: currentSearchDefinitionId ?? undefined,
           capturedHome: home,
           reviewState: "undecided"
         });
@@ -1299,6 +1308,62 @@ export default function App() {
     } catch (workflowError) {
       setError(
         workflowError instanceof Error ? workflowError.message : "Unable to remove shortlisted home"
+      );
+    }
+  }
+
+  async function handleCreateFinancialReadiness(payload: {
+    annualHouseholdIncome: number | null;
+    monthlyDebtPayments: number | null;
+    availableCashSavings: number | null;
+    creditScoreRange: FinancialReadiness["creditScoreRange"];
+    desiredHomePrice: number | null;
+    purchaseLocation: string | null;
+    downPaymentPreferencePercent?: number | null;
+    loanType?: FinancialReadiness["loanType"];
+    preApprovalStatus: FinancialReadiness["preApprovalStatus"];
+    preApprovalExpiresAt?: string | null;
+    proofOfFundsStatus: FinancialReadiness["proofOfFundsStatus"];
+  }) {
+    try {
+      await createFinancialReadiness({
+        sessionId: sessionIdentity.sessionId,
+        ...payload
+      });
+      await refreshWorkflowState(sessionIdentity.sessionId, selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to create financial readiness"
+      );
+    }
+  }
+
+  async function handleUpdateFinancialReadiness(
+    id: string,
+    patch: {
+      annualHouseholdIncome?: number | null;
+      monthlyDebtPayments?: number | null;
+      availableCashSavings?: number | null;
+      creditScoreRange?: FinancialReadiness["creditScoreRange"];
+      desiredHomePrice?: number | null;
+      purchaseLocation?: string | null;
+      downPaymentPreferencePercent?: number | null;
+      loanType?: FinancialReadiness["loanType"];
+      preApprovalStatus?: FinancialReadiness["preApprovalStatus"];
+      preApprovalExpiresAt?: string | null;
+      proofOfFundsStatus?: FinancialReadiness["proofOfFundsStatus"];
+    }
+  ) {
+    try {
+      await updateFinancialReadiness(id, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to update financial readiness"
       );
     }
   }
@@ -1699,6 +1764,14 @@ export default function App() {
       <section className="content-grid">
         {sharedSnapshotView || sharedShortlistView ? null : (
           <div className="sidebar-stack">
+            <div className="panel">
+              <FinancialReadinessPanel
+                onCreate={handleCreateFinancialReadiness}
+                onUpdate={handleUpdateFinancialReadiness}
+                readiness={financialReadiness}
+              />
+            </div>
+
             <div className="panel">
               <SearchForm
                 busy={busy}

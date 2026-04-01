@@ -235,6 +235,45 @@ model ShortlistItem {
   @@unique([shortlistId, canonicalPropertyId])
 }
 
+model FinancialReadiness {
+  id                         String   @id @default(cuid())
+  sessionId                  String?
+  partnerId                  String?
+  annualHouseholdIncome      Int?
+  monthlyDebtPayments        Int?
+  availableCashSavings       Int?
+  creditScoreRange           String?
+  desiredHomePrice           Int?
+  purchaseLocation           String?
+  downPaymentPreferencePercent Float?
+  loanType                   String?
+  preApprovalStatus          String?
+  preApprovalExpiresAt       DateTime?
+  proofOfFundsStatus         String?
+  maxAffordableHomePrice     Int?
+  estimatedMonthlyPayment    Int?
+  estimatedDownPayment       Int?
+  estimatedClosingCosts      Int?
+  totalCashRequiredToClose   Int?
+  debtToIncomeRatio          Float?
+  housingRatio               Float?
+  affordabilityClassification String
+  readinessState             String
+  blockersJson               Json
+  recommendation             String
+  risk                       String
+  alternative                String
+  nextAction                 String
+  nextStepsJson              Json
+  assumptionsJson            Json
+  lastEvaluatedAt            DateTime
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  @@index([sessionId, updatedAt])
+  @@index([partnerId, updatedAt])
+}
+
 model OfferReadiness {
   id                     String   @id @default(cuid())
   propertyId             String

@@ -134,6 +134,36 @@ export const OFFER_READINESS_COPY = {
     "This recommendation is deterministic and based on stored shortlist data, not live negotiation or legal advice."
 } as const;
 
+export const FINANCIAL_READINESS_COPY = {
+  title: "Financial readiness",
+  intro:
+    "Financial readiness is the buyer's affordability foundation. It calculates what the household can support, what cash is required, and what must be fixed before preparing an offer.",
+  startAction: "Start financial readiness",
+  updateAction: "Update financial readiness",
+  summaryTitle: "Affordability summary",
+  blockersTitle: "What is blocking progress",
+  recommendationTitle: "Recommendation",
+  nextStepsTitle: "Next steps",
+  nextActionLabel: "Next action",
+  affordabilityLabel: "Affordability status",
+  stateLabel: "Readiness state",
+  maxHomePriceLabel: "Maximum home price",
+  monthlyPaymentLabel: "Estimated monthly payment",
+  cashRequiredLabel: "Cash required to close",
+  downPaymentLabel: "Estimated down payment",
+  closingCostsLabel: "Estimated closing costs",
+  dtiLabel: "Debt-to-income ratio",
+  housingRatioLabel: "Housing ratio",
+  completedLabel: "Completed",
+  inProgressLabel: "In progress",
+  blockedLabel: "Blocked",
+  emptyTitle: "Check what your household can afford",
+  emptyBody:
+    "Start with income, debt, cash, credit, and target price. Nhalo will show whether the household is ready to move into offer preparation.",
+  readyAction: "Proceed to offer preparation",
+  assumptionsTitle: "Assumptions used"
+} as const;
+
 export const NEGOTIATION_COPY = {
   title: "Negotiation tracking",
   intro:
@@ -463,6 +493,12 @@ export function buildWorkflowActivityLabel(
   switch (eventType) {
     case "shortlist_created":
       return "Shortlist created";
+    case "financial_readiness_created":
+      return "Financial readiness started";
+    case "financial_readiness_updated":
+      return "Financial readiness updated";
+    case "financial_readiness_status_changed":
+      return "Financial readiness state changed";
     case "shortlist_updated":
       return "Shortlist updated";
     case "shortlist_deleted":

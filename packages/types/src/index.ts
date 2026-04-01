@@ -928,6 +928,88 @@ export type CollaborationRole = "owner" | "viewer" | "reviewer";
 export type SharedShortlistStatus = "active" | "expired" | "revoked";
 export type SharedCommentEntityType = "shared_shortlist_item";
 export type ReviewerDecisionValue = "agree" | "disagree" | "discuss" | "favorite" | "pass";
+export type FinancialReadinessState = "NOT_STARTED" | "IN_PROGRESS" | "BLOCKED" | "READY";
+export type AffordabilityClassification = "READY" | "ALMOST_READY" | "NOT_READY" | "BLOCKED";
+export type CreditScoreRange =
+  | "excellent_760_plus"
+  | "good_720_759"
+  | "fair_680_719"
+  | "limited_620_679"
+  | "below_620";
+export type LoanType = "conventional" | "fha" | "va" | "usda" | "other";
+export type PreApprovalStatus = "not_started" | "in_progress" | "verified" | "expired";
+export type ProofOfFundsStatus = "not_started" | "partial" | "verified";
+export type FinancialBlockerCode =
+  | "MISSING_FINANCIAL_DATA"
+  | "MISSING_PREAPPROVAL"
+  | "EXPIRED_PREAPPROVAL"
+  | "INSUFFICIENT_FUNDS"
+  | "HIGH_DTI"
+  | "VERY_HIGH_DTI"
+  | "UNAFFORDABLE_TARGET_PRICE"
+  | "LOW_CREDIT_READINESS"
+  | "MISSING_PROOF_OF_FUNDS"
+  | "INVALID_INPUT_RANGE";
+
+export interface FinancialBlocker {
+  code: FinancialBlockerCode;
+  severity: "warning" | "blocking";
+  message: string;
+  whyItMatters: string;
+  howToFix: string;
+}
+
+export interface FinancialReadinessInputs {
+  annualHouseholdIncome: number | null;
+  monthlyDebtPayments: number | null;
+  availableCashSavings: number | null;
+  creditScoreRange: CreditScoreRange | null;
+  desiredHomePrice: number | null;
+  purchaseLocation: string | null;
+  downPaymentPreferencePercent?: number | null;
+  loanType?: LoanType | null;
+  preApprovalStatus: PreApprovalStatus | null;
+  preApprovalExpiresAt?: string | null;
+  proofOfFundsStatus: ProofOfFundsStatus | null;
+}
+
+export interface FinancialReadinessAssumptions {
+  interestRate: number | null;
+  propertyTaxRate: number | null;
+  insuranceMonthly: number | null;
+  closingCostPercent: number | null;
+  downPaymentPercent: number | null;
+  loanType: LoanType | null;
+}
+
+export interface FinancialReadinessSummary {
+  maxAffordableHomePrice: number | null;
+  estimatedMonthlyPayment: number | null;
+  estimatedDownPayment: number | null;
+  estimatedClosingCosts: number | null;
+  totalCashRequiredToClose: number | null;
+  debtToIncomeRatio: number | null;
+  housingRatio: number | null;
+  affordabilityClassification: AffordabilityClassification;
+  readinessState: FinancialReadinessState;
+  blockers: FinancialBlocker[];
+  recommendation: string;
+  risk: string;
+  alternative: string;
+  nextAction: string;
+  nextSteps: string[];
+  assumptionsUsed: FinancialReadinessAssumptions;
+  lastEvaluatedAt: string;
+}
+
+export interface FinancialReadiness extends FinancialReadinessInputs, FinancialReadinessSummary {
+  id: string;
+  sessionId?: string | null;
+  partnerId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type OfferReadinessStatus =
   | "NOT_STARTED"
   | "IN_PROGRESS"
@@ -1160,6 +1242,9 @@ export interface SharedShortlistView {
 }
 
 export type WorkflowActivityType =
+  | "financial_readiness_created"
+  | "financial_readiness_updated"
+  | "financial_readiness_status_changed"
   | "shortlist_created"
   | "shortlist_updated"
   | "shortlist_deleted"
@@ -1473,6 +1558,40 @@ export interface SearchPersistenceInput {
 export interface SearchRepository {
   saveSearch(payload: SearchPersistenceInput): Promise<{ historyRecordId: string | null }>;
   getScoreAudit(propertyId: string): Promise<ScoreAuditRecord | null>;
+  createFinancialReadiness(payload: {
+    sessionId?: string | null;
+    partnerId?: string | null;
+    annualHouseholdIncome: number | null;
+    monthlyDebtPayments: number | null;
+    availableCashSavings: number | null;
+    creditScoreRange: CreditScoreRange | null;
+    desiredHomePrice: number | null;
+    purchaseLocation: string | null;
+    downPaymentPreferencePercent?: number | null;
+    loanType?: LoanType | null;
+    preApprovalStatus: PreApprovalStatus | null;
+    preApprovalExpiresAt?: string | null;
+    proofOfFundsStatus: ProofOfFundsStatus | null;
+  }): Promise<FinancialReadiness>;
+  getFinancialReadiness(id: string): Promise<FinancialReadiness | null>;
+  getLatestFinancialReadiness(sessionId?: string | null): Promise<FinancialReadiness | null>;
+  updateFinancialReadiness(
+    id: string,
+    patch: {
+      annualHouseholdIncome?: number | null;
+      monthlyDebtPayments?: number | null;
+      availableCashSavings?: number | null;
+      creditScoreRange?: CreditScoreRange | null;
+      desiredHomePrice?: number | null;
+      purchaseLocation?: string | null;
+      downPaymentPreferencePercent?: number | null;
+      loanType?: LoanType | null;
+      preApprovalStatus?: PreApprovalStatus | null;
+      preApprovalExpiresAt?: string | null;
+      proofOfFundsStatus?: ProofOfFundsStatus | null;
+    }
+  ): Promise<FinancialReadiness | null>;
+  getFinancialReadinessSummary(id: string): Promise<FinancialReadinessSummary | null>;
   createSearchSnapshot(payload: {
     request: SearchRequest;
     response: SearchResponse;
@@ -2050,6 +2169,9 @@ export interface SearchMetrics {
   shortlistItemAddCount: number;
   shortlistItemRemoveCount: number;
   shortlistViewCount: number;
+  financialReadinessCreateCount: number;
+  financialReadinessUpdateCount: number;
+  financialReadinessSummaryViewCount: number;
   noteCreateCount: number;
   noteUpdateCount: number;
   noteDeleteCount: number;
