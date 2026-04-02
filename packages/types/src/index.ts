@@ -1010,6 +1010,873 @@ export interface FinancialReadiness extends FinancialReadinessInputs, FinancialR
   updatedAt: string;
 }
 
+export type OfferPreparationState =
+  | "NOT_STARTED"
+  | "IN_PROGRESS"
+  | "INCOMPLETE"
+  | "READY"
+  | "BLOCKED";
+export type OfferPreparationRiskLevel = "LOW_RISK" | "MODERATE_RISK" | "HIGH_RISK";
+export type OfferPreparationCompletenessState = "not_started" | "partial" | "complete";
+export type OfferPreparationContingency = "included" | "waived";
+export type OfferPreparationDownPaymentType = "amount" | "percent";
+export type OfferPreparationPossessionTiming = "at_closing" | "days_after_closing" | "custom";
+export type OfferPreparationBlockerCode =
+  | "FINANCIAL_READINESS_NOT_READY"
+  | "OFFER_PRICE_ABOVE_AFFORDABILITY"
+  | "INSUFFICIENT_CASH_FOR_OFFER"
+  | "MISSING_REQUIRED_TERMS"
+  | "INVALID_DOWN_PAYMENT"
+  | "HIGH_RISK_CONTINGENCY_SETUP"
+  | "INVALID_CLOSING_TIMELINE";
+
+export interface OfferPreparationMissingItem {
+  field: string;
+  message: string;
+}
+
+export interface OfferPreparationBlocker {
+  code: OfferPreparationBlockerCode;
+  severity: "warning" | "blocking";
+  message: string;
+  whyItMatters: string;
+  howToFix: string;
+}
+
+export interface OfferPreparationInputs {
+  propertyId: string;
+  propertyAddressLabel: string;
+  shortlistId?: string | null;
+  offerReadinessId?: string | null;
+  financialReadinessId: string;
+  offerPrice: number | null;
+  earnestMoneyAmount: number | null;
+  downPaymentType: OfferPreparationDownPaymentType | null;
+  downPaymentAmount: number | null;
+  downPaymentPercent: number | null;
+  financingContingency: OfferPreparationContingency | null;
+  inspectionContingency: OfferPreparationContingency | null;
+  appraisalContingency: OfferPreparationContingency | null;
+  closingTimelineDays: number | null;
+  possessionTiming?: OfferPreparationPossessionTiming | null;
+  possessionDaysAfterClosing?: number | null;
+  sellerConcessionsRequestedAmount?: number | null;
+  notes?: string | null;
+  buyerRationale?: string | null;
+}
+
+export interface OfferPreparationFinancialAlignment {
+  maxAffordableHomePrice: number | null;
+  targetCashToClose: number | null;
+  availableCashSavings: number | null;
+  affordabilityClassification: AffordabilityClassification;
+  readinessState: FinancialReadinessState;
+  financiallyAligned: boolean;
+  recommendedOfferPrice: number | null;
+}
+
+export interface OfferPreparationAssumptions {
+  lowEarnestMoneyPercent: number;
+  standardEarnestMoneyPercent: {
+    min: number;
+    max: number;
+  };
+  aggressiveClosingTimelineDays: number;
+  slowClosingTimelineDays: number;
+  affordabilityTolerancePercent: number;
+}
+
+export interface OfferPreparationSummary {
+  offerSummary: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    offerPrice: number | null;
+    earnestMoneyAmount: number | null;
+    downPaymentAmount: number | null;
+    downPaymentPercent: number | null;
+    financingContingency: OfferPreparationContingency | null;
+    inspectionContingency: OfferPreparationContingency | null;
+    appraisalContingency: OfferPreparationContingency | null;
+    closingTimelineDays: number | null;
+    possessionTiming: OfferPreparationPossessionTiming | null;
+  };
+  offerState: OfferPreparationState;
+  offerRiskLevel: OfferPreparationRiskLevel;
+  offerCompletenessState: OfferPreparationCompletenessState;
+  readinessToSubmit: boolean;
+  cashRequiredAtOffer: number | null;
+  missingItems: OfferPreparationMissingItem[];
+  blockers: OfferPreparationBlocker[];
+  recommendation: string;
+  risk: string;
+  alternative: string;
+  nextAction: string;
+  nextSteps: string[];
+  financialAlignment: OfferPreparationFinancialAlignment;
+  assumptionsUsed: OfferPreparationAssumptions;
+  lastEvaluatedAt: string;
+}
+
+export interface OfferPreparation extends OfferPreparationInputs, OfferPreparationSummary {
+  id: string;
+  sessionId?: string | null;
+  partnerId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type OfferSubmissionState =
+  | "NOT_STARTED"
+  | "READY_TO_SUBMIT"
+  | "SUBMITTED"
+  | "COUNTERED"
+  | "ACCEPTED"
+  | "REJECTED"
+  | "EXPIRED"
+  | "WITHDRAWN";
+
+export type OfferSubmissionSellerResponseState =
+  | "NO_RESPONSE"
+  | "ACCEPTED"
+  | "REJECTED"
+  | "COUNTERED";
+
+export type OfferSubmissionUrgencyLevel =
+  | "LOW_URGENCY"
+  | "MODERATE_URGENCY"
+  | "HIGH_URGENCY";
+
+export type OfferSubmissionMethod = "recorded_manual" | "simulated_delivery";
+export type OfferSubmissionBuyerCounterDecision = "pending" | "accepted" | "rejected" | "revising";
+export type OfferSubmissionBlockerCode =
+  | "OFFER_PREPARATION_NOT_READY"
+  | "MISSING_SUBMISSION_TIMESTAMP"
+  | "INVALID_SELLER_RESPONSE"
+  | "COUNTEROFFER_INCOMPLETE"
+  | "COUNTEROFFER_EXPIRED"
+  | "SUBMISSION_ALREADY_TERMINAL"
+  | "INVALID_STATE_TRANSITION";
+
+export interface OfferSubmissionMissingItem {
+  field: string;
+  message: string;
+}
+
+export interface OfferSubmissionBlocker {
+  code: OfferSubmissionBlockerCode;
+  severity: "warning" | "blocking";
+  message: string;
+  whyItMatters: string;
+  howToFix: string;
+}
+
+export interface OfferSubmissionActivityEntry {
+  type:
+    | "record_created"
+    | "offer_submitted"
+    | "seller_accepted"
+    | "seller_rejected"
+    | "seller_countered"
+    | "buyer_accepted_counter"
+    | "buyer_rejected_counter"
+    | "buyer_withdrew"
+    | "offer_expired"
+    | "note_added";
+  label: string;
+  details?: string | null;
+  createdAt: string;
+}
+
+export interface OfferSubmissionCounterofferSummary {
+  present: boolean;
+  counterofferPrice: number | null;
+  counterofferClosingTimelineDays: number | null;
+  counterofferFinancingContingency: OfferPreparationContingency | null;
+  counterofferInspectionContingency: OfferPreparationContingency | null;
+  counterofferAppraisalContingency: OfferPreparationContingency | null;
+  counterofferExpirationAt: string | null;
+  changedFields: string[];
+}
+
+export interface OfferSubmissionOriginalOfferSnapshot {
+  offerPrice: number | null;
+  earnestMoneyAmount: number | null;
+  downPaymentAmount: number | null;
+  downPaymentPercent: number | null;
+  financingContingency: OfferPreparationContingency | null;
+  inspectionContingency: OfferPreparationContingency | null;
+  appraisalContingency: OfferPreparationContingency | null;
+  closingTimelineDays: number | null;
+}
+
+export interface OfferSubmissionInputs {
+  propertyId: string;
+  propertyAddressLabel: string;
+  shortlistId?: string | null;
+  financialReadinessId?: string | null;
+  offerPreparationId: string;
+  submissionMethod?: OfferSubmissionMethod | null;
+  submittedAt?: string | null;
+  offerExpirationAt?: string | null;
+  sellerResponseState?: OfferSubmissionSellerResponseState | null;
+  sellerRespondedAt?: string | null;
+  buyerCounterDecision?: OfferSubmissionBuyerCounterDecision | null;
+  withdrawnAt?: string | null;
+  withdrawalReason?: string | null;
+  counterofferPrice?: number | null;
+  counterofferClosingTimelineDays?: number | null;
+  counterofferFinancingContingency?: OfferPreparationContingency | null;
+  counterofferInspectionContingency?: OfferPreparationContingency | null;
+  counterofferAppraisalContingency?: OfferPreparationContingency | null;
+  counterofferExpirationAt?: string | null;
+  notes?: string | null;
+  internalActivityNote?: string | null;
+}
+
+export interface OfferSubmissionSummary {
+  submissionSummary: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    offerPreparationId: string;
+    submittedAt: string | null;
+    offerExpirationAt: string | null;
+    currentOfferPrice: number | null;
+    earnestMoneyAmount: number | null;
+    closingTimelineDays: number | null;
+  };
+  submissionState: OfferSubmissionState;
+  sellerResponseState: OfferSubmissionSellerResponseState;
+  urgencyLevel: OfferSubmissionUrgencyLevel;
+  counterofferSummary: OfferSubmissionCounterofferSummary;
+  missingItems: OfferSubmissionMissingItem[];
+  blockers: OfferSubmissionBlocker[];
+  recommendation: string;
+  risk: string;
+  alternative: string;
+  nextAction: string;
+  nextSteps: string[];
+  requiresBuyerResponse: boolean;
+  isExpired: boolean;
+  lastActionAt: string | null;
+  lastEvaluatedAt: string;
+}
+
+export interface OfferSubmission extends OfferSubmissionInputs, OfferSubmissionSummary {
+  id: string;
+  sessionId?: string | null;
+  partnerId?: string | null;
+  originalOfferSnapshot: OfferSubmissionOriginalOfferSnapshot;
+  activityLog: OfferSubmissionActivityEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type UnderContractCoordinationState =
+  | "NOT_STARTED"
+  | "IN_PROGRESS"
+  | "AT_RISK"
+  | "READY_FOR_CLOSING"
+  | "BLOCKED";
+
+export type ContractTaskState =
+  | "NOT_STARTED"
+  | "SCHEDULED"
+  | "IN_PROGRESS"
+  | "COMPLETED"
+  | "BLOCKED"
+  | "WAIVED"
+  | "FAILED";
+
+export type CoordinationRiskLevel = "LOW_RISK" | "MODERATE_RISK" | "HIGH_RISK";
+
+export type ContractTaskType =
+  | "HOME_INSPECTION"
+  | "APPRAISAL"
+  | "FINANCING_PROGRESS"
+  | "TITLE_REVIEW"
+  | "ESCROW_CLOSING_COORDINATION"
+  | "CONTINGENCY_REVIEW"
+  | "DOCUMENT_CHECKLIST";
+
+export type CoordinationMilestoneType =
+  | "OFFER_ACCEPTED"
+  | "INSPECTION_SCHEDULED"
+  | "INSPECTION_COMPLETED"
+  | "APPRAISAL_ORDERED_OR_SCHEDULED"
+  | "APPRAISAL_COMPLETED"
+  | "FINANCING_PROGRESS_CONFIRMED"
+  | "TITLE_ESCROW_IN_PROGRESS"
+  | "CONTRACT_CONDITIONS_SATISFIED"
+  | "READY_FOR_CLOSING";
+
+export type CoordinationDeadlineKey =
+  | "inspection"
+  | "appraisal"
+  | "financing"
+  | "contingency"
+  | "closing";
+
+export type UnderContractBlockerCode =
+  | "OFFER_NOT_ACCEPTED"
+  | "MISSING_REQUIRED_DEADLINE"
+  | "FINANCING_BLOCKED"
+  | "TITLE_BLOCKED"
+  | "ESCROW_BLOCKED"
+  | "CONTINGENCY_DEADLINE_MISSED"
+  | "CLOSING_DATE_AT_RISK"
+  | "REQUIRED_TASK_FAILED"
+  | "MISSING_REQUIRED_TASK_DATA";
+
+export interface ContractTaskRecord {
+  taskType: ContractTaskType;
+  label: string;
+  status: ContractTaskState;
+  required: boolean;
+  waivable: boolean;
+  deadline: string | null;
+  scheduledAt: string | null;
+  completedAt: string | null;
+  blockedReason: string | null;
+  notes: string | null;
+}
+
+export interface CoordinationMilestoneRecord {
+  milestoneType: CoordinationMilestoneType;
+  label: string;
+  status: "PENDING" | "REACHED" | "BLOCKED";
+  occurredAt: string | null;
+  notes: string | null;
+}
+
+export interface CoordinationDeadlineRecord {
+  key: CoordinationDeadlineKey;
+  label: string;
+  deadline: string | null;
+  status: "NORMAL" | "APPROACHING" | "DUE_SOON" | "MISSED";
+  relatedTaskType?: ContractTaskType | null;
+}
+
+export interface UnderContractBlocker {
+  code: UnderContractBlockerCode;
+  severity: "warning" | "blocking";
+  message: string;
+  whyItMatters: string;
+  howToFix: string;
+}
+
+export interface UnderContractCoordinationActivityEntry {
+  type:
+    | "record_created"
+    | "task_updated"
+    | "milestone_reached"
+    | "deadline_updated"
+    | "ready_for_closing"
+    | "blocked"
+    | "note_added";
+  label: string;
+  details?: string | null;
+  createdAt: string;
+}
+
+export interface UnderContractCoordinationInputs {
+  propertyId: string;
+  propertyAddressLabel: string;
+  shortlistId?: string | null;
+  financialReadinessId?: string | null;
+  offerPreparationId?: string | null;
+  offerSubmissionId: string;
+  acceptedAt: string;
+  targetClosingDate: string;
+  inspectionDeadline: string | null;
+  appraisalDeadline: string | null;
+  financingDeadline: string | null;
+  contingencyDeadline: string | null;
+  closingPreparationDeadline?: string | null;
+  notes?: string | null;
+  internalActivityNote?: string | null;
+}
+
+export interface UnderContractCoordinationSummary {
+  coordinationSummary: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    offerSubmissionId: string;
+    acceptedAt: string;
+    targetClosingDate: string;
+  };
+  overallCoordinationState: UnderContractCoordinationState;
+  overallRiskLevel: CoordinationRiskLevel;
+  urgencyLevel: CoordinationRiskLevel;
+  readyForClosing: boolean;
+  requiresImmediateAttention: boolean;
+  taskSummaries: ContractTaskRecord[];
+  milestoneSummaries: CoordinationMilestoneRecord[];
+  deadlineSummaries: CoordinationDeadlineRecord[];
+  missingItems: Array<{
+    field: string;
+    message: string;
+  }>;
+  blockers: UnderContractBlocker[];
+  recommendation: string;
+  risk: string;
+  alternative: string;
+  nextAction: string;
+  nextSteps: string[];
+  lastActionAt: string | null;
+  lastEvaluatedAt: string;
+}
+
+export interface UnderContractCoordination extends UnderContractCoordinationInputs, UnderContractCoordinationSummary {
+  id: string;
+  sessionId?: string | null;
+  partnerId?: string | null;
+  activityLog: UnderContractCoordinationActivityEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ClosingReadinessState =
+  | "NOT_STARTED"
+  | "IN_PROGRESS"
+  | "AT_RISK"
+  | "READY_TO_CLOSE"
+  | "BLOCKED"
+  | "CLOSED";
+
+export type ClosingChecklistItemState =
+  | "NOT_STARTED"
+  | "IN_PROGRESS"
+  | "READY"
+  | "COMPLETED"
+  | "BLOCKED"
+  | "FAILED"
+  | "WAIVED";
+
+export type ClosingRiskLevel = "LOW_RISK" | "MODERATE_RISK" | "HIGH_RISK";
+
+export type ClosingChecklistItemType =
+  | "CASH_TO_CLOSE_CONFIRMED"
+  | "FINAL_FUNDS_AVAILABLE"
+  | "CLOSING_NUMBERS_REVIEWED"
+  | "REQUIRED_CLOSING_DOCUMENTS_READY"
+  | "TITLE_SETTLEMENT_READY"
+  | "CLOSING_APPOINTMENT_SCHEDULED"
+  | "IDENTITY_SIGNER_READY"
+  | "FINAL_WALKTHROUGH_COMPLETE";
+
+export type ClosingMilestoneType =
+  | "READY_FOR_CLOSING_RECEIVED"
+  | "FINAL_FUNDS_CONFIRMED"
+  | "FINAL_CHECKLIST_SUBSTANTIALLY_COMPLETE"
+  | "CLOSING_APPOINTMENT_SCHEDULED"
+  | "READY_TO_CLOSE"
+  | "CLOSED";
+
+export type ClosingBlockerCode =
+  | "UNDER_CONTRACT_NOT_READY"
+  | "MISSING_REQUIRED_DATE"
+  | "FINAL_FUNDS_NOT_READY"
+  | "CLOSING_NUMBERS_NOT_REVIEWED"
+  | "DOCUMENTS_NOT_READY"
+  | "TITLE_SETTLEMENT_BLOCKED"
+  | "APPOINTMENT_NOT_SCHEDULED"
+  | "IDENTITY_NOT_READY"
+  | "TARGET_CLOSING_DATE_MISSED"
+  | "REQUIRED_CHECKLIST_ITEM_FAILED";
+
+export interface ClosingChecklistItemRecord {
+  itemType: ClosingChecklistItemType;
+  label: string;
+  status: ClosingChecklistItemState;
+  required: boolean;
+  waivable: boolean;
+  deadline: string | null;
+  completedAt: string | null;
+  blockedReason?: string | null;
+  notes?: string | null;
+}
+
+export interface ClosingMilestoneRecord {
+  milestoneType: ClosingMilestoneType;
+  label: string;
+  status: "PENDING" | "REACHED" | "BLOCKED";
+  occurredAt: string | null;
+  notes?: string | null;
+}
+
+export interface ClosingBlocker {
+  code: ClosingBlockerCode;
+  severity: "warning" | "blocking";
+  message: string;
+  whyItMatters: string;
+  howToFix: string;
+}
+
+export interface ClosingReadinessActivityEntry {
+  type:
+    | "record_created"
+    | "checklist_updated"
+    | "milestone_reached"
+    | "appointment_updated"
+    | "ready_to_close"
+    | "closed"
+    | "blocked"
+    | "note_added";
+  label: string;
+  details?: string | null;
+  createdAt: string;
+}
+
+export interface ClosingReadinessInputs {
+  propertyId: string;
+  propertyAddressLabel: string;
+  shortlistId?: string | null;
+  financialReadinessId?: string | null;
+  offerPreparationId?: string | null;
+  offerSubmissionId?: string | null;
+  underContractCoordinationId: string;
+  targetClosingDate: string;
+  closingAppointmentAt?: string | null;
+  closingAppointmentLocation?: string | null;
+  closingAppointmentNotes?: string | null;
+  finalReviewDeadline?: string | null;
+  finalFundsConfirmationDeadline?: string | null;
+  finalFundsAmountConfirmed?: number | null;
+  closedAt?: string | null;
+  notes?: string | null;
+  internalActivityNote?: string | null;
+}
+
+export interface ClosingReadinessSummary {
+  closingSummary: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    underContractCoordinationId: string;
+    targetClosingDate: string;
+    closingAppointmentAt: string | null;
+    closedAt?: string | null;
+  };
+  overallClosingReadinessState: ClosingReadinessState;
+  overallRiskLevel: ClosingRiskLevel;
+  urgencyLevel: ClosingRiskLevel;
+  readyToClose: boolean;
+  closed: boolean;
+  checklistItemSummaries: ClosingChecklistItemRecord[];
+  milestoneSummaries: ClosingMilestoneRecord[];
+  missingItems: Array<{
+    field: string;
+    message: string;
+  }>;
+  blockers: ClosingBlocker[];
+  recommendation: string;
+  risk: string;
+  alternative: string;
+  nextAction: string;
+  nextSteps: string[];
+  requiresImmediateAttention: boolean;
+  lastActionAt: string | null;
+  lastEvaluatedAt: string;
+}
+
+export interface ClosingReadiness extends ClosingReadinessInputs, ClosingReadinessSummary {
+  id: string;
+  sessionId?: string | null;
+  partnerId?: string | null;
+  activityLog: ClosingReadinessActivityEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type TransactionStage =
+  | "FINANCIAL_READINESS"
+  | "OFFER_PREPARATION"
+  | "OFFER_SUBMISSION"
+  | "UNDER_CONTRACT"
+  | "CLOSING_READINESS"
+  | "CLOSED";
+
+export type TransactionOverallState =
+  | "NOT_STARTED"
+  | "IN_PROGRESS"
+  | "BLOCKED"
+  | "AT_RISK"
+  | "READY_TO_ADVANCE"
+  | "COMPLETE";
+
+export type TransactionRiskLevel = "LOW_RISK" | "MODERATE_RISK" | "HIGH_RISK";
+
+export interface CommandCenterStageSummary {
+  stage: TransactionStage;
+  label: string;
+  status: string;
+  completed: boolean;
+  available: boolean;
+  blockerCount: number;
+  riskLevel: TransactionRiskLevel;
+  nextAction: string | null;
+  lastUpdatedAt: string | null;
+}
+
+export interface CommandCenterBlocker {
+  code: string;
+  sourceStage: TransactionStage;
+  severity: "warning" | "blocking";
+  message: string;
+  whyItMatters: string;
+  howToFix: string;
+}
+
+export interface CommandCenterRisk {
+  code: string;
+  sourceStage: TransactionStage;
+  level: TransactionRiskLevel;
+  message: string;
+  dueAt?: string | null;
+}
+
+export interface CommandCenterKeyDate {
+  key: string;
+  label: string;
+  date: string;
+  sourceStage: TransactionStage;
+  status: "UPCOMING" | "DUE_SOON" | "PAST_DUE" | "COMPLETED";
+}
+
+export interface CommandCenterActivityItem {
+  id: string;
+  type: string;
+  label: string;
+  occurredAt: string;
+  sourceStage: TransactionStage;
+}
+
+export interface CommandCenterSourceRefs {
+  financialReadinessId?: string | null;
+  offerPreparationId?: string | null;
+  offerSubmissionId?: string | null;
+  underContractCoordinationId?: string | null;
+  closingReadinessId?: string | null;
+}
+
+export interface BuyerTransactionCommandCenterView {
+  propertyId: string;
+  propertyAddressLabel: string;
+  sessionId?: string | null;
+  shortlistId?: string | null;
+  currentStage: TransactionStage;
+  overallState: TransactionOverallState;
+  overallRiskLevel: TransactionRiskLevel;
+  progressPercent: number;
+  completedStageCount: number;
+  totalStageCount: number;
+  primaryBlocker: CommandCenterBlocker | null;
+  activeBlockers: CommandCenterBlocker[];
+  primaryRisk: CommandCenterRisk | null;
+  topRisks: CommandCenterRisk[];
+  nextAction: string;
+  nextSteps: string[];
+  keyDates: CommandCenterKeyDate[];
+  recentActivity: CommandCenterActivityItem[];
+  stageSummaries: CommandCenterStageSummary[];
+  sourceRefs: CommandCenterSourceRefs;
+  isStale: boolean;
+  lastUpdatedAt: string | null;
+  createdAt: string | null;
+}
+
+export type ExplanationCategory =
+  | "STATE_EXPLANATION"
+  | "BLOCKER_EXPLANATION"
+  | "RISK_EXPLANATION"
+  | "RECOMMENDATION_EXPLANATION"
+  | "ALTERNATIVE_EXPLANATION"
+  | "NEXT_ACTION_EXPLANATION"
+  | "STAGE_RESOLUTION_EXPLANATION";
+
+export type ExplanationModuleName =
+  | "financial_readiness"
+  | "offer_preparation"
+  | "offer_submission"
+  | "under_contract"
+  | "closing_readiness"
+  | "transaction_command_center";
+
+export interface ExplanationInputAttribution {
+  key: string;
+  label: string;
+  value: string | number | boolean | null;
+  sourceType: "raw_input" | "derived_value" | "dependency_state" | "deadline" | "threshold";
+}
+
+export interface ExplanationConditionReference {
+  key: string;
+  label: string;
+  value: string | number | boolean | null;
+}
+
+export interface ExplanationReasonItem {
+  label: string;
+  detail: string;
+}
+
+export interface ExplanationChangeImpactItem {
+  action: string;
+  effect: string;
+}
+
+export interface DecisionExplanation {
+  id: string;
+  subjectType: string;
+  subjectId: string;
+  moduleName: ExplanationModuleName;
+  category: ExplanationCategory;
+  summary: string;
+  decisionRuleLabel: string;
+  contributingInputs: ExplanationInputAttribution[];
+  conditionReferences: ExplanationConditionReference[];
+  reasonItems: ExplanationReasonItem[];
+  whatToChange: ExplanationChangeImpactItem[];
+  workflowActivityId?: string | null;
+  generatedAt: string;
+  stale: boolean;
+}
+
+export interface DecisionExplanationBundle {
+  subjectType: string;
+  subjectId: string;
+  moduleName: ExplanationModuleName;
+  explanations: DecisionExplanation[];
+  generatedAt: string;
+}
+
+export type NotificationModuleName =
+  | "financial_readiness"
+  | "offer_preparation"
+  | "offer_submission"
+  | "under_contract"
+  | "closing_readiness"
+  | "transaction_command_center";
+
+export type AlertCategory =
+  | "REQUIRED_ACTION"
+  | "DEADLINE_ALERT"
+  | "STATE_CHANGE"
+  | "BLOCKER_ALERT"
+  | "RISK_ALERT"
+  | "MILESTONE_ALERT"
+  | "REMINDER";
+
+export type NotificationSeverity = "INFO" | "WARNING" | "CRITICAL";
+
+export type NotificationStatus = "UNREAD" | "READ" | "DISMISSED" | "RESOLVED";
+
+export interface NotificationActionTarget {
+  type: "route" | "module" | "subject";
+  path?: string | null;
+  moduleName?: NotificationModuleName | null;
+  subjectType?: string | null;
+  subjectId?: string | null;
+}
+
+export interface WorkflowNotification {
+  id: string;
+  workflowId?: string | null;
+  sessionId?: string | null;
+  propertyId?: string | null;
+  propertyAddressLabel?: string | null;
+  shortlistId?: string | null;
+  moduleName: NotificationModuleName;
+  alertCategory: AlertCategory;
+  severity: NotificationSeverity;
+  status: NotificationStatus;
+  triggeringRuleLabel: string;
+  relatedSubjectType: string;
+  relatedSubjectId: string;
+  title: string;
+  message: string;
+  actionLabel: string | null;
+  actionTarget: NotificationActionTarget | null;
+  dueAt: string | null;
+  readAt: string | null;
+  dismissedAt: string | null;
+  resolvedAt: string | null;
+  explanationSubjectType?: string | null;
+  explanationSubjectId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowNotificationHistoryEvent {
+  id: string;
+  notificationId: string;
+  eventType: "CREATED" | "READ" | "DISMISSED" | "RESOLVED" | "SEVERITY_CHANGED";
+  previousValue: string | null;
+  nextValue: string | null;
+  createdAt: string;
+}
+
+export type UnifiedActivityModuleName =
+  | "financial_readiness"
+  | "offer_preparation"
+  | "offer_submission"
+  | "under_contract"
+  | "closing_readiness"
+  | "transaction_command_center"
+  | "notification_alerting"
+  | "decision_explainability";
+
+export type UnifiedActivityEventCategory =
+  | "RECORD_CREATED"
+  | "RECORD_UPDATED"
+  | "STATE_CHANGED"
+  | "BLOCKER_CREATED"
+  | "BLOCKER_RESOLVED"
+  | "RISK_CHANGED"
+  | "RECOMMENDATION_CHANGED"
+  | "NEXT_ACTION_CHANGED"
+  | "DEADLINE_APPROACHING"
+  | "DEADLINE_MISSED"
+  | "MILESTONE_REACHED"
+  | "NOTIFICATION_CREATED"
+  | "NOTIFICATION_READ"
+  | "NOTIFICATION_DISMISSED"
+  | "NOTIFICATION_RESOLVED"
+  | "EXPLANATION_GENERATED"
+  | "COMMAND_CENTER_STATUS_CHANGED";
+
+export type UnifiedActivityTriggerType =
+  | "USER_ACTION"
+  | "SYSTEM_RULE"
+  | "DERIVED_RECALCULATION"
+  | "DEADLINE_RULE"
+  | "STATUS_TRANSITION";
+
+export type UnifiedActivityActorType = "USER" | "SYSTEM";
+
+export interface UnifiedActivityRecord {
+  id: string;
+  workflowId?: string | null;
+  sessionId?: string | null;
+  propertyId?: string | null;
+  propertyAddressLabel?: string | null;
+  shortlistId?: string | null;
+  moduleName: UnifiedActivityModuleName;
+  eventCategory: UnifiedActivityEventCategory;
+  subjectType: string;
+  subjectId: string;
+  title: string;
+  summary: string;
+  oldValueSnapshot?: Record<string, unknown> | null;
+  newValueSnapshot?: Record<string, unknown> | null;
+  triggerType: UnifiedActivityTriggerType;
+  triggerLabel: string;
+  actorType: UnifiedActivityActorType;
+  actorId?: string | null;
+  relatedNotificationId?: string | null;
+  relatedExplanationId?: string | null;
+  createdAt: string;
+}
+
 export type OfferReadinessStatus =
   | "NOT_STARTED"
   | "IN_PROGRESS"
@@ -1245,6 +2112,27 @@ export type WorkflowActivityType =
   | "financial_readiness_created"
   | "financial_readiness_updated"
   | "financial_readiness_status_changed"
+  | "offer_preparation_created"
+  | "offer_preparation_updated"
+  | "offer_preparation_status_changed"
+  | "offer_submission_created"
+  | "offer_submission_submitted"
+  | "offer_submission_countered"
+  | "offer_submission_accepted"
+  | "offer_submission_rejected"
+  | "offer_submission_withdrawn"
+  | "offer_submission_expired"
+  | "under_contract_created"
+  | "under_contract_task_updated"
+  | "under_contract_milestone_reached"
+  | "under_contract_blocked"
+  | "under_contract_ready_for_closing"
+  | "closing_readiness_created"
+  | "closing_checklist_updated"
+  | "closing_milestone_reached"
+  | "closing_blocked"
+  | "closing_ready_to_close"
+  | "closing_completed"
   | "shortlist_created"
   | "shortlist_updated"
   | "shortlist_deleted"
@@ -1271,6 +2159,10 @@ export interface WorkflowActivityRecord {
   eventType: WorkflowActivityType;
   shortlistId?: string | null;
   shortlistItemId?: string | null;
+  offerPreparationId?: string | null;
+  offerSubmissionId?: string | null;
+  underContractId?: string | null;
+  closingReadinessId?: string | null;
   offerReadinessId?: string | null;
   negotiationRecordId?: string | null;
   noteId?: string | null;
@@ -1592,6 +2484,177 @@ export interface SearchRepository {
     }
   ): Promise<FinancialReadiness | null>;
   getFinancialReadinessSummary(id: string): Promise<FinancialReadinessSummary | null>;
+  createOfferPreparation(
+    payload: OfferPreparationInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<OfferPreparation | null>;
+  listOfferPreparations(shortlistId: string): Promise<OfferPreparation[]>;
+  getOfferPreparation(id: string): Promise<OfferPreparation | null>;
+  getLatestOfferPreparation(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<OfferPreparation | null>;
+  updateOfferPreparation(
+    id: string,
+    patch: {
+      propertyAddressLabel?: string;
+      offerPrice?: number | null;
+      earnestMoneyAmount?: number | null;
+      downPaymentType?: OfferPreparationDownPaymentType | null;
+      downPaymentAmount?: number | null;
+      downPaymentPercent?: number | null;
+      financingContingency?: OfferPreparationContingency | null;
+      inspectionContingency?: OfferPreparationContingency | null;
+      appraisalContingency?: OfferPreparationContingency | null;
+      closingTimelineDays?: number | null;
+      possessionTiming?: OfferPreparationPossessionTiming | null;
+      possessionDaysAfterClosing?: number | null;
+      sellerConcessionsRequestedAmount?: number | null;
+      notes?: string | null;
+      buyerRationale?: string | null;
+    }
+  ): Promise<OfferPreparation | null>;
+  getOfferPreparationSummary(id: string): Promise<OfferPreparationSummary | null>;
+  createOfferSubmission(
+    payload: OfferSubmissionInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<OfferSubmission | null>;
+  listOfferSubmissions(shortlistId: string): Promise<OfferSubmission[]>;
+  getOfferSubmission(id: string): Promise<OfferSubmission | null>;
+  getLatestOfferSubmission(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<OfferSubmission | null>;
+  submitOfferSubmission(id: string, submittedAt?: string | null): Promise<OfferSubmission | null>;
+  updateOfferSubmission(
+    id: string,
+    patch: {
+      submissionMethod?: OfferSubmissionMethod | null;
+      offerExpirationAt?: string | null;
+      sellerResponseState?: OfferSubmissionSellerResponseState | null;
+      sellerRespondedAt?: string | null;
+      buyerCounterDecision?: OfferSubmissionBuyerCounterDecision | null;
+      withdrawnAt?: string | null;
+      withdrawalReason?: string | null;
+      counterofferPrice?: number | null;
+      counterofferClosingTimelineDays?: number | null;
+      counterofferFinancingContingency?: OfferPreparationContingency | null;
+      counterofferInspectionContingency?: OfferPreparationContingency | null;
+      counterofferAppraisalContingency?: OfferPreparationContingency | null;
+      counterofferExpirationAt?: string | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<OfferSubmission | null>;
+  respondToOfferSubmissionCounter(
+    id: string,
+    decision: OfferSubmissionBuyerCounterDecision
+  ): Promise<OfferSubmission | null>;
+  getOfferSubmissionSummary(id: string): Promise<OfferSubmissionSummary | null>;
+  createUnderContractCoordination(
+    payload: UnderContractCoordinationInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null>;
+  listUnderContractCoordinations(shortlistId: string): Promise<UnderContractCoordination[]>;
+  getUnderContractCoordination(id: string): Promise<UnderContractCoordination | null>;
+  getLatestUnderContractCoordination(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<UnderContractCoordination | null>;
+  updateUnderContractCoordination(
+    id: string,
+    patch: {
+      targetClosingDate?: string | null;
+      inspectionDeadline?: string | null;
+      appraisalDeadline?: string | null;
+      financingDeadline?: string | null;
+      contingencyDeadline?: string | null;
+      closingPreparationDeadline?: string | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null>;
+  updateUnderContractTask(
+    id: string,
+    taskType: ContractTaskType,
+    patch: {
+      status?: ContractTaskState;
+      deadline?: string | null;
+      scheduledAt?: string | null;
+      completedAt?: string | null;
+      blockedReason?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null>;
+  updateUnderContractMilestone(
+    id: string,
+    milestoneType: CoordinationMilestoneType,
+    patch: {
+      status?: "PENDING" | "REACHED" | "BLOCKED";
+      occurredAt?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null>;
+  getUnderContractCoordinationSummary(id: string): Promise<UnderContractCoordinationSummary | null>;
+  createClosingReadiness(
+    payload: ClosingReadinessInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<ClosingReadiness | null>;
+  listClosingReadiness(shortlistId: string): Promise<ClosingReadiness[]>;
+  getClosingReadiness(id: string): Promise<ClosingReadiness | null>;
+  getLatestClosingReadiness(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<ClosingReadiness | null>;
+  updateClosingReadiness(
+    id: string,
+    patch: {
+      targetClosingDate?: string | null;
+      closingAppointmentAt?: string | null;
+      closingAppointmentLocation?: string | null;
+      closingAppointmentNotes?: string | null;
+      finalReviewDeadline?: string | null;
+      finalFundsConfirmationDeadline?: string | null;
+      finalFundsAmountConfirmed?: number | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<ClosingReadiness | null>;
+  updateClosingChecklistItem(
+    id: string,
+    itemType: ClosingChecklistItemType,
+    patch: {
+      status?: ClosingChecklistItemState;
+      deadline?: string | null;
+      completedAt?: string | null;
+      blockedReason?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<ClosingReadiness | null>;
+  updateClosingMilestone(
+    id: string,
+    milestoneType: ClosingMilestoneType,
+    patch: {
+      status?: "PENDING" | "REACHED" | "BLOCKED";
+      occurredAt?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<ClosingReadiness | null>;
+  markClosingReady(id: string): Promise<ClosingReadiness | null>;
+  markClosingComplete(id: string, closedAt?: string | null): Promise<ClosingReadiness | null>;
+  getClosingReadinessSummary(id: string): Promise<ClosingReadinessSummary | null>;
   createSearchSnapshot(payload: {
     request: SearchRequest;
     response: SearchResponse;
@@ -1789,6 +2852,91 @@ export interface SearchRepository {
   updateResultNote(id: string, body: string): Promise<ResultNote | null>;
   deleteResultNote(id: string): Promise<boolean>;
   listWorkflowActivity(sessionId?: string | null, limit?: number): Promise<WorkflowActivityRecord[]>;
+  createWorkflowNotification(payload: {
+    workflowId?: string | null;
+    sessionId?: string | null;
+    propertyId?: string | null;
+    propertyAddressLabel?: string | null;
+    shortlistId?: string | null;
+    moduleName: NotificationModuleName;
+    alertCategory: AlertCategory;
+    severity: NotificationSeverity;
+    status?: NotificationStatus;
+    triggeringRuleLabel: string;
+    relatedSubjectType: string;
+    relatedSubjectId: string;
+    title: string;
+    message: string;
+    actionLabel?: string | null;
+    actionTarget?: NotificationActionTarget | null;
+    dueAt?: string | null;
+    explanationSubjectType?: string | null;
+    explanationSubjectId?: string | null;
+  }): Promise<WorkflowNotification>;
+  getWorkflowNotification(id: string): Promise<WorkflowNotification | null>;
+  listWorkflowNotifications(filters?: {
+    sessionId?: string | null;
+    propertyId?: string | null;
+    shortlistId?: string | null;
+    statuses?: NotificationStatus[];
+    limit?: number;
+  }): Promise<WorkflowNotification[]>;
+  updateWorkflowNotification(
+    id: string,
+    patch: {
+      severity?: NotificationSeverity;
+      status?: NotificationStatus;
+      title?: string;
+      message?: string;
+      actionLabel?: string | null;
+      actionTarget?: NotificationActionTarget | null;
+      dueAt?: string | null;
+      readAt?: string | null;
+      dismissedAt?: string | null;
+      resolvedAt?: string | null;
+      explanationSubjectType?: string | null;
+      explanationSubjectId?: string | null;
+    }
+  ): Promise<WorkflowNotification | null>;
+  listWorkflowNotificationHistory(filters?: {
+    sessionId?: string | null;
+    propertyId?: string | null;
+    shortlistId?: string | null;
+    notificationId?: string;
+    limit?: number;
+  }): Promise<WorkflowNotificationHistoryEvent[]>;
+  createUnifiedActivity(payload: {
+    workflowId?: string | null;
+    sessionId?: string | null;
+    propertyId?: string | null;
+    propertyAddressLabel?: string | null;
+    shortlistId?: string | null;
+    moduleName: UnifiedActivityModuleName;
+    eventCategory: UnifiedActivityEventCategory;
+    subjectType: string;
+    subjectId: string;
+    title: string;
+    summary: string;
+    oldValueSnapshot?: Record<string, unknown> | null;
+    newValueSnapshot?: Record<string, unknown> | null;
+    triggerType: UnifiedActivityTriggerType;
+    triggerLabel: string;
+    actorType?: UnifiedActivityActorType;
+    actorId?: string | null;
+    relatedNotificationId?: string | null;
+    relatedExplanationId?: string | null;
+    createdAt?: string;
+  }): Promise<UnifiedActivityRecord>;
+  listUnifiedActivity(filters?: {
+    sessionId?: string | null;
+    propertyId?: string | null;
+    shortlistId?: string | null;
+    moduleName?: UnifiedActivityModuleName;
+    eventCategories?: UnifiedActivityEventCategory[];
+    subjectType?: string;
+    subjectId?: string;
+    limit?: number;
+  }): Promise<UnifiedActivityRecord[]>;
   createSharedComment(payload: {
     shareId: string;
     entityType: SharedCommentEntityType;
@@ -2172,6 +3320,32 @@ export interface SearchMetrics {
   financialReadinessCreateCount: number;
   financialReadinessUpdateCount: number;
   financialReadinessSummaryViewCount: number;
+  offerPreparationCreateCount: number;
+  offerPreparationUpdateCount: number;
+  offerPreparationSummaryViewCount: number;
+  offerSubmissionCreateCount: number;
+  offerSubmissionSubmitCount: number;
+  offerSubmissionUpdateCount: number;
+  offerSubmissionSummaryViewCount: number;
+  offerSubmissionAcceptCount: number;
+  offerSubmissionRejectCount: number;
+  offerSubmissionWithdrawCount: number;
+  offerSubmissionExpireCount: number;
+  underContractCreateCount: number;
+  underContractUpdateCount: number;
+  underContractTaskUpdateCount: number;
+  underContractMilestoneUpdateCount: number;
+  underContractSummaryViewCount: number;
+  underContractReadyForClosingCount: number;
+  underContractBlockedCount: number;
+  closingReadinessCreateCount: number;
+  closingReadinessUpdateCount: number;
+  closingChecklistUpdateCount: number;
+  closingMilestoneUpdateCount: number;
+  closingReadinessSummaryViewCount: number;
+  closingReadyToCloseCount: number;
+  closingCompletedCount: number;
+  closingBlockedCount: number;
   noteCreateCount: number;
   noteUpdateCount: number;
   noteDeleteCount: number;

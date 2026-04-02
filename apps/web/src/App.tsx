@@ -1,4 +1,6 @@
 import type {
+  BuyerTransactionCommandCenterView,
+  ClosingReadiness,
   CollaborationActivityRecord,
   DataQualityEvent,
   DemoScenario,
@@ -7,7 +9,10 @@ import type {
   HistoricalComparisonPayload,
   NegotiationEvent,
   NegotiationRecord,
+  OfferPreparation,
+  OfferSubmission,
   OfferReadiness,
+  UnderContractCoordination,
   OpsActionRecord,
   PilotActivityRecord,
   PilotContext,
@@ -28,6 +33,9 @@ import type {
   SearchResponse,
   SearchSnapshotRecord,
   SharedSnapshotView,
+  UnifiedActivityRecord,
+  WorkflowNotification,
+  WorkflowNotificationHistoryEvent,
   WorkflowActivityRecord,
   SessionIdentity
 } from "@nhalo/types";
@@ -36,6 +44,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addShortlistItem,
   createFinancialReadiness,
+  createClosingReadiness,
+  createUnderContractCoordination,
+  createOfferPreparation,
+  createOfferSubmission,
   createNegotiation,
   createNegotiationEvent,
   createOfferReadiness,
@@ -58,8 +70,25 @@ import {
   fetchDataQualityEvents,
   fetchDemoScenarios,
   fetchLatestFinancialReadiness,
+  fetchWorkflowNotifications,
+  fetchWorkflowNotificationHistory,
   fetchNegotiationEvents,
+  fetchTransactionCommandCenterSummary,
+  markClosingComplete,
+  markClosingReady,
+  dismissWorkflowNotification,
+  markWorkflowNotificationRead,
   updateFinancialReadiness,
+  submitOfferSubmission,
+  updateOfferPreparation,
+  updateOfferSubmission,
+  respondToOfferSubmissionCounter,
+  updateUnderContractCoordination,
+  updateClosingChecklistItem,
+  updateClosingMilestone,
+  updateClosingReadiness,
+  updateUnderContractTask,
+  updateUnderContractMilestone,
   fetchOpsActions,
   fetchOpsSummary,
   fetchPilotActivity,
@@ -79,6 +108,7 @@ import {
   fetchShortlistItems,
   fetchShortlists,
   fetchSharedSnapshot,
+  fetchUnifiedActivity,
   fetchWorkflowActivity,
   recordValidationEvent,
   revokePilotLink,
@@ -92,6 +122,7 @@ import {
   updateDataQualityEventStatus,
   updateNegotiation,
   updateOfferReadiness,
+  updatePilotPartner,
   updateResultNote,
   updateReviewerDecision,
   updateSharedComment,
@@ -106,6 +137,7 @@ import { EmptyStatePanel } from "./components/EmptyStatePanel";
 import { ExportPanel } from "./components/ExportPanel";
 import { FeedbackPrompt } from "./components/FeedbackPrompt";
 import { FinancialReadinessPanel } from "./components/FinancialReadinessPanel";
+import { NotificationCenterPanel } from "./components/NotificationCenterPanel";
 import { HistoricalComparePanel } from "./components/HistoricalComparePanel";
 import { HomeDetailPanel } from "./components/HomeDetailPanel";
 import { OnboardingModal } from "./components/OnboardingModal";
@@ -197,6 +229,13 @@ export default function App() {
   const [sharedShortlists, setSharedShortlists] = useState<SharedShortlist[]>([]);
   const [selectedShortlistId, setSelectedShortlistId] = useState<string | null>(null);
   const [shortlistItems, setShortlistItems] = useState<ShortlistItem[]>([]);
+  const [offerPreparations, setOfferPreparations] = useState<OfferPreparation[]>([]);
+  const [offerSubmissions, setOfferSubmissions] = useState<OfferSubmission[]>([]);
+  const [underContracts, setUnderContracts] = useState<UnderContractCoordination[]>([]);
+  const [closingReadiness, setClosingReadiness] = useState<ClosingReadiness[]>([]);
+  const [transactionCommandCenters, setTransactionCommandCenters] = useState<
+    BuyerTransactionCommandCenterView[]
+  >([]);
   const [offerReadiness, setOfferReadiness] = useState<OfferReadiness[]>([]);
   const [negotiations, setNegotiations] = useState<NegotiationRecord[]>([]);
   const [negotiationEventsByRecordId, setNegotiationEventsByRecordId] = useState<
@@ -204,6 +243,11 @@ export default function App() {
   >({});
   const [resultNotes, setResultNotes] = useState<ResultNote[]>([]);
   const [workflowActivity, setWorkflowActivity] = useState<WorkflowActivityRecord[]>([]);
+  const [unifiedActivity, setUnifiedActivity] = useState<UnifiedActivityRecord[]>([]);
+  const [workflowNotifications, setWorkflowNotifications] = useState<WorkflowNotification[]>([]);
+  const [workflowNotificationHistory, setWorkflowNotificationHistory] = useState<
+    WorkflowNotificationHistoryEvent[]
+  >([]);
   const [sharedComments, setSharedComments] = useState<SharedComment[]>([]);
   const [reviewerDecisions, setReviewerDecisions] = useState<ReviewerDecision[]>([]);
   const [collaborationActivity, setCollaborationActivity] = useState<CollaborationActivityRecord[]>([]);
@@ -287,26 +331,42 @@ export default function App() {
       setShortlists([]);
       setSharedShortlists([]);
       setShortlistItems([]);
+      setOfferPreparations([]);
+      setOfferSubmissions([]);
+      setUnderContracts([]);
+      setClosingReadiness([]);
+      setTransactionCommandCenters([]);
       setOfferReadiness([]);
       setNegotiations([]);
       setNegotiationEventsByRecordId({});
       setResultNotes([]);
       setWorkflowActivity([]);
+      setUnifiedActivity([]);
+      setWorkflowNotifications([]);
+      setWorkflowNotificationHistory([]);
       setSelectedShortlistId(null);
       return;
     }
 
-    const [nextFinancialReadiness, nextShortlists, nextNotes, nextActivity] = await Promise.all([
+    const [nextFinancialReadiness, nextShortlists, nextNotes, nextActivity, nextUnifiedActivity, nextNotifications, nextNotificationHistory] = await Promise.all([
       fetchLatestFinancialReadiness(sessionId),
       branding.enableShortlists ? fetchShortlists(sessionId) : Promise.resolve([]),
       branding.enableResultNotes ? fetchResultNotes({ sessionId }) : Promise.resolve([]),
-      branding.enableShortlists ? fetchWorkflowActivity(sessionId, 12) : Promise.resolve([])
+      branding.enableShortlists ? fetchWorkflowActivity(sessionId, 12) : Promise.resolve([]),
+      branding.enableShortlists ? fetchUnifiedActivity({ sessionId, limit: 50 }) : Promise.resolve([]),
+      branding.enableShortlists ? fetchWorkflowNotifications({ sessionId, limit: 50 }) : Promise.resolve([]),
+      branding.enableShortlists
+        ? fetchWorkflowNotificationHistory({ sessionId, limit: 25 })
+        : Promise.resolve([])
     ]);
 
     setFinancialReadiness(nextFinancialReadiness);
     setShortlists(nextShortlists);
     setResultNotes(nextNotes);
     setWorkflowActivity(nextActivity);
+    setUnifiedActivity(nextUnifiedActivity);
+    setWorkflowNotifications(nextNotifications);
+    setWorkflowNotificationHistory(nextNotificationHistory);
 
     const nextSelected =
       preferredShortlistId && nextShortlists.some((entry) => entry.id === preferredShortlistId)
@@ -318,14 +378,49 @@ export default function App() {
     if (!nextSelected) {
       setSharedShortlists([]);
       setShortlistItems([]);
+      setOfferPreparations([]);
+      setOfferSubmissions([]);
+      setUnderContracts([]);
+      setClosingReadiness([]);
+      setTransactionCommandCenters([]);
       setOfferReadiness([]);
       setNegotiations([]);
       setNegotiationEventsByRecordId({});
+      setWorkflowNotifications(nextNotifications);
+      setWorkflowNotificationHistory(nextNotificationHistory);
       return;
     }
 
     const shortlistPayload = await fetchShortlistItems(nextSelected);
     setShortlistItems(shortlistPayload.items);
+    setOfferPreparations(shortlistPayload.offerPreparations ?? []);
+    setOfferSubmissions(shortlistPayload.offerSubmissions ?? []);
+    setUnderContracts(shortlistPayload.underContracts ?? []);
+    setClosingReadiness(shortlistPayload.closingReadiness ?? []);
+    const commandCenterPayloads = await Promise.all(
+      Array.from(
+        new Map(
+          shortlistPayload.items.map((entry) => [
+            entry.canonicalPropertyId,
+            entry.capturedHome.address
+          ])
+        ).entries()
+      ).map(async ([propertyId, propertyAddressLabel]) => {
+        try {
+          return await fetchTransactionCommandCenterSummary({
+            propertyId,
+            propertyAddressLabel,
+            shortlistId: nextSelected,
+            sessionId
+          });
+        } catch {
+          return null;
+        }
+      })
+    );
+    setTransactionCommandCenters(
+      commandCenterPayloads.filter((entry): entry is BuyerTransactionCommandCenterView => entry !== null)
+    );
     setOfferReadiness(shortlistPayload.offerReadiness ?? []);
     setNegotiations(shortlistPayload.negotiations ?? []);
     if ((shortlistPayload.negotiations ?? []).length > 0) {
@@ -398,6 +493,16 @@ export default function App() {
     } finally {
       setOpsLoading(false);
     }
+  }
+
+  async function handleMarkWorkflowNotificationRead(id: string) {
+    await markWorkflowNotificationRead(id);
+    await refreshWorkflowState();
+  }
+
+  async function handleDismissWorkflowNotification(id: string) {
+    await dismissWorkflowNotification(id);
+    await refreshWorkflowState();
   }
 
   async function handleUpdateDataQualityEvent(
@@ -748,6 +853,69 @@ export default function App() {
     }
     return map;
   }, [offerReadiness]);
+  const offerPreparationsByPropertyId = useMemo(() => {
+    const map = new Map<string, OfferPreparation>();
+    for (const entry of offerPreparations) {
+      map.set(entry.propertyId, entry);
+    }
+    return map;
+  }, [offerPreparations]);
+  const offerSubmissionsByPropertyId = useMemo(() => {
+    const map = new Map<string, OfferSubmission>();
+    for (const entry of offerSubmissions) {
+      map.set(entry.propertyId, entry);
+    }
+    return map;
+  }, [offerSubmissions]);
+  const underContractsByPropertyId = useMemo(() => {
+    const map = new Map<string, UnderContractCoordination>();
+    for (const entry of underContracts) {
+      map.set(entry.propertyId, entry);
+    }
+    return map;
+  }, [underContracts]);
+  const closingReadinessByPropertyId = useMemo(() => {
+    const map = new Map<string, ClosingReadiness>();
+    for (const entry of closingReadiness) {
+      map.set(entry.propertyId, entry);
+    }
+    return map;
+  }, [closingReadiness]);
+  const transactionCommandCentersByPropertyId = useMemo(() => {
+    const map = new Map<string, BuyerTransactionCommandCenterView>();
+    for (const entry of transactionCommandCenters) {
+      map.set(entry.propertyId, entry);
+    }
+    return map;
+  }, [transactionCommandCenters]);
+  const financialReadinessNotifications = useMemo(
+    () => workflowNotifications.filter((entry) => entry.moduleName === "financial_readiness"),
+    [workflowNotifications]
+  );
+  const workflowNotificationsByPropertyId = useMemo(() => {
+    const map = new Map<string, WorkflowNotification[]>();
+    for (const entry of workflowNotifications) {
+      if (!entry.propertyId) {
+        continue;
+      }
+      const next = map.get(entry.propertyId) ?? [];
+      next.push(entry);
+      map.set(entry.propertyId, next);
+    }
+    return map;
+  }, [workflowNotifications]);
+  const unifiedActivityByPropertyId = useMemo(() => {
+    const map = new Map<string, UnifiedActivityRecord[]>();
+    for (const entry of unifiedActivity) {
+      if (!entry.propertyId) {
+        continue;
+      }
+      const next = map.get(entry.propertyId) ?? [];
+      next.push(entry);
+      map.set(entry.propertyId, next);
+    }
+    return map;
+  }, [unifiedActivity]);
   const negotiationsByPropertyId = useMemo(() => {
     const map = new Map<string, NegotiationRecord>();
     for (const entry of negotiations) {
@@ -1210,6 +1378,9 @@ export default function App() {
     try {
       const payload = await fetchShortlistItems(shortlistId);
       setShortlistItems(payload.items);
+      setOfferPreparations(payload.offerPreparations ?? []);
+      setOfferSubmissions(payload.offerSubmissions ?? []);
+      setUnderContracts(payload.underContracts ?? []);
       setOfferReadiness(payload.offerReadiness ?? []);
       setNegotiations(payload.negotiations ?? []);
       if ((payload.negotiations ?? []).length > 0) {
@@ -1364,6 +1535,374 @@ export default function App() {
         workflowError instanceof Error
           ? workflowError.message
           : "Unable to update financial readiness"
+      );
+    }
+  }
+
+  async function handleCreateOfferPreparation(payload: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    shortlistId?: string | null;
+    offerReadinessId?: string | null;
+    financialReadinessId: string;
+    offerPrice?: number | null;
+    earnestMoneyAmount?: number | null;
+    downPaymentType?: OfferPreparation["downPaymentType"];
+    downPaymentAmount?: number | null;
+    downPaymentPercent?: number | null;
+    financingContingency?: OfferPreparation["financingContingency"];
+    inspectionContingency?: OfferPreparation["inspectionContingency"];
+    appraisalContingency?: OfferPreparation["appraisalContingency"];
+    closingTimelineDays?: number | null;
+    possessionTiming?: OfferPreparation["possessionTiming"];
+    possessionDaysAfterClosing?: number | null;
+    notes?: string | null;
+    buyerRationale?: string | null;
+  }) {
+    try {
+      await createOfferPreparation({
+        sessionId: sessionIdentity.sessionId,
+        ...payload
+      });
+      await refreshWorkflowState(sessionIdentity.sessionId, payload.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to start offer preparation"
+      );
+    }
+  }
+
+  async function handleUpdateOfferPreparation(
+    id: string,
+    patch: {
+      propertyAddressLabel?: string;
+      offerPrice?: number | null;
+      earnestMoneyAmount?: number | null;
+      downPaymentType?: OfferPreparation["downPaymentType"];
+      downPaymentAmount?: number | null;
+      downPaymentPercent?: number | null;
+      financingContingency?: OfferPreparation["financingContingency"];
+      inspectionContingency?: OfferPreparation["inspectionContingency"];
+      appraisalContingency?: OfferPreparation["appraisalContingency"];
+      closingTimelineDays?: number | null;
+      possessionTiming?: OfferPreparation["possessionTiming"];
+      possessionDaysAfterClosing?: number | null;
+      notes?: string | null;
+      buyerRationale?: string | null;
+    }
+  ) {
+    try {
+      const record = await updateOfferPreparation(id, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to update offer preparation"
+      );
+    }
+  }
+
+  async function handleCreateOfferSubmission(payload: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    shortlistId?: string | null;
+    financialReadinessId?: string | null;
+    offerPreparationId: string;
+    submissionMethod?: OfferSubmission["submissionMethod"];
+    offerExpirationAt?: string | null;
+    notes?: string | null;
+    internalActivityNote?: string | null;
+  }) {
+    try {
+      await createOfferSubmission({
+        sessionId: sessionIdentity.sessionId,
+        ...payload
+      });
+      await refreshWorkflowState(sessionIdentity.sessionId, payload.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to start offer submission"
+      );
+    }
+  }
+
+  async function handleSubmitOfferSubmission(id: string, submittedAt?: string | null) {
+    try {
+      const record = await submitOfferSubmission(id, submittedAt);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to submit offer");
+    }
+  }
+
+  async function handleUpdateOfferSubmission(
+    id: string,
+    patch: {
+      submissionMethod?: OfferSubmission["submissionMethod"];
+      offerExpirationAt?: string | null;
+      sellerResponseState?: OfferSubmission["sellerResponseState"];
+      sellerRespondedAt?: string | null;
+      buyerCounterDecision?: OfferSubmission["buyerCounterDecision"];
+      withdrawnAt?: string | null;
+      withdrawalReason?: string | null;
+      counterofferPrice?: number | null;
+      counterofferClosingTimelineDays?: number | null;
+      counterofferFinancingContingency?: OfferSubmission["counterofferSummary"]["counterofferFinancingContingency"];
+      counterofferInspectionContingency?: OfferSubmission["counterofferSummary"]["counterofferInspectionContingency"];
+      counterofferAppraisalContingency?: OfferSubmission["counterofferSummary"]["counterofferAppraisalContingency"];
+      counterofferExpirationAt?: string | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ) {
+    try {
+      const record = await updateOfferSubmission(id, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(workflowError instanceof Error ? workflowError.message : "Unable to update offer submission");
+    }
+  }
+
+  async function handleRespondToOfferSubmissionCounter(
+    id: string,
+    decision: NonNullable<OfferSubmission["buyerCounterDecision"]>
+  ) {
+    try {
+      const record = await respondToOfferSubmissionCounter(id, decision);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error ? workflowError.message : "Unable to respond to seller counteroffer"
+      );
+    }
+  }
+
+  async function handleCreateUnderContract(payload: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    shortlistId?: string | null;
+    financialReadinessId?: string | null;
+    offerPreparationId?: string | null;
+    offerSubmissionId: string;
+    acceptedAt: string;
+    targetClosingDate: string;
+    inspectionDeadline: string | null;
+    appraisalDeadline: string | null;
+    financingDeadline: string | null;
+    contingencyDeadline: string | null;
+    closingPreparationDeadline?: string | null;
+    notes?: string | null;
+    internalActivityNote?: string | null;
+  }) {
+    try {
+      await createUnderContractCoordination({
+        sessionId: sessionIdentity.sessionId,
+        ...payload
+      });
+      await refreshWorkflowState(sessionIdentity.sessionId, payload.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to start under-contract coordination"
+      );
+    }
+  }
+
+  async function handleUpdateUnderContract(
+    id: string,
+    patch: {
+      targetClosingDate?: string | null;
+      inspectionDeadline?: string | null;
+      appraisalDeadline?: string | null;
+      financingDeadline?: string | null;
+      contingencyDeadline?: string | null;
+      closingPreparationDeadline?: string | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ) {
+    try {
+      const record = await updateUnderContractCoordination(id, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to update under-contract coordination"
+      );
+    }
+  }
+
+  async function handleUpdateUnderContractTask(
+    id: string,
+    taskType: UnderContractCoordination["taskSummaries"][number]["taskType"],
+    patch: {
+      status?: UnderContractCoordination["taskSummaries"][number]["status"];
+      deadline?: string | null;
+      scheduledAt?: string | null;
+      completedAt?: string | null;
+      blockedReason?: string | null;
+      notes?: string | null;
+    }
+  ) {
+    try {
+      const record = await updateUnderContractTask(id, taskType, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to update contract task"
+      );
+    }
+  }
+
+  async function handleUpdateUnderContractMilestone(
+    id: string,
+    milestoneType: UnderContractCoordination["milestoneSummaries"][number]["milestoneType"],
+    patch: {
+      status?: UnderContractCoordination["milestoneSummaries"][number]["status"];
+      occurredAt?: string | null;
+      notes?: string | null;
+    }
+  ) {
+    try {
+      const record = await updateUnderContractMilestone(id, milestoneType, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to update contract milestone"
+      );
+    }
+  }
+
+  async function handleCreateClosingReadiness(payload: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    shortlistId?: string | null;
+    financialReadinessId?: string | null;
+    offerPreparationId?: string | null;
+    offerSubmissionId?: string | null;
+    underContractCoordinationId: string;
+    targetClosingDate: string;
+    closingAppointmentAt?: string | null;
+    closingAppointmentLocation?: string | null;
+    closingAppointmentNotes?: string | null;
+    finalReviewDeadline?: string | null;
+    finalFundsConfirmationDeadline?: string | null;
+    finalFundsAmountConfirmed?: number | null;
+    notes?: string | null;
+    internalActivityNote?: string | null;
+  }) {
+    try {
+      await createClosingReadiness({
+        sessionId: sessionIdentity.sessionId,
+        ...payload
+      });
+      await refreshWorkflowState(sessionIdentity.sessionId, payload.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to start closing readiness"
+      );
+    }
+  }
+
+  async function handleUpdateClosingReadiness(
+    id: string,
+    patch: {
+      targetClosingDate?: string | null;
+      closingAppointmentAt?: string | null;
+      closingAppointmentLocation?: string | null;
+      closingAppointmentNotes?: string | null;
+      finalReviewDeadline?: string | null;
+      finalFundsConfirmationDeadline?: string | null;
+      finalFundsAmountConfirmed?: number | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ) {
+    try {
+      const record = await updateClosingReadiness(id, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to update closing readiness"
+      );
+    }
+  }
+
+  async function handleUpdateClosingChecklistItem(
+    id: string,
+    itemType: ClosingReadiness["checklistItemSummaries"][number]["itemType"],
+    patch: {
+      status?: ClosingReadiness["checklistItemSummaries"][number]["status"];
+      deadline?: string | null;
+      completedAt?: string | null;
+      blockedReason?: string | null;
+      notes?: string | null;
+    }
+  ) {
+    try {
+      const record = await updateClosingChecklistItem(id, itemType, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to update closing checklist item"
+      );
+    }
+  }
+
+  async function handleUpdateClosingMilestone(
+    id: string,
+    milestoneType: ClosingReadiness["milestoneSummaries"][number]["milestoneType"],
+    patch: {
+      status?: ClosingReadiness["milestoneSummaries"][number]["status"];
+      occurredAt?: string | null;
+      notes?: string | null;
+    }
+  ) {
+    try {
+      const record = await updateClosingMilestone(id, milestoneType, patch);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to update closing milestone"
+      );
+    }
+  }
+
+  async function handleMarkClosingReady(id: string) {
+    try {
+      const record = await markClosingReady(id);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to mark closing readiness"
+      );
+    }
+  }
+
+  async function handleMarkClosingComplete(id: string) {
+    try {
+      const record = await markClosingComplete(id);
+      await refreshWorkflowState(sessionIdentity.sessionId, record.shortlistId ?? selectedShortlistId);
+    } catch (workflowError) {
+      setError(
+        workflowError instanceof Error
+          ? workflowError.message
+          : "Unable to mark closing complete"
       );
     }
   }
@@ -1765,7 +2304,17 @@ export default function App() {
         {sharedSnapshotView || sharedShortlistView ? null : (
           <div className="sidebar-stack">
             <div className="panel">
+              <NotificationCenterPanel
+                history={workflowNotificationHistory}
+                notifications={workflowNotifications}
+                onDismiss={handleDismissWorkflowNotification}
+                onMarkRead={handleMarkWorkflowNotificationRead}
+              />
+            </div>
+
+            <div className="panel">
               <FinancialReadinessPanel
+                notifications={financialReadinessNotifications}
                 onCreate={handleCreateFinancialReadiness}
                 onUpdate={handleUpdateFinancialReadiness}
                 readiness={financialReadiness}
@@ -1817,8 +2366,15 @@ export default function App() {
             {branding.enableShortlists ? (
               <div className="panel">
                 <ShortlistPanel
+                  financialReadiness={financialReadiness}
                   historicalCompareEnabled={branding.enableHistoricalCompare}
                   items={shortlistItems}
+                  notifications={workflowNotifications}
+                  offerPreparations={offerPreparations}
+                  offerSubmissions={offerSubmissions}
+                  underContracts={underContracts}
+                  closingReadiness={closingReadiness}
+                  transactionCommandCenters={transactionCommandCenters}
                   offerReadiness={offerReadiness}
                   negotiations={negotiations}
                   negotiationEventsByRecordId={negotiationEventsByRecordId}
@@ -1826,7 +2382,10 @@ export default function App() {
                   onAddNegotiationEvent={handleAddNegotiationEvent}
                   onCopyShareLink={handleCopyShortlistShare}
                   onCreateNegotiation={handleCreateNegotiation}
+                  onCreateOfferPreparation={handleCreateOfferPreparation}
+                  onCreateOfferSubmission={handleCreateOfferSubmission}
                   onCreateOfferReadiness={handleCreateOfferReadiness}
+                  onCreateUnderContract={handleCreateUnderContract}
                   onCreateShare={sharedShortlistsEnabled ? handleCreateShortlistShare : undefined}
                   onCreate={handleCreateShortlist}
                   onDelete={handleDeleteShortlist}
@@ -1837,9 +2396,22 @@ export default function App() {
                   onReviewStateChange={handleReviewStateChange}
                   onSaveNote={handleSaveResultNote}
                   onSelect={handleSelectShortlist}
+                  onSubmitOfferSubmission={handleSubmitOfferSubmission}
                   onTogglePinned={handleToggleShortlistPinned}
                   onUpdateNegotiation={handleUpdateNegotiation}
+                  onUpdateOfferPreparation={handleUpdateOfferPreparation}
+                  onUpdateOfferSubmission={handleUpdateOfferSubmission}
                   onUpdateOfferReadiness={handleUpdateOfferReadiness}
+                  onUpdateUnderContract={handleUpdateUnderContract}
+                  onUpdateUnderContractTask={handleUpdateUnderContractTask}
+                  onUpdateUnderContractMilestone={handleUpdateUnderContractMilestone}
+                  onCreateClosingReadiness={handleCreateClosingReadiness}
+                  onUpdateClosingReadiness={handleUpdateClosingReadiness}
+                  onUpdateClosingChecklistItem={handleUpdateClosingChecklistItem}
+                  onUpdateClosingMilestone={handleUpdateClosingMilestone}
+                  onMarkClosingReady={handleMarkClosingReady}
+                  onMarkClosingComplete={handleMarkClosingComplete}
+                  onRespondToOfferSubmissionCounter={handleRespondToOfferSubmissionCounter}
                   selectedShortlistId={selectedShortlistId}
                   sharedShortlists={sharedShortlists}
                   shortlists={shortlists}
@@ -2020,6 +2592,7 @@ export default function App() {
 
       <HomeDetailPanel
         allHomes={results?.homes ?? []}
+        financialReadiness={financialReadiness}
         home={selectedHome}
         note={selectedHomeNote}
         negotiation={
@@ -2039,13 +2612,66 @@ export default function App() {
             ? offerReadinessByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id) ?? null
             : null
         }
+        offerPreparation={
+          selectedHome
+            ? offerPreparationsByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id) ?? null
+            : null
+        }
+        offerSubmission={
+          selectedHome
+            ? offerSubmissionsByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id) ?? null
+            : null
+        }
+        underContract={
+          selectedHome
+            ? underContractsByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id) ?? null
+            : null
+        }
+        closingReadiness={
+          selectedHome
+            ? closingReadinessByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id) ?? null
+            : null
+        }
+        transactionCommandCenter={
+          selectedHome
+            ? transactionCommandCentersByPropertyId.get(
+                selectedHome.canonicalPropertyId ?? selectedHome.id
+              ) ?? null
+            : null
+        }
+        notifications={
+          selectedHome
+            ? workflowNotificationsByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id) ?? []
+            : []
+        }
+        unifiedActivity={
+          selectedHome
+            ? unifiedActivityByPropertyId.get(selectedHome.canonicalPropertyId ?? selectedHome.id) ?? []
+            : []
+        }
         noteEnabled={branding.enableResultNotes && Boolean(selectedHomeNoteContext)}
         onAddNegotiationEvent={handleAddNegotiationEvent}
         onClose={() => setSelectedHomeId(null)}
         onCreateNegotiation={handleCreateNegotiation}
+        onCreateOfferPreparation={handleCreateOfferPreparation}
+        onCreateOfferSubmission={handleCreateOfferSubmission}
+        onCreateUnderContract={handleCreateUnderContract}
+        onCreateClosingReadiness={handleCreateClosingReadiness}
         onDeleteNote={handleDeleteSelectedHomeNote}
+        onMarkClosingComplete={handleMarkClosingComplete}
+        onMarkClosingReady={handleMarkClosingReady}
+        onRespondToOfferSubmissionCounter={handleRespondToOfferSubmissionCounter}
         onSaveNote={handleSaveSelectedHomeNote}
+        onSubmitOfferSubmission={handleSubmitOfferSubmission}
         onUpdateNegotiation={handleUpdateNegotiation}
+        onUpdateOfferPreparation={handleUpdateOfferPreparation}
+        onUpdateOfferSubmission={handleUpdateOfferSubmission}
+        onUpdateUnderContract={handleUpdateUnderContract}
+        onUpdateUnderContractTask={handleUpdateUnderContractTask}
+        onUpdateUnderContractMilestone={handleUpdateUnderContractMilestone}
+        onUpdateClosingReadiness={handleUpdateClosingReadiness}
+        onUpdateClosingChecklistItem={handleUpdateClosingChecklistItem}
+        onUpdateClosingMilestone={handleUpdateClosingMilestone}
         onViewAudit={handleViewAudit}
       />
 

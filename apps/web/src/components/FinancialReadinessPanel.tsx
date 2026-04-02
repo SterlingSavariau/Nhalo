@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import type { FinancialReadiness } from "@nhalo/types";
+import type { FinancialReadiness, WorkflowNotification } from "@nhalo/types";
+import { DecisionExplainabilityPanel } from "./DecisionExplainabilityPanel";
+import { WorkflowAlertList } from "./WorkflowAlertList";
 import { FINANCIAL_READINESS_COPY } from "../content";
 
 interface FinancialReadinessPanelProps {
   readiness: FinancialReadiness | null;
+  notifications?: WorkflowNotification[];
   onCreate(payload: {
     annualHouseholdIncome: number | null;
     monthlyDebtPayments: number | null;
@@ -70,6 +73,7 @@ function parseNumber(value: string): number | null {
 
 export function FinancialReadinessPanel({
   readiness,
+  notifications = [],
   onCreate,
   onUpdate
 }: FinancialReadinessPanelProps) {
@@ -161,6 +165,21 @@ export function FinancialReadinessPanel({
       </div>
 
       {!readiness ? <p className="muted">{FINANCIAL_READINESS_COPY.emptyBody}</p> : null}
+
+      {readiness ? (
+        <DecisionExplainabilityPanel
+          label="Why this state?"
+          moduleName="financial_readiness"
+          subjectId={readiness.id}
+          subjectType="financial_readiness"
+        />
+      ) : null}
+
+      <WorkflowAlertList
+        notifications={notifications}
+        title="Active alerts"
+        emptyMessage="No active financial readiness alerts."
+      />
 
       <div className="summary-grid">
         <div className="summary-block">

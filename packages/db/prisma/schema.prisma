@@ -202,6 +202,10 @@ model Shortlist {
   updatedAt      DateTime @updatedAt
   sourceSnapshot SearchSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
   items          ShortlistItem[]
+  offerPreparations OfferPreparation[]
+  offerSubmissions OfferSubmission[]
+  underContracts UnderContractCoordination[]
+  closingReadiness ClosingReadiness[]
   offerReadiness OfferReadiness[]
   negotiations   NegotiationRecord[]
   sharedLinks    SharedShortlistLink[]
@@ -269,9 +273,320 @@ model FinancialReadiness {
   lastEvaluatedAt            DateTime
   createdAt                  DateTime @default(now())
   updatedAt                  DateTime @updatedAt
+  offerPreparations          OfferPreparation[]
+  offerSubmissions           OfferSubmission[]
+  underContracts             UnderContractCoordination[]
+  closingReadiness           ClosingReadiness[]
 
   @@index([sessionId, updatedAt])
   @@index([partnerId, updatedAt])
+}
+
+model OfferPreparation {
+  id                           String   @id @default(cuid())
+  sessionId                    String?
+  partnerId                    String?
+  propertyId                   String
+  propertyAddressLabel         String
+  shortlistId                  String?
+  offerReadinessId             String?
+  financialReadinessId         String
+  offerPrice                   Int?
+  earnestMoneyAmount           Int?
+  downPaymentType              String?
+  downPaymentAmount            Int?
+  downPaymentPercent           Float?
+  financingContingency         String?
+  inspectionContingency        String?
+  appraisalContingency         String?
+  closingTimelineDays          Int?
+  possessionTiming             String?
+  possessionDaysAfterClosing   Int?
+  sellerConcessionsRequestedAmount Int?
+  notes                        String?
+  buyerRationale               String?
+  offerSummaryJson             Json
+  offerState                   String
+  offerRiskLevel               String
+  offerCompletenessState       String
+  readinessToSubmit            Boolean  @default(false)
+  cashRequiredAtOffer          Int?
+  missingItemsJson             Json
+  blockersJson                 Json
+  recommendation               String
+  risk                         String
+  alternative                  String
+  nextAction                   String
+  nextStepsJson                Json
+  financialAlignmentJson       Json
+  assumptionsJson              Json
+  lastEvaluatedAt              DateTime
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+  shortlist                    Shortlist? @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
+  financialReadiness           FinancialReadiness @relation(fields: [financialReadinessId], references: [id], onDelete: Cascade)
+  offerReadiness               OfferReadiness? @relation(fields: [offerReadinessId], references: [id], onDelete: SetNull)
+  offerSubmissions             OfferSubmission[]
+  underContracts               UnderContractCoordination[]
+  closingReadiness             ClosingReadiness[]
+
+  @@index([shortlistId, updatedAt])
+  @@index([propertyId, updatedAt])
+  @@index([financialReadinessId, updatedAt])
+  @@index([sessionId, updatedAt])
+  @@unique([shortlistId, propertyId])
+}
+
+model OfferSubmission {
+  id                                String   @id @default(cuid())
+  sessionId                         String?
+  partnerId                         String?
+  propertyId                        String
+  propertyAddressLabel              String
+  shortlistId                       String?
+  financialReadinessId              String?
+  offerPreparationId                String
+  submissionMethod                  String?
+  submittedAt                       DateTime?
+  offerExpirationAt                 DateTime?
+  sellerResponseState               String
+  sellerRespondedAt                 DateTime?
+  buyerCounterDecision              String?
+  withdrawnAt                       DateTime?
+  withdrawalReason                  String?
+  notes                             String?
+  internalActivityNote              String?
+  originalOfferSnapshotJson         Json
+  submissionSummaryJson             Json
+  submissionState                   String
+  urgencyLevel                      String
+  counterofferPrice                 Int?
+  counterofferClosingTimelineDays   Int?
+  counterofferFinancingContingency  String?
+  counterofferInspectionContingency String?
+  counterofferAppraisalContingency  String?
+  counterofferExpirationAt          DateTime?
+  counterofferSummaryJson           Json
+  missingItemsJson                  Json
+  blockersJson                      Json
+  recommendation                    String
+  risk                              String
+  alternative                       String
+  nextAction                        String
+  nextStepsJson                     Json
+  requiresBuyerResponse             Boolean  @default(false)
+  isExpired                         Boolean  @default(false)
+  activityLogJson                   Json
+  lastActionAt                      DateTime?
+  lastEvaluatedAt                   DateTime
+  createdAt                         DateTime @default(now())
+  updatedAt                         DateTime @updatedAt
+  shortlist                         Shortlist? @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
+  financialReadiness                FinancialReadiness? @relation(fields: [financialReadinessId], references: [id], onDelete: SetNull)
+  offerPreparation                  OfferPreparation @relation(fields: [offerPreparationId], references: [id], onDelete: Cascade)
+  underContract                     UnderContractCoordination?
+  closingReadiness                  ClosingReadiness[]
+
+  @@index([shortlistId, updatedAt])
+  @@index([propertyId, updatedAt])
+  @@index([offerPreparationId, updatedAt])
+  @@index([financialReadinessId, updatedAt])
+  @@index([sessionId, updatedAt])
+  @@unique([shortlistId, propertyId])
+}
+
+model UnderContractCoordination {
+  id                         String   @id @default(cuid())
+  sessionId                  String?
+  partnerId                  String?
+  propertyId                 String
+  propertyAddressLabel       String
+  shortlistId                String?
+  financialReadinessId       String?
+  offerPreparationId         String?
+  offerSubmissionId          String   @unique
+  acceptedAt                 DateTime
+  targetClosingDate          DateTime
+  inspectionDeadline         DateTime?
+  appraisalDeadline          DateTime?
+  financingDeadline          DateTime?
+  contingencyDeadline        DateTime?
+  closingPreparationDeadline DateTime?
+  notes                      String?
+  internalActivityNote       String?
+  coordinationSummaryJson    Json
+  overallCoordinationState   String
+  overallRiskLevel           String
+  urgencyLevel               String
+  readyForClosing            Boolean  @default(false)
+  requiresImmediateAttention Boolean  @default(false)
+  taskRecordsJson            Json
+  milestoneRecordsJson       Json
+  deadlineRecordsJson        Json
+  missingItemsJson           Json
+  blockersJson               Json
+  recommendation             String
+  risk                       String
+  alternative                String
+  nextAction                 String
+  nextStepsJson              Json
+  activityLogJson            Json
+  lastActionAt               DateTime?
+  lastEvaluatedAt            DateTime
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+  shortlist                  Shortlist? @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
+  financialReadiness         FinancialReadiness? @relation(fields: [financialReadinessId], references: [id], onDelete: SetNull)
+  offerPreparation           OfferPreparation? @relation(fields: [offerPreparationId], references: [id], onDelete: SetNull)
+  offerSubmission            OfferSubmission @relation(fields: [offerSubmissionId], references: [id], onDelete: Cascade)
+  closingReadiness           ClosingReadiness?
+
+  @@index([shortlistId, updatedAt])
+  @@index([propertyId, updatedAt])
+  @@index([offerSubmissionId, updatedAt])
+  @@index([financialReadinessId, updatedAt])
+  @@index([offerPreparationId, updatedAt])
+  @@index([sessionId, updatedAt])
+  @@unique([shortlistId, propertyId])
+}
+
+model ClosingReadiness {
+  id                           String   @id @default(cuid())
+  sessionId                    String?
+  partnerId                    String?
+  propertyId                   String
+  propertyAddressLabel         String
+  shortlistId                  String?
+  financialReadinessId         String?
+  offerPreparationId           String?
+  offerSubmissionId            String?
+  underContractCoordinationId  String   @unique
+  targetClosingDate            DateTime
+  closingAppointmentAt         DateTime?
+  closingAppointmentLocation   String?
+  closingAppointmentNotes      String?
+  finalReviewDeadline          DateTime?
+  finalFundsConfirmationDeadline DateTime?
+  finalFundsAmountConfirmed    Int?
+  closedAt                     DateTime?
+  notes                        String?
+  internalActivityNote         String?
+  closingSummaryJson           Json
+  overallClosingReadinessState String
+  overallRiskLevel             String
+  urgencyLevel                 String
+  readyToClose                 Boolean  @default(false)
+  closed                       Boolean  @default(false)
+  checklistItemsJson           Json
+  milestoneRecordsJson         Json
+  missingItemsJson             Json
+  blockersJson                 Json
+  recommendation               String
+  risk                         String
+  alternative                  String
+  nextAction                   String
+  nextStepsJson                Json
+  activityLogJson              Json
+  requiresImmediateAttention   Boolean  @default(false)
+  lastActionAt                 DateTime?
+  lastEvaluatedAt              DateTime
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+  shortlist                    Shortlist? @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
+  financialReadiness           FinancialReadiness? @relation(fields: [financialReadinessId], references: [id], onDelete: SetNull)
+  offerPreparation             OfferPreparation? @relation(fields: [offerPreparationId], references: [id], onDelete: SetNull)
+  offerSubmission              OfferSubmission? @relation(fields: [offerSubmissionId], references: [id], onDelete: SetNull)
+  underContractCoordination    UnderContractCoordination @relation(fields: [underContractCoordinationId], references: [id], onDelete: Cascade)
+
+  @@index([shortlistId, updatedAt])
+  @@index([propertyId, updatedAt])
+  @@index([underContractCoordinationId, updatedAt])
+  @@index([offerSubmissionId, updatedAt])
+  @@index([financialReadinessId, updatedAt])
+  @@index([offerPreparationId, updatedAt])
+  @@index([sessionId, updatedAt])
+  @@unique([shortlistId, propertyId])
+}
+
+model WorkflowNotification {
+  id                     String   @id @default(cuid())
+  workflowId             String?
+  sessionId              String?
+  propertyId             String?
+  propertyAddressLabel   String?
+  shortlistId            String?
+  moduleName             String
+  alertCategory          String
+  severity               String
+  status                 String
+  triggeringRuleLabel    String
+  relatedSubjectType     String
+  relatedSubjectId       String
+  title                  String
+  message                String
+  actionLabel            String?
+  actionTargetJson       Json?
+  dueAt                  DateTime?
+  readAt                 DateTime?
+  dismissedAt            DateTime?
+  resolvedAt             DateTime?
+  explanationSubjectType String?
+  explanationSubjectId   String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  historyEvents          WorkflowNotificationHistoryEvent[]
+
+  @@index([sessionId, updatedAt])
+  @@index([propertyId, updatedAt])
+  @@index([shortlistId, updatedAt])
+  @@index([status, updatedAt])
+  @@index([severity, updatedAt])
+  @@index([moduleName, updatedAt])
+  @@index([relatedSubjectType, relatedSubjectId, updatedAt])
+  @@index([triggeringRuleLabel, dueAt, updatedAt])
+}
+
+model WorkflowNotificationHistoryEvent {
+  id              String   @id @default(cuid())
+  notificationId  String
+  eventType       String
+  previousValue   String?
+  nextValue       String?
+  createdAt       DateTime @default(now())
+  notification    WorkflowNotification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId, createdAt])
+}
+
+model UnifiedActivityLog {
+  id                   String   @id @default(cuid())
+  workflowId           String?
+  sessionId            String?
+  propertyId           String?
+  propertyAddressLabel String?
+  shortlistId          String?
+  moduleName           String
+  eventCategory        String
+  subjectType          String
+  subjectId            String
+  title                String
+  summary              String
+  oldValueSnapshotJson Json?
+  newValueSnapshotJson Json?
+  triggerType          String
+  triggerLabel         String
+  actorType            String
+  actorId              String?
+  relatedNotificationId String?
+  relatedExplanationId String?
+  createdAt            DateTime @default(now())
+
+  @@index([sessionId, createdAt])
+  @@index([propertyId, createdAt])
+  @@index([shortlistId, createdAt])
+  @@index([moduleName, createdAt])
+  @@index([eventCategory, createdAt])
+  @@index([subjectType, subjectId, createdAt])
 }
 
 model OfferReadiness {
@@ -296,6 +611,7 @@ model OfferReadiness {
   updatedAt              DateTime @updatedAt
   shortlist              Shortlist @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
   shortlistItem          ShortlistItem @relation(fields: [shortlistItemId], references: [id], onDelete: Cascade)
+  offerPreparations      OfferPreparation[]
   negotiation            NegotiationRecord?
 
   @@index([shortlistId, updatedAt])

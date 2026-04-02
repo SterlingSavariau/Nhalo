@@ -1,19 +1,41 @@
 import type {
+  BuyerTransactionCommandCenterView,
+  ClosingReadiness,
+  FinancialReadiness,
   NegotiationEvent,
   NegotiationRecord,
+  OfferPreparation,
+  OfferSubmission,
   OfferReadiness,
+  UnderContractCoordination,
   ResultNote,
+  UnifiedActivityRecord,
+  WorkflowNotification,
   ScoredHome
 } from "@nhalo/types";
 import { RESULT_COPY, buildDecisionLabels, buildTradeoffSummary, geocodePrecisionExplanation } from "../content";
 import { sourceFreshnessLabel } from "../view-model";
 import { useEffect, useState } from "react";
 import { NegotiationTrackerCard } from "./NegotiationTrackerCard";
+import { BuyerTransactionCommandCenterCard } from "./BuyerTransactionCommandCenterCard";
+import { OfferPreparationCard } from "./OfferPreparationCard";
+import { OfferSubmissionCard } from "./OfferSubmissionCard";
+import { ClosingReadinessCard } from "./ClosingReadinessCard";
+import { UnderContractCoordinationCard } from "./UnderContractCoordinationCard";
+import { UnifiedActivityFeedPanel } from "./UnifiedActivityFeedPanel";
 
 interface HomeDetailPanelProps {
   home: ScoredHome | null;
   allHomes: ScoredHome[];
   note?: ResultNote | null;
+  financialReadiness?: FinancialReadiness | null;
+  offerPreparation?: OfferPreparation | null;
+  offerSubmission?: OfferSubmission | null;
+  underContract?: UnderContractCoordination | null;
+  closingReadiness?: ClosingReadiness | null;
+  transactionCommandCenter?: BuyerTransactionCommandCenterView | null;
+  notifications?: WorkflowNotification[];
+  unifiedActivity?: UnifiedActivityRecord[];
   offerReadiness?: OfferReadiness | null;
   negotiation?: NegotiationRecord | null;
   negotiationEvents?: NegotiationEvent[];
@@ -49,12 +71,200 @@ interface HomeDetailPanelProps {
       details?: string | null;
     }
   ): Promise<void> | void;
+  onCreateOfferPreparation?(payload: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    shortlistId?: string | null;
+    offerReadinessId?: string | null;
+    financialReadinessId: string;
+    offerPrice?: number | null;
+    earnestMoneyAmount?: number | null;
+    downPaymentType?: OfferPreparation["downPaymentType"];
+    downPaymentAmount?: number | null;
+    downPaymentPercent?: number | null;
+    financingContingency?: OfferPreparation["financingContingency"];
+    inspectionContingency?: OfferPreparation["inspectionContingency"];
+    appraisalContingency?: OfferPreparation["appraisalContingency"];
+    closingTimelineDays?: number | null;
+    possessionTiming?: OfferPreparation["possessionTiming"];
+    possessionDaysAfterClosing?: number | null;
+    notes?: string | null;
+    buyerRationale?: string | null;
+  }): Promise<void> | void;
+  onUpdateOfferPreparation?(
+    id: string,
+    patch: {
+      propertyAddressLabel?: string;
+      offerPrice?: number | null;
+      earnestMoneyAmount?: number | null;
+      downPaymentType?: OfferPreparation["downPaymentType"];
+      downPaymentAmount?: number | null;
+      downPaymentPercent?: number | null;
+      financingContingency?: OfferPreparation["financingContingency"];
+      inspectionContingency?: OfferPreparation["inspectionContingency"];
+      appraisalContingency?: OfferPreparation["appraisalContingency"];
+      closingTimelineDays?: number | null;
+      possessionTiming?: OfferPreparation["possessionTiming"];
+      possessionDaysAfterClosing?: number | null;
+      notes?: string | null;
+      buyerRationale?: string | null;
+    }
+  ): Promise<void> | void;
+  onCreateOfferSubmission?(payload: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    shortlistId?: string | null;
+    financialReadinessId?: string | null;
+    offerPreparationId: string;
+    submissionMethod?: OfferSubmission["submissionMethod"];
+    offerExpirationAt?: string | null;
+    notes?: string | null;
+    internalActivityNote?: string | null;
+  }): Promise<void> | void;
+  onSubmitOfferSubmission?(id: string, submittedAt?: string | null): Promise<void> | void;
+  onUpdateOfferSubmission?(
+    id: string,
+    patch: {
+      submissionMethod?: OfferSubmission["submissionMethod"];
+      offerExpirationAt?: string | null;
+      sellerResponseState?: OfferSubmission["sellerResponseState"];
+      sellerRespondedAt?: string | null;
+      buyerCounterDecision?: OfferSubmission["buyerCounterDecision"];
+      withdrawnAt?: string | null;
+      withdrawalReason?: string | null;
+      counterofferPrice?: number | null;
+      counterofferClosingTimelineDays?: number | null;
+      counterofferFinancingContingency?: OfferSubmission["counterofferSummary"]["counterofferFinancingContingency"];
+      counterofferInspectionContingency?: OfferSubmission["counterofferSummary"]["counterofferInspectionContingency"];
+      counterofferAppraisalContingency?: OfferSubmission["counterofferSummary"]["counterofferAppraisalContingency"];
+      counterofferExpirationAt?: string | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<void> | void;
+  onRespondToOfferSubmissionCounter?(
+    id: string,
+    decision: NonNullable<OfferSubmission["buyerCounterDecision"]>
+  ): Promise<void> | void;
+  onCreateUnderContract?(payload: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    shortlistId?: string | null;
+    financialReadinessId?: string | null;
+    offerPreparationId?: string | null;
+    offerSubmissionId: string;
+    acceptedAt: string;
+    targetClosingDate: string;
+    inspectionDeadline: string | null;
+    appraisalDeadline: string | null;
+    financingDeadline: string | null;
+    contingencyDeadline: string | null;
+    closingPreparationDeadline?: string | null;
+    notes?: string | null;
+    internalActivityNote?: string | null;
+  }): Promise<void> | void;
+  onUpdateUnderContract?(
+    id: string,
+    patch: {
+      targetClosingDate?: string | null;
+      inspectionDeadline?: string | null;
+      appraisalDeadline?: string | null;
+      financingDeadline?: string | null;
+      contingencyDeadline?: string | null;
+      closingPreparationDeadline?: string | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<void> | void;
+  onUpdateUnderContractTask?(
+    id: string,
+    taskType: UnderContractCoordination["taskSummaries"][number]["taskType"],
+    patch: {
+      status?: UnderContractCoordination["taskSummaries"][number]["status"];
+      deadline?: string | null;
+      scheduledAt?: string | null;
+      completedAt?: string | null;
+      blockedReason?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<void> | void;
+  onUpdateUnderContractMilestone?(
+    id: string,
+    milestoneType: UnderContractCoordination["milestoneSummaries"][number]["milestoneType"],
+    patch: {
+      status?: UnderContractCoordination["milestoneSummaries"][number]["status"];
+      occurredAt?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<void> | void;
+  onCreateClosingReadiness?(payload: {
+    propertyId: string;
+    propertyAddressLabel: string;
+    shortlistId?: string | null;
+    financialReadinessId?: string | null;
+    offerPreparationId?: string | null;
+    offerSubmissionId?: string | null;
+    underContractCoordinationId: string;
+    targetClosingDate: string;
+    closingAppointmentAt?: string | null;
+    closingAppointmentLocation?: string | null;
+    closingAppointmentNotes?: string | null;
+    finalReviewDeadline?: string | null;
+    finalFundsConfirmationDeadline?: string | null;
+    finalFundsAmountConfirmed?: number | null;
+    notes?: string | null;
+    internalActivityNote?: string | null;
+  }): Promise<void> | void;
+  onUpdateClosingReadiness?(
+    id: string,
+    patch: {
+      targetClosingDate?: string | null;
+      closingAppointmentAt?: string | null;
+      closingAppointmentLocation?: string | null;
+      closingAppointmentNotes?: string | null;
+      finalReviewDeadline?: string | null;
+      finalFundsConfirmationDeadline?: string | null;
+      finalFundsAmountConfirmed?: number | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<void> | void;
+  onUpdateClosingChecklistItem?(
+    id: string,
+    itemType: ClosingReadiness["checklistItemSummaries"][number]["itemType"],
+    patch: {
+      status?: ClosingReadiness["checklistItemSummaries"][number]["status"];
+      deadline?: string | null;
+      completedAt?: string | null;
+      blockedReason?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<void> | void;
+  onUpdateClosingMilestone?(
+    id: string,
+    milestoneType: ClosingReadiness["milestoneSummaries"][number]["milestoneType"],
+    patch: {
+      status?: ClosingReadiness["milestoneSummaries"][number]["status"];
+      occurredAt?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<void> | void;
+  onMarkClosingReady?(id: string): Promise<void> | void;
+  onMarkClosingComplete?(id: string): Promise<void> | void;
 }
 
 export function HomeDetailPanel({
   home,
   allHomes,
   note,
+  financialReadiness,
+  offerPreparation,
+  offerSubmission,
+  underContract,
+  closingReadiness,
+  transactionCommandCenter,
+  notifications = [],
+  unifiedActivity = [],
   offerReadiness,
   negotiation,
   negotiationEvents = [],
@@ -65,7 +275,23 @@ export function HomeDetailPanel({
   onViewAudit,
   onCreateNegotiation,
   onUpdateNegotiation,
-  onAddNegotiationEvent
+  onAddNegotiationEvent,
+  onCreateOfferPreparation,
+  onUpdateOfferPreparation,
+  onCreateOfferSubmission,
+  onSubmitOfferSubmission,
+  onUpdateOfferSubmission,
+  onRespondToOfferSubmissionCounter,
+  onCreateUnderContract,
+  onUpdateUnderContract,
+  onUpdateUnderContractTask,
+  onUpdateUnderContractMilestone,
+  onCreateClosingReadiness,
+  onUpdateClosingReadiness,
+  onUpdateClosingChecklistItem,
+  onUpdateClosingMilestone,
+  onMarkClosingReady,
+  onMarkClosingComplete
 }: HomeDetailPanelProps) {
   const [draftNote, setDraftNote] = useState("");
 
@@ -168,6 +394,114 @@ export function HomeDetailPanel({
             <p className="muted">{offerReadiness.nextSteps.join(" · ")}</p>
           </div>
         </div>
+      ) : null}
+
+      <BuyerTransactionCommandCenterCard
+        notifications={notifications.filter((entry) => entry.moduleName === "transaction_command_center")}
+        summary={transactionCommandCenter ?? null}
+      />
+
+      <UnifiedActivityFeedPanel
+        activity={unifiedActivity}
+        title="Transaction activity"
+        emptyMessage="No transaction activity is stored for this property yet."
+      />
+
+      {financialReadiness && onCreateOfferPreparation && onUpdateOfferPreparation ? (
+        <OfferPreparationCard
+          anchorPrice={home.price}
+          financialReadiness={financialReadiness}
+          notifications={notifications.filter((entry) => entry.moduleName === "offer_preparation")}
+          offerPreparation={offerPreparation}
+          offerReadiness={offerReadiness}
+          onCreate={onCreateOfferPreparation}
+          onUpdate={onUpdateOfferPreparation}
+          propertyAddressLabel={home.address}
+          propertyId={home.canonicalPropertyId ?? home.id}
+          shortlistId={offerPreparation?.shortlistId ?? negotiation?.shortlistId ?? offerReadiness?.shortlistId ?? null}
+        />
+      ) : null}
+
+      {offerPreparation &&
+      onCreateOfferSubmission &&
+      onSubmitOfferSubmission &&
+      onUpdateOfferSubmission &&
+      onRespondToOfferSubmissionCounter ? (
+        <OfferSubmissionCard
+          notifications={notifications.filter((entry) => entry.moduleName === "offer_submission")}
+          offerPreparation={offerPreparation}
+          offerSubmission={offerSubmission}
+          onCreate={onCreateOfferSubmission}
+          onRespondToCounter={onRespondToOfferSubmissionCounter}
+          onSubmit={onSubmitOfferSubmission}
+          onUpdate={onUpdateOfferSubmission}
+          propertyAddressLabel={home.address}
+          propertyId={home.canonicalPropertyId ?? home.id}
+          shortlistId={
+            offerSubmission?.shortlistId ??
+            offerPreparation.shortlistId ??
+            negotiation?.shortlistId ??
+            offerReadiness?.shortlistId ??
+            null
+          }
+        />
+      ) : null}
+
+      {offerSubmission &&
+      onCreateUnderContract &&
+      onUpdateUnderContract &&
+      onUpdateUnderContractTask &&
+      onUpdateUnderContractMilestone ? (
+        <UnderContractCoordinationCard
+          notifications={notifications.filter((entry) => entry.moduleName === "under_contract")}
+          offerSubmission={offerSubmission}
+          underContract={underContract}
+          onCreate={onCreateUnderContract}
+          onUpdate={onUpdateUnderContract}
+          onUpdateMilestone={onUpdateUnderContractMilestone}
+          onUpdateTask={onUpdateUnderContractTask}
+          propertyAddressLabel={home.address}
+          propertyId={home.canonicalPropertyId ?? home.id}
+          shortlistId={
+            underContract?.shortlistId ??
+            offerSubmission.shortlistId ??
+            offerPreparation?.shortlistId ??
+            negotiation?.shortlistId ??
+            offerReadiness?.shortlistId ??
+            null
+          }
+        />
+      ) : null}
+
+      {underContract &&
+      onCreateClosingReadiness &&
+      onUpdateClosingReadiness &&
+      onUpdateClosingChecklistItem &&
+      onUpdateClosingMilestone &&
+      onMarkClosingReady &&
+      onMarkClosingComplete ? (
+        <ClosingReadinessCard
+          closingReadiness={closingReadiness}
+          notifications={notifications.filter((entry) => entry.moduleName === "closing_readiness")}
+          underContract={underContract}
+          onCreate={onCreateClosingReadiness}
+          onMarkClosed={onMarkClosingComplete}
+          onMarkReady={onMarkClosingReady}
+          onUpdate={onUpdateClosingReadiness}
+          onUpdateChecklistItem={onUpdateClosingChecklistItem}
+          onUpdateMilestone={onUpdateClosingMilestone}
+          propertyAddressLabel={home.address}
+          propertyId={home.canonicalPropertyId ?? home.id}
+          shortlistId={
+            closingReadiness?.shortlistId ??
+            underContract.shortlistId ??
+            offerSubmission?.shortlistId ??
+            offerPreparation?.shortlistId ??
+            negotiation?.shortlistId ??
+            offerReadiness?.shortlistId ??
+            null
+          }
+        />
       ) : null}
 
       {onCreateNegotiation && onUpdateNegotiation && onAddNegotiationEvent && (negotiation || offerReadiness) ? (

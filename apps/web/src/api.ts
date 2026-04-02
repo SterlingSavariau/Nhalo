@@ -1,16 +1,26 @@
 import type {
+  BuyerTransactionCommandCenterView,
   CollaborationActivityRecord,
   DataQualityEvent,
   DataQualitySummary,
   DemoScenario,
+  DecisionExplanationBundle,
   FeedbackCategory,
   FeedbackRecord,
   FinancialReadiness,
   FinancialReadinessSummary,
   GoLiveCheckSummary,
+  ClosingReadiness,
+  ClosingReadinessSummary,
   NegotiationEvent,
   NegotiationRecord,
   NegotiationSummary,
+  OfferPreparation,
+  OfferPreparationSummary,
+  OfferSubmission,
+  OfferSubmissionSummary,
+  UnderContractCoordination,
+  UnderContractCoordinationSummary,
   OfferReadiness,
   OfferReadinessRecommendation,
   OpsActionRecord,
@@ -42,6 +52,9 @@ import type {
   SearchSnapshotRecord,
   ValidationEventRecord,
   ValidationSummary,
+  UnifiedActivityRecord,
+  WorkflowNotification,
+  WorkflowNotificationHistoryEvent,
   WorkflowActivityRecord,
   ReviewState
 } from "@nhalo/types";
@@ -423,6 +436,10 @@ export async function fetchSharedShortlist(shareId: string): Promise<SharedShort
 export async function fetchShortlistItems(id: string): Promise<{
   shortlist: Shortlist;
   items: ShortlistItem[];
+  offerPreparations: OfferPreparation[];
+  offerSubmissions: OfferSubmission[];
+  underContracts: UnderContractCoordination[];
+  closingReadiness: ClosingReadiness[];
   offerReadiness: OfferReadiness[];
   negotiations: NegotiationRecord[];
 }> {
@@ -658,6 +675,853 @@ export async function fetchFinancialReadinessSummary(
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error?.message ?? "Financial readiness summary fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function createOfferPreparation(payload: {
+  sessionId?: string | null;
+  propertyId: string;
+  propertyAddressLabel: string;
+  shortlistId?: string | null;
+  offerReadinessId?: string | null;
+  financialReadinessId: string;
+  offerPrice?: number | null;
+  earnestMoneyAmount?: number | null;
+  downPaymentType?: OfferPreparation["downPaymentType"];
+  downPaymentAmount?: number | null;
+  downPaymentPercent?: number | null;
+  financingContingency?: OfferPreparation["financingContingency"];
+  inspectionContingency?: OfferPreparation["inspectionContingency"];
+  appraisalContingency?: OfferPreparation["appraisalContingency"];
+  closingTimelineDays?: number | null;
+  possessionTiming?: OfferPreparation["possessionTiming"];
+  possessionDaysAfterClosing?: number | null;
+  sellerConcessionsRequestedAmount?: number | null;
+  notes?: string | null;
+  buyerRationale?: string | null;
+}): Promise<OfferPreparation> {
+  const response = await fetch(`${API_BASE_URL}/offer-preparation`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer preparation creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchLatestOfferPreparation(payload: {
+  propertyId: string;
+  shortlistId?: string | null;
+  sessionId?: string | null;
+}): Promise<OfferPreparation | null> {
+  const searchParams = new URLSearchParams({
+    propertyId: payload.propertyId
+  });
+  if (payload.shortlistId) {
+    searchParams.set("shortlistId", payload.shortlistId);
+  }
+  if (payload.sessionId) {
+    searchParams.set("sessionId", payload.sessionId);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/offer-preparation?${searchParams.toString()}`, {
+    headers: buildSessionHeaders(payload.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer preparation fetch failed");
+  }
+
+  const body = await response.json();
+  return body.record ?? null;
+}
+
+export async function fetchOfferPreparation(id: string): Promise<OfferPreparation> {
+  const response = await fetch(`${API_BASE_URL}/offer-preparation/${encodeURIComponent(id)}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer preparation fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function updateOfferPreparation(
+  id: string,
+  patch: {
+    propertyAddressLabel?: string;
+    offerPrice?: number | null;
+    earnestMoneyAmount?: number | null;
+    downPaymentType?: OfferPreparation["downPaymentType"];
+    downPaymentAmount?: number | null;
+    downPaymentPercent?: number | null;
+    financingContingency?: OfferPreparation["financingContingency"];
+    inspectionContingency?: OfferPreparation["inspectionContingency"];
+    appraisalContingency?: OfferPreparation["appraisalContingency"];
+    closingTimelineDays?: number | null;
+    possessionTiming?: OfferPreparation["possessionTiming"];
+    possessionDaysAfterClosing?: number | null;
+    sellerConcessionsRequestedAmount?: number | null;
+    notes?: string | null;
+    buyerRationale?: string | null;
+  }
+): Promise<OfferPreparation> {
+  const response = await fetch(`${API_BASE_URL}/offer-preparation/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer preparation update failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchOfferPreparationSummary(
+  id: string
+): Promise<OfferPreparationSummary> {
+  const response = await fetch(`${API_BASE_URL}/offer-preparation/${encodeURIComponent(id)}/summary`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer preparation summary fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function createOfferSubmission(payload: {
+  sessionId?: string | null;
+  propertyId: string;
+  propertyAddressLabel: string;
+  shortlistId?: string | null;
+  financialReadinessId?: string | null;
+  offerPreparationId: string;
+  submissionMethod?: OfferSubmission["submissionMethod"];
+  offerExpirationAt?: string | null;
+  notes?: string | null;
+  internalActivityNote?: string | null;
+}): Promise<OfferSubmission> {
+  const response = await fetch(`${API_BASE_URL}/offer-submission`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer submission creation failed");
+  }
+
+  return response.json();
+}
+
+export async function submitOfferSubmission(
+  id: string,
+  submittedAt?: string | null
+): Promise<OfferSubmission> {
+  const response = await fetch(`${API_BASE_URL}/offer-submission/${encodeURIComponent(id)}/submit`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      submittedAt: submittedAt ?? null
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer submission failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchLatestOfferSubmission(payload: {
+  propertyId: string;
+  shortlistId?: string | null;
+  sessionId?: string | null;
+}): Promise<OfferSubmission | null> {
+  const searchParams = new URLSearchParams({
+    propertyId: payload.propertyId
+  });
+  if (payload.shortlistId) {
+    searchParams.set("shortlistId", payload.shortlistId);
+  }
+  if (payload.sessionId) {
+    searchParams.set("sessionId", payload.sessionId);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/offer-submission?${searchParams.toString()}`, {
+    headers: buildSessionHeaders(payload.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer submission fetch failed");
+  }
+
+  const body = await response.json();
+  return body.record ?? null;
+}
+
+export async function fetchOfferSubmission(id: string): Promise<OfferSubmission> {
+  const response = await fetch(`${API_BASE_URL}/offer-submission/${encodeURIComponent(id)}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer submission fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function updateOfferSubmission(
+  id: string,
+  patch: {
+    submissionMethod?: OfferSubmission["submissionMethod"];
+    offerExpirationAt?: string | null;
+    sellerResponseState?: OfferSubmission["sellerResponseState"];
+    sellerRespondedAt?: string | null;
+    buyerCounterDecision?: OfferSubmission["buyerCounterDecision"];
+    withdrawnAt?: string | null;
+    withdrawalReason?: string | null;
+    counterofferPrice?: number | null;
+    counterofferClosingTimelineDays?: number | null;
+    counterofferFinancingContingency?: OfferSubmission["counterofferSummary"]["counterofferFinancingContingency"];
+    counterofferInspectionContingency?: OfferSubmission["counterofferSummary"]["counterofferInspectionContingency"];
+    counterofferAppraisalContingency?: OfferSubmission["counterofferSummary"]["counterofferAppraisalContingency"];
+    counterofferExpirationAt?: string | null;
+    notes?: string | null;
+    internalActivityNote?: string | null;
+  }
+): Promise<OfferSubmission> {
+  const response = await fetch(`${API_BASE_URL}/offer-submission/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer submission update failed");
+  }
+
+  return response.json();
+}
+
+export async function respondToOfferSubmissionCounter(
+  id: string,
+  buyerCounterDecision: NonNullable<OfferSubmission["buyerCounterDecision"]>
+): Promise<OfferSubmission> {
+  const response = await fetch(
+    `${API_BASE_URL}/offer-submission/${encodeURIComponent(id)}/counter-response`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ buyerCounterDecision })
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Counter response update failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchOfferSubmissionSummary(
+  id: string
+): Promise<OfferSubmissionSummary> {
+  const response = await fetch(`${API_BASE_URL}/offer-submission/${encodeURIComponent(id)}/summary`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Offer submission summary fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function createUnderContractCoordination(payload: {
+  sessionId?: string | null;
+  propertyId: string;
+  propertyAddressLabel: string;
+  shortlistId?: string | null;
+  financialReadinessId?: string | null;
+  offerPreparationId?: string | null;
+  offerSubmissionId: string;
+  acceptedAt: string;
+  targetClosingDate: string;
+  inspectionDeadline: string | null;
+  appraisalDeadline: string | null;
+  financingDeadline: string | null;
+  contingencyDeadline: string | null;
+  closingPreparationDeadline?: string | null;
+  notes?: string | null;
+  internalActivityNote?: string | null;
+}): Promise<UnderContractCoordination> {
+  const response = await fetch(`${API_BASE_URL}/under-contract`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Under-contract coordination creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchLatestUnderContractCoordination(payload: {
+  propertyId: string;
+  shortlistId?: string | null;
+  sessionId?: string | null;
+}): Promise<UnderContractCoordination | null> {
+  const searchParams = new URLSearchParams({
+    propertyId: payload.propertyId
+  });
+  if (payload.shortlistId) {
+    searchParams.set("shortlistId", payload.shortlistId);
+  }
+  if (payload.sessionId) {
+    searchParams.set("sessionId", payload.sessionId);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/under-contract?${searchParams.toString()}`, {
+    headers: buildSessionHeaders(payload.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Under-contract coordination fetch failed");
+  }
+
+  const body = await response.json();
+  return body.record ?? null;
+}
+
+export async function fetchUnderContractCoordination(id: string): Promise<UnderContractCoordination> {
+  const response = await fetch(`${API_BASE_URL}/under-contract/${encodeURIComponent(id)}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Under-contract coordination fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function updateUnderContractCoordination(
+  id: string,
+  patch: {
+    targetClosingDate?: string | null;
+    inspectionDeadline?: string | null;
+    appraisalDeadline?: string | null;
+    financingDeadline?: string | null;
+    contingencyDeadline?: string | null;
+    closingPreparationDeadline?: string | null;
+    notes?: string | null;
+    internalActivityNote?: string | null;
+  }
+): Promise<UnderContractCoordination> {
+  const response = await fetch(`${API_BASE_URL}/under-contract/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Under-contract coordination update failed");
+  }
+
+  return response.json();
+}
+
+export async function updateUnderContractTask(
+  id: string,
+  taskType: UnderContractCoordination["taskSummaries"][number]["taskType"],
+  patch: {
+    status?: UnderContractCoordination["taskSummaries"][number]["status"];
+    deadline?: string | null;
+    scheduledAt?: string | null;
+    completedAt?: string | null;
+    blockedReason?: string | null;
+    notes?: string | null;
+  }
+): Promise<UnderContractCoordination> {
+  const response = await fetch(
+    `${API_BASE_URL}/under-contract/${encodeURIComponent(id)}/tasks/${encodeURIComponent(taskType)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(patch)
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Under-contract task update failed");
+  }
+
+  return response.json();
+}
+
+export async function updateUnderContractMilestone(
+  id: string,
+  milestoneType: UnderContractCoordination["milestoneSummaries"][number]["milestoneType"],
+  patch: {
+    status?: UnderContractCoordination["milestoneSummaries"][number]["status"];
+    occurredAt?: string | null;
+    notes?: string | null;
+  }
+): Promise<UnderContractCoordination> {
+  const response = await fetch(
+    `${API_BASE_URL}/under-contract/${encodeURIComponent(id)}/milestones/${encodeURIComponent(milestoneType)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(patch)
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Under-contract milestone update failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchUnderContractCoordinationSummary(
+  id: string
+): Promise<UnderContractCoordinationSummary> {
+  const response = await fetch(`${API_BASE_URL}/under-contract/${encodeURIComponent(id)}/summary`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Under-contract summary fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function createClosingReadiness(payload: {
+  sessionId?: string | null;
+  propertyId: string;
+  propertyAddressLabel: string;
+  shortlistId?: string | null;
+  financialReadinessId?: string | null;
+  offerPreparationId?: string | null;
+  offerSubmissionId?: string | null;
+  underContractCoordinationId: string;
+  targetClosingDate: string;
+  closingAppointmentAt?: string | null;
+  closingAppointmentLocation?: string | null;
+  closingAppointmentNotes?: string | null;
+  finalReviewDeadline?: string | null;
+  finalFundsConfirmationDeadline?: string | null;
+  finalFundsAmountConfirmed?: number | null;
+  notes?: string | null;
+  internalActivityNote?: string | null;
+}): Promise<ClosingReadiness> {
+  const response = await fetch(`${API_BASE_URL}/closing-readiness`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildSessionHeaders(payload.sessionId)
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Closing readiness creation failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchLatestClosingReadiness(payload: {
+  propertyId: string;
+  shortlistId?: string | null;
+  sessionId?: string | null;
+}): Promise<ClosingReadiness | null> {
+  const searchParams = new URLSearchParams({
+    propertyId: payload.propertyId
+  });
+  if (payload.shortlistId) {
+    searchParams.set("shortlistId", payload.shortlistId);
+  }
+  if (payload.sessionId) {
+    searchParams.set("sessionId", payload.sessionId);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/closing-readiness?${searchParams.toString()}`, {
+    headers: buildSessionHeaders(payload.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Closing readiness fetch failed");
+  }
+
+  const body = await response.json();
+  return body.record ?? null;
+}
+
+export async function fetchClosingReadiness(id: string): Promise<ClosingReadiness> {
+  const response = await fetch(`${API_BASE_URL}/closing-readiness/${encodeURIComponent(id)}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Closing readiness fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function updateClosingReadiness(
+  id: string,
+  patch: {
+    targetClosingDate?: string | null;
+    closingAppointmentAt?: string | null;
+    closingAppointmentLocation?: string | null;
+    closingAppointmentNotes?: string | null;
+    finalReviewDeadline?: string | null;
+    finalFundsConfirmationDeadline?: string | null;
+    finalFundsAmountConfirmed?: number | null;
+    notes?: string | null;
+    internalActivityNote?: string | null;
+  }
+): Promise<ClosingReadiness> {
+  const response = await fetch(`${API_BASE_URL}/closing-readiness/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(patch)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Closing readiness update failed");
+  }
+
+  return response.json();
+}
+
+export async function updateClosingChecklistItem(
+  id: string,
+  itemType: ClosingReadiness["checklistItemSummaries"][number]["itemType"],
+  patch: {
+    status?: ClosingReadiness["checklistItemSummaries"][number]["status"];
+    deadline?: string | null;
+    completedAt?: string | null;
+    blockedReason?: string | null;
+    notes?: string | null;
+  }
+): Promise<ClosingReadiness> {
+  const response = await fetch(
+    `${API_BASE_URL}/closing-readiness/${encodeURIComponent(id)}/checklist/${encodeURIComponent(itemType)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(patch)
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Closing checklist update failed");
+  }
+
+  return response.json();
+}
+
+export async function updateClosingMilestone(
+  id: string,
+  milestoneType: ClosingReadiness["milestoneSummaries"][number]["milestoneType"],
+  patch: {
+    status?: ClosingReadiness["milestoneSummaries"][number]["status"];
+    occurredAt?: string | null;
+    notes?: string | null;
+  }
+): Promise<ClosingReadiness> {
+  const response = await fetch(
+    `${API_BASE_URL}/closing-readiness/${encodeURIComponent(id)}/milestones/${encodeURIComponent(milestoneType)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(patch)
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Closing milestone update failed");
+  }
+
+  return response.json();
+}
+
+export async function markClosingReady(id: string): Promise<ClosingReadiness> {
+  const response = await fetch(`${API_BASE_URL}/closing-readiness/${encodeURIComponent(id)}/mark-ready`, {
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Closing ready state update failed");
+  }
+
+  return response.json();
+}
+
+export async function markClosingComplete(id: string): Promise<ClosingReadiness> {
+  const response = await fetch(`${API_BASE_URL}/closing-readiness/${encodeURIComponent(id)}/mark-closed`, {
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Closing completion update failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchClosingReadinessSummary(
+  id: string
+): Promise<ClosingReadinessSummary> {
+  const response = await fetch(`${API_BASE_URL}/closing-readiness/${encodeURIComponent(id)}/summary`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Closing readiness summary fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchTransactionCommandCenterSummary(payload: {
+  propertyId: string;
+  propertyAddressLabel?: string | null;
+  shortlistId?: string | null;
+  sessionId?: string | null;
+}): Promise<BuyerTransactionCommandCenterView> {
+  const searchParams = new URLSearchParams({
+    propertyId: payload.propertyId
+  });
+  if (payload.propertyAddressLabel) {
+    searchParams.set("propertyAddressLabel", payload.propertyAddressLabel);
+  }
+  if (payload.shortlistId) {
+    searchParams.set("shortlistId", payload.shortlistId);
+  }
+  if (payload.sessionId) {
+    searchParams.set("sessionId", payload.sessionId);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/transaction-command-center?${searchParams.toString()}`, {
+    headers: buildSessionHeaders(payload.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Transaction command center fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchDecisionExplanations(payload: {
+  moduleName: string;
+  subjectType: string;
+  subjectId: string;
+  sessionId?: string | null;
+}): Promise<DecisionExplanationBundle> {
+  const searchParams = new URLSearchParams({
+    moduleName: payload.moduleName,
+    subjectType: payload.subjectType,
+    subjectId: payload.subjectId
+  });
+
+  const response = await fetch(`${API_BASE_URL}/explanations?${searchParams.toString()}`, {
+    headers: buildSessionHeaders(payload.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Explanation fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchTransactionCommandCenterExplanations(payload: {
+  propertyId: string;
+  propertyAddressLabel?: string | null;
+  shortlistId?: string | null;
+  sessionId?: string | null;
+}): Promise<DecisionExplanationBundle> {
+  const searchParams = new URLSearchParams({
+    propertyId: payload.propertyId
+  });
+  if (payload.propertyAddressLabel) {
+    searchParams.set("propertyAddressLabel", payload.propertyAddressLabel);
+  }
+  if (payload.shortlistId) {
+    searchParams.set("shortlistId", payload.shortlistId);
+  }
+  if (payload.sessionId) {
+    searchParams.set("sessionId", payload.sessionId);
+  }
+
+  const response = await fetch(
+    `${API_BASE_URL}/transaction-command-center/explanations?${searchParams.toString()}`,
+    {
+      headers: buildSessionHeaders(payload.sessionId)
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Command center explanation fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchWorkflowNotifications(payload: {
+  sessionId?: string | null;
+  propertyId?: string | null;
+  shortlistId?: string | null;
+  limit?: number;
+}): Promise<WorkflowNotification[]> {
+  const searchParams = new URLSearchParams();
+  if (payload.sessionId) {
+    searchParams.set("sessionId", payload.sessionId);
+  }
+  if (payload.propertyId) {
+    searchParams.set("propertyId", payload.propertyId);
+  }
+  if (payload.shortlistId) {
+    searchParams.set("shortlistId", payload.shortlistId);
+  }
+  if (payload.limit) {
+    searchParams.set("limit", String(payload.limit));
+  }
+
+  const response = await fetch(`${API_BASE_URL}/notifications?${searchParams.toString()}`, {
+    headers: buildSessionHeaders(payload.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Notification fetch failed");
+  }
+
+  const payloadJson = await response.json();
+  return payloadJson.notifications;
+}
+
+export async function fetchWorkflowNotificationHistory(payload: {
+  sessionId?: string | null;
+  propertyId?: string | null;
+  shortlistId?: string | null;
+  limit?: number;
+}): Promise<WorkflowNotificationHistoryEvent[]> {
+  const searchParams = new URLSearchParams();
+  if (payload.sessionId) {
+    searchParams.set("sessionId", payload.sessionId);
+  }
+  if (payload.propertyId) {
+    searchParams.set("propertyId", payload.propertyId);
+  }
+  if (payload.shortlistId) {
+    searchParams.set("shortlistId", payload.shortlistId);
+  }
+  if (payload.limit) {
+    searchParams.set("limit", String(payload.limit));
+  }
+
+  const response = await fetch(`${API_BASE_URL}/notifications/history?${searchParams.toString()}`, {
+    headers: buildSessionHeaders(payload.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Notification history fetch failed");
+  }
+
+  const payloadJson = await response.json();
+  return payloadJson.history;
+}
+
+export async function markWorkflowNotificationRead(id: string): Promise<WorkflowNotification> {
+  const response = await fetch(`${API_BASE_URL}/notifications/${encodeURIComponent(id)}/read`, {
+    method: "PATCH"
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Notification read update failed");
+  }
+
+  return response.json();
+}
+
+export async function dismissWorkflowNotification(id: string): Promise<WorkflowNotification> {
+  const response = await fetch(`${API_BASE_URL}/notifications/${encodeURIComponent(id)}/dismiss`, {
+    method: "PATCH"
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Notification dismissal failed");
   }
 
   return response.json();
@@ -1085,6 +1949,66 @@ export async function fetchWorkflowActivity(
 
   const payload = await response.json();
   return payload.activity;
+}
+
+export async function fetchUnifiedActivity(payload: {
+  sessionId?: string | null;
+  propertyId?: string | null;
+  shortlistId?: string | null;
+  limit?: number;
+}): Promise<UnifiedActivityRecord[]> {
+  const params = new URLSearchParams();
+  if (payload.propertyId) {
+    params.set("propertyId", payload.propertyId);
+  }
+  if (payload.shortlistId) {
+    params.set("shortlistId", payload.shortlistId);
+  }
+  if (payload.limit) {
+    params.set("limit", String(payload.limit));
+  }
+
+  const response = await fetch(`${API_BASE_URL}/activity?${params.toString()}`, {
+    headers: buildSessionHeaders(payload.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Unified activity fetch failed");
+  }
+
+  const result = await response.json();
+  return result.activity;
+}
+
+export async function fetchUnifiedActivityHistory(payload: {
+  sessionId?: string | null;
+  propertyId?: string | null;
+  shortlistId?: string | null;
+  limit?: number;
+}): Promise<UnifiedActivityRecord[]> {
+  const params = new URLSearchParams();
+  if (payload.propertyId) {
+    params.set("propertyId", payload.propertyId);
+  }
+  if (payload.shortlistId) {
+    params.set("shortlistId", payload.shortlistId);
+  }
+  if (payload.limit) {
+    params.set("limit", String(payload.limit));
+  }
+
+  const response = await fetch(`${API_BASE_URL}/activity/history?${params.toString()}`, {
+    headers: buildSessionHeaders(payload.sessionId)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Unified activity history fetch failed");
+  }
+
+  const result = await response.json();
+  return result.activity;
 }
 
 export async function submitFeedback(payload: {

@@ -1,6 +1,18 @@
 import cors from "@fastify/cors";
 import { ConfigError, getConfig } from "@nhalo/config";
-import { createPersistenceLayer, type PersistenceLayer } from "@nhalo/db";
+import {
+  buildClosingReadinessExplanations,
+  buildBuyerTransactionCommandCenter,
+  buildFinancialReadinessExplanations,
+  buildWorkflowNotificationCandidates,
+  buildOfferPreparationExplanations,
+  buildOfferSubmissionExplanations,
+  planWorkflowNotificationSync,
+  buildTransactionCommandCenterExplanations,
+  buildUnderContractExplanations,
+  createPersistenceLayer,
+  type PersistenceLayer
+} from "@nhalo/db";
 import { DEMO_SEARCH_SCENARIOS, createMockProviders, createProviders } from "@nhalo/providers";
 import type {
   CollaborationActivityRecord,
@@ -201,6 +213,221 @@ const financialReadinessUpdateSchema = z
   })
   .refine((payload) => Object.keys(payload).length > 0, {
     message: "At least one financial readiness field is required"
+  });
+
+const offerPreparationCreateSchema = z.object({
+  sessionId: z.string().trim().min(1).nullable().optional(),
+  propertyId: z.string().trim().min(1, "propertyId is required"),
+  propertyAddressLabel: z.string().trim().min(3, "propertyAddressLabel is required"),
+  shortlistId: z.string().trim().min(1).nullable().optional(),
+  offerReadinessId: z.string().trim().min(1).nullable().optional(),
+  financialReadinessId: z.string().trim().min(1, "financialReadinessId is required"),
+  offerPrice: z.number().positive().nullable().optional(),
+  earnestMoneyAmount: z.number().min(0).nullable().optional(),
+  downPaymentType: z.enum(["amount", "percent"]).nullable().optional(),
+  downPaymentAmount: z.number().min(0).nullable().optional(),
+  downPaymentPercent: z.number().min(0).max(100).nullable().optional(),
+  financingContingency: z.enum(["included", "waived"]).nullable().optional(),
+  inspectionContingency: z.enum(["included", "waived"]).nullable().optional(),
+  appraisalContingency: z.enum(["included", "waived"]).nullable().optional(),
+  closingTimelineDays: z.number().int().min(1).max(120).nullable().optional(),
+  possessionTiming: z.enum(["at_closing", "days_after_closing", "custom"]).nullable().optional(),
+  possessionDaysAfterClosing: z.number().int().min(0).max(365).nullable().optional(),
+  sellerConcessionsRequestedAmount: z.number().min(0).nullable().optional(),
+  notes: z.string().trim().max(2000).nullable().optional(),
+  buyerRationale: z.string().trim().max(2000).nullable().optional()
+});
+
+const offerPreparationUpdateSchema = z
+  .object({
+    propertyAddressLabel: z.string().trim().min(3).optional(),
+    offerPrice: z.number().positive().nullable().optional(),
+    earnestMoneyAmount: z.number().min(0).nullable().optional(),
+    downPaymentType: z.enum(["amount", "percent"]).nullable().optional(),
+    downPaymentAmount: z.number().min(0).nullable().optional(),
+    downPaymentPercent: z.number().min(0).max(100).nullable().optional(),
+    financingContingency: z.enum(["included", "waived"]).nullable().optional(),
+    inspectionContingency: z.enum(["included", "waived"]).nullable().optional(),
+    appraisalContingency: z.enum(["included", "waived"]).nullable().optional(),
+    closingTimelineDays: z.number().int().min(1).max(120).nullable().optional(),
+    possessionTiming: z.enum(["at_closing", "days_after_closing", "custom"]).nullable().optional(),
+    possessionDaysAfterClosing: z.number().int().min(0).max(365).nullable().optional(),
+    sellerConcessionsRequestedAmount: z.number().min(0).nullable().optional(),
+    notes: z.string().trim().max(2000).nullable().optional(),
+    buyerRationale: z.string().trim().max(2000).nullable().optional()
+  })
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one offer preparation field is required"
+  });
+
+const offerSubmissionCreateSchema = z.object({
+  sessionId: z.string().trim().min(1).nullable().optional(),
+  propertyId: z.string().trim().min(1, "propertyId is required"),
+  propertyAddressLabel: z.string().trim().min(3, "propertyAddressLabel is required"),
+  shortlistId: z.string().trim().min(1).nullable().optional(),
+  financialReadinessId: z.string().trim().min(1).nullable().optional(),
+  offerPreparationId: z.string().trim().min(1, "offerPreparationId is required"),
+  submissionMethod: z.enum(["recorded_manual", "simulated_delivery"]).nullable().optional(),
+  submittedAt: z.string().datetime().nullable().optional(),
+  offerExpirationAt: z.string().datetime().nullable().optional(),
+  sellerResponseState: z.enum(["NO_RESPONSE", "ACCEPTED", "REJECTED", "COUNTERED"]).nullable().optional(),
+  sellerRespondedAt: z.string().datetime().nullable().optional(),
+  buyerCounterDecision: z.enum(["pending", "accepted", "rejected", "revising"]).nullable().optional(),
+  withdrawnAt: z.string().datetime().nullable().optional(),
+  withdrawalReason: z.string().trim().max(500).nullable().optional(),
+  counterofferPrice: z.number().positive().nullable().optional(),
+  counterofferClosingTimelineDays: z.number().int().min(1).max(120).nullable().optional(),
+  counterofferFinancingContingency: z.enum(["included", "waived"]).nullable().optional(),
+  counterofferInspectionContingency: z.enum(["included", "waived"]).nullable().optional(),
+  counterofferAppraisalContingency: z.enum(["included", "waived"]).nullable().optional(),
+  counterofferExpirationAt: z.string().datetime().nullable().optional(),
+  notes: z.string().trim().max(2000).nullable().optional(),
+  internalActivityNote: z.string().trim().max(2000).nullable().optional()
+});
+
+const offerSubmissionUpdateSchema = z
+  .object({
+    submissionMethod: z.enum(["recorded_manual", "simulated_delivery"]).nullable().optional(),
+    offerExpirationAt: z.string().datetime().nullable().optional(),
+    sellerResponseState: z.enum(["NO_RESPONSE", "ACCEPTED", "REJECTED", "COUNTERED"]).nullable().optional(),
+    sellerRespondedAt: z.string().datetime().nullable().optional(),
+    buyerCounterDecision: z.enum(["pending", "accepted", "rejected", "revising"]).nullable().optional(),
+    withdrawnAt: z.string().datetime().nullable().optional(),
+    withdrawalReason: z.string().trim().max(500).nullable().optional(),
+    counterofferPrice: z.number().positive().nullable().optional(),
+    counterofferClosingTimelineDays: z.number().int().min(1).max(120).nullable().optional(),
+    counterofferFinancingContingency: z.enum(["included", "waived"]).nullable().optional(),
+    counterofferInspectionContingency: z.enum(["included", "waived"]).nullable().optional(),
+    counterofferAppraisalContingency: z.enum(["included", "waived"]).nullable().optional(),
+    counterofferExpirationAt: z.string().datetime().nullable().optional(),
+    notes: z.string().trim().max(2000).nullable().optional(),
+    internalActivityNote: z.string().trim().max(2000).nullable().optional()
+  })
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one offer submission field is required"
+  });
+
+const offerSubmissionSubmitSchema = z.object({
+  submittedAt: z.string().datetime().nullable().optional()
+});
+
+const offerSubmissionCounterResponseSchema = z.object({
+  buyerCounterDecision: z.enum(["accepted", "rejected", "revising", "pending"])
+});
+
+const underContractCreateSchema = z.object({
+  sessionId: z.string().trim().min(1).nullable().optional(),
+  propertyId: z.string().trim().min(1, "propertyId is required"),
+  propertyAddressLabel: z.string().trim().min(3, "propertyAddressLabel is required"),
+  shortlistId: z.string().trim().min(1).nullable().optional(),
+  financialReadinessId: z.string().trim().min(1).nullable().optional(),
+  offerPreparationId: z.string().trim().min(1).nullable().optional(),
+  offerSubmissionId: z.string().trim().min(1, "offerSubmissionId is required"),
+  acceptedAt: z.string().datetime(),
+  targetClosingDate: z.string().datetime(),
+  inspectionDeadline: z.string().datetime().nullable(),
+  appraisalDeadline: z.string().datetime().nullable(),
+  financingDeadline: z.string().datetime().nullable(),
+  contingencyDeadline: z.string().datetime().nullable(),
+  closingPreparationDeadline: z.string().datetime().nullable().optional(),
+  notes: z.string().trim().max(2000).nullable().optional(),
+  internalActivityNote: z.string().trim().max(2000).nullable().optional()
+});
+
+const underContractUpdateSchema = z
+  .object({
+    targetClosingDate: z.string().datetime().nullable().optional(),
+    inspectionDeadline: z.string().datetime().nullable().optional(),
+    appraisalDeadline: z.string().datetime().nullable().optional(),
+    financingDeadline: z.string().datetime().nullable().optional(),
+    contingencyDeadline: z.string().datetime().nullable().optional(),
+    closingPreparationDeadline: z.string().datetime().nullable().optional(),
+    notes: z.string().trim().max(2000).nullable().optional(),
+    internalActivityNote: z.string().trim().max(2000).nullable().optional()
+  })
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one under-contract field is required"
+  });
+
+const underContractTaskUpdateSchema = z
+  .object({
+    status: z.enum(["NOT_STARTED", "SCHEDULED", "IN_PROGRESS", "COMPLETED", "BLOCKED", "WAIVED", "FAILED"]).optional(),
+    deadline: z.string().datetime().nullable().optional(),
+    scheduledAt: z.string().datetime().nullable().optional(),
+    completedAt: z.string().datetime().nullable().optional(),
+    blockedReason: z.string().trim().max(1000).nullable().optional(),
+    notes: z.string().trim().max(2000).nullable().optional()
+  })
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one task field is required"
+  });
+
+const underContractMilestoneUpdateSchema = z
+  .object({
+    status: z.enum(["PENDING", "REACHED", "BLOCKED"]).optional(),
+    occurredAt: z.string().datetime().nullable().optional(),
+    notes: z.string().trim().max(2000).nullable().optional()
+  })
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one milestone field is required"
+  });
+
+const closingReadinessCreateSchema = z.object({
+  sessionId: z.string().trim().min(1).nullable().optional(),
+  propertyId: z.string().trim().min(1, "propertyId is required"),
+  propertyAddressLabel: z.string().trim().min(3, "propertyAddressLabel is required"),
+  shortlistId: z.string().trim().min(1).nullable().optional(),
+  financialReadinessId: z.string().trim().min(1).nullable().optional(),
+  offerPreparationId: z.string().trim().min(1).nullable().optional(),
+  offerSubmissionId: z.string().trim().min(1).nullable().optional(),
+  underContractCoordinationId: z.string().trim().min(1, "underContractCoordinationId is required"),
+  targetClosingDate: z.string().datetime(),
+  closingAppointmentAt: z.string().datetime().nullable().optional(),
+  closingAppointmentLocation: z.string().trim().max(200).nullable().optional(),
+  closingAppointmentNotes: z.string().trim().max(1000).nullable().optional(),
+  finalReviewDeadline: z.string().datetime().nullable().optional(),
+  finalFundsConfirmationDeadline: z.string().datetime().nullable().optional(),
+  finalFundsAmountConfirmed: z.number().nonnegative().nullable().optional(),
+  notes: z.string().trim().max(2000).nullable().optional(),
+  internalActivityNote: z.string().trim().max(2000).nullable().optional()
+});
+
+const closingReadinessUpdateSchema = z
+  .object({
+    targetClosingDate: z.string().datetime().nullable().optional(),
+    closingAppointmentAt: z.string().datetime().nullable().optional(),
+    closingAppointmentLocation: z.string().trim().max(200).nullable().optional(),
+    closingAppointmentNotes: z.string().trim().max(1000).nullable().optional(),
+    finalReviewDeadline: z.string().datetime().nullable().optional(),
+    finalFundsConfirmationDeadline: z.string().datetime().nullable().optional(),
+    finalFundsAmountConfirmed: z.number().nonnegative().nullable().optional(),
+    notes: z.string().trim().max(2000).nullable().optional(),
+    internalActivityNote: z.string().trim().max(2000).nullable().optional()
+  })
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one closing-readiness field is required"
+  });
+
+const closingChecklistUpdateSchema = z
+  .object({
+    status: z.enum(["NOT_STARTED", "IN_PROGRESS", "READY", "COMPLETED", "BLOCKED", "FAILED", "WAIVED"]).optional(),
+    deadline: z.string().datetime().nullable().optional(),
+    completedAt: z.string().datetime().nullable().optional(),
+    blockedReason: z.string().trim().max(1000).nullable().optional(),
+    notes: z.string().trim().max(2000).nullable().optional()
+  })
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one checklist field is required"
+  });
+
+const closingMilestoneUpdateSchema = z
+  .object({
+    status: z.enum(["PENDING", "REACHED", "BLOCKED"]).optional(),
+    occurredAt: z.string().datetime().nullable().optional(),
+    notes: z.string().trim().max(2000).nullable().optional()
+  })
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one closing milestone field is required"
   });
 
 const shortlistCreateSchema = z.object({
@@ -509,6 +736,15 @@ function parseLimit(
   }
 
   return Math.min(parsed, max);
+}
+
+function extractPathSegment(requestUrl: string, index: number): string | null {
+  const path = requestUrl.split("?")[0] ?? "";
+  const segments = path
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => decodeURIComponent(segment));
+  return segments[index]?.trim() || null;
 }
 
 function addDaysToNowIso(days: number): string {
@@ -1604,6 +1840,184 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     config.security.pilotLinkOpenMax,
     config.security.pilotLinkOpenWindowMs
   );
+
+  async function syncWorkflowNotificationsForScope(options: {
+    sessionId?: string | null;
+    propertyId?: string | null;
+    shortlistId?: string | null;
+  }) {
+    const now = new Date().toISOString();
+    const sessionId = options.sessionId ?? null;
+    const shortlistFilter = options.shortlistId ?? null;
+    const propertyFilter = options.propertyId ?? null;
+
+    const [
+      financialReadiness,
+      workflowActivity,
+      shortlists,
+      existingNotifications
+    ] = await Promise.all([
+      sessionId ? persistence.searchRepository.getLatestFinancialReadiness(sessionId) : Promise.resolve(null),
+      sessionId ? persistence.searchRepository.listWorkflowActivity(sessionId, 50) : Promise.resolve([]),
+      sessionId ? persistence.searchRepository.listShortlists(sessionId) : Promise.resolve([]),
+      persistence.searchRepository.listWorkflowNotifications({
+        sessionId,
+        ...(propertyFilter !== null ? { propertyId: propertyFilter } : {}),
+        ...(shortlistFilter !== null ? { shortlistId: shortlistFilter } : {})
+      })
+    ]);
+
+    const relevantShortlists =
+      shortlistFilter === null ? shortlists : shortlists.filter((entry) => entry.id === shortlistFilter);
+
+    const shortlistPayloads = await Promise.all(
+      relevantShortlists.map(async (shortlist) => {
+        const [items, offerPreparations, offerSubmissions, underContracts, closingReadiness] =
+          await Promise.all([
+            persistence.searchRepository.listShortlistItems(shortlist.id),
+            persistence.searchRepository.listOfferPreparations(shortlist.id),
+            persistence.searchRepository.listOfferSubmissions(shortlist.id),
+            persistence.searchRepository.listUnderContractCoordinations(shortlist.id),
+            persistence.searchRepository.listClosingReadiness(shortlist.id)
+          ]);
+
+        return {
+          shortlist,
+          items,
+          offerPreparations,
+          offerSubmissions,
+          underContracts,
+          closingReadiness
+        };
+      })
+    );
+
+    const candidates = financialReadiness && propertyFilter === null
+      ? buildWorkflowNotificationCandidates({
+          now,
+          financialReadiness
+        })
+      : [];
+
+    for (const payload of shortlistPayloads) {
+      const propertyMap = new Map<string, string>();
+      for (const item of payload.items) {
+        propertyMap.set(item.canonicalPropertyId, item.capturedHome.address);
+      }
+      for (const record of payload.offerPreparations) {
+        propertyMap.set(record.propertyId, record.propertyAddressLabel);
+      }
+      for (const record of payload.offerSubmissions) {
+        propertyMap.set(record.propertyId, record.propertyAddressLabel);
+      }
+      for (const record of payload.underContracts) {
+        propertyMap.set(record.propertyId, record.propertyAddressLabel);
+      }
+      for (const record of payload.closingReadiness) {
+        propertyMap.set(record.propertyId, record.propertyAddressLabel);
+      }
+
+      for (const [propertyId, propertyAddressLabel] of propertyMap.entries()) {
+        if (propertyFilter && propertyId !== propertyFilter) {
+          continue;
+        }
+
+        const offerPreparation =
+          payload.offerPreparations.find((entry) => entry.propertyId === propertyId) ?? null;
+        const offerSubmission =
+          payload.offerSubmissions.find((entry) => entry.propertyId === propertyId) ?? null;
+        const underContract =
+          payload.underContracts.find((entry) => entry.propertyId === propertyId) ?? null;
+        const closingReadiness =
+          payload.closingReadiness.find((entry) => entry.propertyId === propertyId) ?? null;
+        const commandCenter = buildBuyerTransactionCommandCenter({
+          propertyId,
+          propertyAddressLabel,
+          sessionId,
+          shortlistId: payload.shortlist.id,
+          financialReadiness,
+          offerPreparation,
+          offerSubmission,
+          underContract,
+          closingReadiness,
+          workflowActivity
+        });
+
+        candidates.push(
+          ...buildWorkflowNotificationCandidates({
+            now,
+            financialReadiness: null,
+            offerPreparation,
+            offerSubmission,
+            underContract,
+            closingReadiness,
+            commandCenter
+          })
+        );
+      }
+    }
+
+    const plan = planWorkflowNotificationSync({
+      now,
+      candidates,
+      existing: existingNotifications
+    });
+
+    for (const candidate of plan.create) {
+      await persistence.searchRepository.createWorkflowNotification({
+        ...candidate,
+        status: "UNREAD"
+      });
+    }
+
+    for (const operation of plan.update) {
+      await persistence.searchRepository.updateWorkflowNotification(operation.id, operation.patch);
+    }
+  }
+
+  async function syncCommandCenterActivity(summary: ReturnType<typeof buildBuyerTransactionCommandCenter>) {
+    const latest = await persistence.searchRepository.listUnifiedActivity({
+      propertyId: summary.propertyId,
+      moduleName: "transaction_command_center",
+      eventCategories: ["COMMAND_CENTER_STATUS_CHANGED"],
+      limit: 1
+    });
+    const previous = latest[0] ?? null;
+    const previousStage = (previous?.newValueSnapshot?.currentStage as string | undefined) ?? null;
+    const previousOverallState = (previous?.newValueSnapshot?.overallState as string | undefined) ?? null;
+
+    if (previousStage === summary.currentStage && previousOverallState === summary.overallState) {
+      return;
+    }
+
+    await persistence.searchRepository.createUnifiedActivity({
+      sessionId: summary.sessionId ?? null,
+      propertyId: summary.propertyId,
+      propertyAddressLabel: summary.propertyAddressLabel,
+      shortlistId: summary.shortlistId ?? null,
+      moduleName: "transaction_command_center",
+      eventCategory: "COMMAND_CENTER_STATUS_CHANGED",
+      subjectType: "transaction_command_center",
+      subjectId: summary.propertyId,
+      title: "Transaction command center changed",
+      summary: `The transaction is now in ${summary.currentStage.toLowerCase().replaceAll("_", " ")} with overall status ${summary.overallState.toLowerCase().replaceAll("_", " ")}.`,
+      oldValueSnapshot: previous
+        ? {
+            currentStage: previousStage,
+            overallState: previousOverallState
+          }
+        : null,
+      newValueSnapshot: {
+        currentStage: summary.currentStage,
+        overallState: summary.overallState,
+        nextAction: summary.nextAction
+      },
+      triggerType: "DERIVED_RECALCULATION",
+      triggerLabel: "command_center_status_changed",
+      actorType: "SYSTEM"
+    });
+  }
+
   reliability.updateBackgroundJobDefinition("retention_cleanup", config.deployment.backgroundJobsEnabled);
   let cleanupRunning = false;
   const cleanupTimer =
@@ -3531,6 +3945,1497 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     return summary;
   });
 
+  app.post("/offer-preparation", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer preparation");
+    }
+
+    ensureWriteCapable(reliability);
+    const payload = offerPreparationCreateSchema.parse(request.body);
+    const sessionId = extractSessionId(request, payload.sessionId ?? null);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    const record = await persistence.searchRepository.createOfferPreparation({
+      ...payload,
+      sessionId,
+      partnerId: pilotContext?.partner.id ?? null
+    });
+
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "FINANCIAL_READINESS_NOT_FOUND",
+          "No financial readiness record was found for this offer draft."
+        )
+      );
+    }
+
+    metrics.recordOfferPreparationCreate();
+    metrics.recordFeatureUsage("offer_preparation");
+    return reply.status(201).send(record);
+  });
+
+  app.get("/offer-preparation", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer preparation");
+    }
+
+    const query = request.query as {
+      propertyId?: string;
+      shortlistId?: string;
+      sessionId?: string;
+    } | undefined;
+    const propertyId = query?.propertyId?.trim();
+
+    if (!propertyId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer preparation query", [
+          { field: "propertyId", message: "propertyId is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getLatestOfferPreparation({
+      propertyId,
+      shortlistId: query?.shortlistId?.trim() || null,
+      sessionId: extractSessionId(request, query?.sessionId?.trim() || null)
+    });
+
+    return {
+      record
+    };
+  });
+
+  app.get("/offer-preparation/:id", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer preparation");
+    }
+
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer preparation id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getOfferPreparation(id);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_PREPARATION_NOT_FOUND",
+          "No offer preparation record was found for this id."
+        )
+      );
+    }
+
+    return record;
+  });
+
+  app.patch("/offer-preparation/:id", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer preparation");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    const patch = offerPreparationUpdateSchema.parse(request.body);
+
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer preparation id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.updateOfferPreparation(id, patch);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_PREPARATION_NOT_FOUND",
+          "No offer preparation record was found for this id."
+        )
+      );
+    }
+
+    metrics.recordOfferPreparationUpdate();
+    metrics.recordFeatureUsage("offer_preparation");
+    return record;
+  });
+
+  app.get("/offer-preparation/:id/summary", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer preparation");
+    }
+
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer preparation id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const summary = await persistence.searchRepository.getOfferPreparationSummary(id);
+    if (!summary) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_PREPARATION_NOT_FOUND",
+          "No offer preparation summary was found for this id."
+        )
+      );
+    }
+
+    metrics.recordOfferPreparationSummaryView();
+    return summary;
+  });
+
+  app.post("/offer-submission", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer submission");
+    }
+
+    ensureWriteCapable(reliability);
+    const payload = offerSubmissionCreateSchema.parse(request.body);
+    const sessionId = extractSessionId(request, payload.sessionId ?? null);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    const offerPreparation = await persistence.searchRepository.getOfferPreparation(payload.offerPreparationId);
+    if (!offerPreparation) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_PREPARATION_NOT_FOUND",
+          "No offer preparation record was found for this submission."
+        )
+      );
+    }
+
+    const record = await persistence.searchRepository.createOfferSubmission({
+      ...payload,
+      sessionId,
+      partnerId: pilotContext?.partner.id ?? null
+    });
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_SUBMISSION_CREATE_FAILED",
+          "Offer submission tracking could not be started for this property."
+        )
+      );
+    }
+
+    metrics.recordOfferSubmissionCreate();
+    metrics.recordFeatureUsage("offer_submission");
+    return reply.status(201).send(record);
+  });
+
+  app.post("/offer-submission/:id/submit", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer submission");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    const payload = offerSubmissionSubmitSchema.parse(request.body);
+
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer submission id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const current = await persistence.searchRepository.getOfferSubmission(id);
+    if (!current) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_SUBMISSION_NOT_FOUND",
+          "No offer submission record was found for this id."
+        )
+      );
+    }
+
+    const offerPreparation = await persistence.searchRepository.getOfferPreparation(current.offerPreparationId);
+    if (!offerPreparation?.readinessToSubmit) {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "OFFER_PREPARATION_NOT_READY",
+          "Offer preparation must be ready before the offer can be submitted."
+        )
+      );
+    }
+
+    const record = await persistence.searchRepository.submitOfferSubmission(id, payload.submittedAt ?? null);
+    if (!record) {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "OFFER_PREPARATION_NOT_READY",
+          "Offer preparation must be ready before the offer can be submitted."
+        )
+      );
+    }
+
+    metrics.recordOfferSubmissionSubmit();
+    metrics.recordFeatureUsage("offer_submission");
+    return record;
+  });
+
+  app.get("/offer-submission", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer submission");
+    }
+
+    const query = request.query as {
+      propertyId?: string;
+      shortlistId?: string;
+      sessionId?: string;
+    } | undefined;
+    const propertyId = query?.propertyId?.trim();
+
+    if (!propertyId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer submission query", [
+          { field: "propertyId", message: "propertyId is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getLatestOfferSubmission({
+      propertyId,
+      shortlistId: query?.shortlistId?.trim() || null,
+      sessionId: extractSessionId(request, query?.sessionId?.trim() || null)
+    });
+
+    return {
+      record
+    };
+  });
+
+  app.get("/offer-submission/:id", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer submission");
+    }
+
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer submission id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getOfferSubmission(id);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_SUBMISSION_NOT_FOUND",
+          "No offer submission record was found for this id."
+        )
+      );
+    }
+
+    return record;
+  });
+
+  app.patch("/offer-submission/:id", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer submission");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    const patch = offerSubmissionUpdateSchema.parse(request.body);
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer submission id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const previous = await persistence.searchRepository.getOfferSubmission(id);
+    const record = await persistence.searchRepository.updateOfferSubmission(id, patch);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_SUBMISSION_NOT_FOUND",
+          "No offer submission record was found for this id."
+        )
+      );
+    }
+
+    metrics.recordOfferSubmissionUpdate();
+    if (previous?.submissionState !== record.submissionState) {
+      if (record.submissionState === "ACCEPTED") {
+        metrics.recordOfferSubmissionAccept();
+      } else if (record.submissionState === "REJECTED") {
+        metrics.recordOfferSubmissionReject();
+      } else if (record.submissionState === "WITHDRAWN") {
+        metrics.recordOfferSubmissionWithdraw();
+      } else if (record.submissionState === "EXPIRED") {
+        metrics.recordOfferSubmissionExpire();
+      }
+    }
+    metrics.recordFeatureUsage("offer_submission");
+    return record;
+  });
+
+  app.post("/offer-submission/:id/counter-response", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer submission");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    const payload = offerSubmissionCounterResponseSchema.parse(request.body);
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer submission id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const current = await persistence.searchRepository.getOfferSubmission(id);
+    if (!current) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_SUBMISSION_NOT_FOUND",
+          "No offer submission record was found for this id."
+        )
+      );
+    }
+
+    if (current.sellerResponseState !== "COUNTERED") {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "INVALID_STATE_TRANSITION",
+          "A counter response can only be recorded after the seller has countered."
+        )
+      );
+    }
+
+    const record = await persistence.searchRepository.respondToOfferSubmissionCounter(
+      id,
+      payload.buyerCounterDecision
+    );
+    if (!record) {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "INVALID_STATE_TRANSITION",
+          "A counter response could not be applied to this submission."
+        )
+      );
+    }
+
+    metrics.recordOfferSubmissionUpdate();
+    if (record.submissionState === "ACCEPTED") {
+      metrics.recordOfferSubmissionAccept();
+    } else if (record.submissionState === "REJECTED") {
+      metrics.recordOfferSubmissionReject();
+    }
+    metrics.recordFeatureUsage("offer_submission");
+    return record;
+  });
+
+  app.get("/offer-submission/:id/summary", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Offer submission");
+    }
+
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid offer submission id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const summary = await persistence.searchRepository.getOfferSubmissionSummary(id);
+    if (!summary) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_SUBMISSION_NOT_FOUND",
+          "No offer submission summary was found for this id."
+        )
+      );
+    }
+
+    metrics.recordOfferSubmissionSummaryView();
+    return summary;
+  });
+
+  app.post("/under-contract", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Under-contract coordination");
+    }
+
+    ensureWriteCapable(reliability);
+    const payload = underContractCreateSchema.parse(request.body);
+    const sessionId = extractSessionId(request, payload.sessionId ?? null);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    const offerSubmission = await persistence.searchRepository.getOfferSubmission(payload.offerSubmissionId);
+    if (!offerSubmission) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "OFFER_SUBMISSION_NOT_FOUND",
+          "No accepted offer submission was found for under-contract coordination."
+        )
+      );
+    }
+
+    if (offerSubmission.submissionState !== "ACCEPTED") {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "OFFER_NOT_ACCEPTED",
+          "Under-contract coordination can only begin after the offer is accepted."
+        )
+      );
+    }
+
+    const record = await persistence.searchRepository.createUnderContractCoordination({
+      ...payload,
+      sessionId,
+      partnerId: pilotContext?.partner.id ?? null
+    });
+    if (!record) {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "UNDER_CONTRACT_CREATE_FAILED",
+          "Under-contract coordination could not be started for this property."
+        )
+      );
+    }
+
+    metrics.recordUnderContractCreate();
+    metrics.recordFeatureUsage("under_contract");
+    if (record.overallCoordinationState === "READY_FOR_CLOSING") {
+      metrics.recordUnderContractReadyForClosing();
+    } else if (record.overallCoordinationState === "BLOCKED") {
+      metrics.recordUnderContractBlocked();
+    }
+    return reply.status(201).send(record);
+  });
+
+  app.get("/under-contract", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Under-contract coordination");
+    }
+
+    const query = request.query as {
+      propertyId?: string;
+      shortlistId?: string;
+      sessionId?: string;
+    } | undefined;
+    const propertyId = query?.propertyId?.trim();
+    if (!propertyId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid under-contract query", [
+          { field: "propertyId", message: "propertyId is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getLatestUnderContractCoordination({
+      propertyId,
+      shortlistId: query?.shortlistId?.trim() || null,
+      sessionId: extractSessionId(request, query?.sessionId?.trim() || null)
+    });
+
+    return {
+      record
+    };
+  });
+
+  app.get("/under-contract/:id", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Under-contract coordination");
+    }
+
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid under-contract id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getUnderContractCoordination(id);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "UNDER_CONTRACT_NOT_FOUND",
+          "No under-contract coordination record was found for this id."
+        )
+      );
+    }
+
+    return record;
+  });
+
+  app.patch("/under-contract/:id", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Under-contract coordination");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    const patch = underContractUpdateSchema.parse(request.body);
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid under-contract id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const previous = await persistence.searchRepository.getUnderContractCoordination(id);
+    const record = await persistence.searchRepository.updateUnderContractCoordination(id, patch);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "UNDER_CONTRACT_NOT_FOUND",
+          "No under-contract coordination record was found for this id."
+        )
+      );
+    }
+
+    metrics.recordUnderContractUpdate();
+    metrics.recordFeatureUsage("under_contract");
+    if (previous?.overallCoordinationState !== record.overallCoordinationState) {
+      if (record.overallCoordinationState === "READY_FOR_CLOSING") {
+        metrics.recordUnderContractReadyForClosing();
+      } else if (record.overallCoordinationState === "BLOCKED") {
+        metrics.recordUnderContractBlocked();
+      }
+    }
+    return record;
+  });
+
+  app.post("/under-contract/:id/tasks/:taskType", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Under-contract coordination");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string; taskType?: string };
+    const requestUrl = request.raw.url ?? request.url;
+    const id = params.id?.trim() || extractPathSegment(requestUrl, 1);
+    const taskType = params.taskType?.trim() || extractPathSegment(requestUrl, 3);
+    const patch = underContractTaskUpdateSchema.parse(request.body);
+    if (!id || !taskType) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid under-contract task request", [
+          { field: "id", message: "id is required" },
+          { field: "taskType", message: "taskType is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.updateUnderContractTask(
+      id,
+      taskType as any,
+      patch
+    );
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "UNDER_CONTRACT_NOT_FOUND",
+          "The contract task could not be updated for this record."
+        )
+      );
+    }
+
+    metrics.recordUnderContractTaskUpdate();
+    metrics.recordFeatureUsage("under_contract");
+    if (record.overallCoordinationState === "READY_FOR_CLOSING") {
+      metrics.recordUnderContractReadyForClosing();
+    } else if (record.overallCoordinationState === "BLOCKED") {
+      metrics.recordUnderContractBlocked();
+    }
+    return record;
+  });
+
+  app.post("/under-contract/:id/milestones/:milestoneType", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Under-contract coordination");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string; milestoneType?: string };
+    const requestUrl = request.raw.url ?? request.url;
+    const id = params.id?.trim() || extractPathSegment(requestUrl, 1);
+    const milestoneType = params.milestoneType?.trim() || extractPathSegment(requestUrl, 3);
+    const patch = underContractMilestoneUpdateSchema.parse(request.body);
+    if (!id || !milestoneType) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid under-contract milestone request", [
+          { field: "id", message: "id is required" },
+          { field: "milestoneType", message: "milestoneType is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.updateUnderContractMilestone(
+      id,
+      milestoneType as any,
+      patch
+    );
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "UNDER_CONTRACT_NOT_FOUND",
+          "The contract milestone could not be updated for this record."
+        )
+      );
+    }
+
+    metrics.recordUnderContractMilestoneUpdate();
+    metrics.recordFeatureUsage("under_contract");
+    if (record.overallCoordinationState === "READY_FOR_CLOSING") {
+      metrics.recordUnderContractReadyForClosing();
+    } else if (record.overallCoordinationState === "BLOCKED") {
+      metrics.recordUnderContractBlocked();
+    }
+    return record;
+  });
+
+  app.get("/under-contract/:id/summary", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Under-contract coordination");
+    }
+
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid under-contract id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const summary = await persistence.searchRepository.getUnderContractCoordinationSummary(id);
+    if (!summary) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "UNDER_CONTRACT_NOT_FOUND",
+          "No under-contract coordination summary was found for this id."
+        )
+      );
+    }
+
+    metrics.recordUnderContractSummaryView();
+    return summary;
+  });
+
+  app.post("/closing-readiness", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Closing readiness");
+    }
+
+    ensureWriteCapable(reliability);
+    const payload = closingReadinessCreateSchema.parse(request.body);
+    const sessionId = extractSessionId(request, payload.sessionId ?? null);
+    const pilotContext = await resolvePilotContext(persistence.searchRepository, request);
+    const underContract = await persistence.searchRepository.getUnderContractCoordination(
+      payload.underContractCoordinationId
+    );
+    if (!underContract) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "UNDER_CONTRACT_NOT_FOUND",
+          "No under-contract coordination record was found for closing readiness."
+        )
+      );
+    }
+
+    if (underContract.overallCoordinationState !== "READY_FOR_CLOSING" || !underContract.readyForClosing) {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "UNDER_CONTRACT_NOT_READY",
+          "Closing readiness can only begin after under-contract coordination is ready for closing."
+        )
+      );
+    }
+
+    const record = await persistence.searchRepository.createClosingReadiness({
+      ...payload,
+      sessionId,
+      partnerId: pilotContext?.partner.id ?? null
+    });
+    if (!record) {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "CLOSING_READINESS_CREATE_FAILED",
+          "Closing readiness could not be started for this property."
+        )
+      );
+    }
+
+    metrics.recordClosingReadinessCreate();
+    metrics.recordFeatureUsage("closing_readiness");
+    if (record.overallClosingReadinessState === "READY_TO_CLOSE") {
+      metrics.recordClosingReadyToClose();
+    } else if (record.overallClosingReadinessState === "BLOCKED") {
+      metrics.recordClosingBlocked();
+    } else if (record.overallClosingReadinessState === "CLOSED") {
+      metrics.recordClosingCompleted();
+    }
+    return reply.status(201).send(record);
+  });
+
+  app.get("/closing-readiness", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Closing readiness");
+    }
+
+    const query = request.query as {
+      propertyId?: string;
+      shortlistId?: string;
+      sessionId?: string;
+    } | undefined;
+    const propertyId = query?.propertyId?.trim();
+    if (!propertyId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid closing-readiness query", [
+          { field: "propertyId", message: "propertyId is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getLatestClosingReadiness({
+      propertyId,
+      shortlistId: query?.shortlistId?.trim() || null,
+      sessionId: extractSessionId(request, query?.sessionId?.trim() || null)
+    });
+
+    return {
+      record
+    };
+  });
+
+  app.get("/closing-readiness/:id", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Closing readiness");
+    }
+
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid closing-readiness id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.getClosingReadiness(id);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "CLOSING_READINESS_NOT_FOUND",
+          "No closing readiness record was found for this id."
+        )
+      );
+    }
+
+    return record;
+  });
+
+  app.patch("/closing-readiness/:id", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Closing readiness");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    const patch = closingReadinessUpdateSchema.parse(request.body);
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid closing-readiness id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const previous = await persistence.searchRepository.getClosingReadiness(id);
+    const record = await persistence.searchRepository.updateClosingReadiness(id, patch);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "CLOSING_READINESS_NOT_FOUND",
+          "No closing readiness record was found for this id."
+        )
+      );
+    }
+
+    metrics.recordClosingReadinessUpdate();
+    metrics.recordFeatureUsage("closing_readiness");
+    if (previous?.overallClosingReadinessState !== record.overallClosingReadinessState) {
+      if (record.overallClosingReadinessState === "READY_TO_CLOSE") {
+        metrics.recordClosingReadyToClose();
+      } else if (record.overallClosingReadinessState === "BLOCKED") {
+        metrics.recordClosingBlocked();
+      } else if (record.overallClosingReadinessState === "CLOSED") {
+        metrics.recordClosingCompleted();
+      }
+    }
+    return record;
+  });
+
+  app.post("/closing-readiness/:id/checklist/:itemType", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Closing readiness");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string; itemType?: string };
+    const requestUrl = request.raw.url ?? request.url;
+    const id = params.id?.trim() || extractPathSegment(requestUrl, 1);
+    const itemType = params.itemType?.trim() || extractPathSegment(requestUrl, 3);
+    const patch = closingChecklistUpdateSchema.parse(request.body);
+    if (!id || !itemType) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid closing checklist request", [
+          { field: "id", message: "id is required" },
+          { field: "itemType", message: "itemType is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.updateClosingChecklistItem(id, itemType as any, patch);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "CLOSING_READINESS_NOT_FOUND",
+          "The closing checklist item could not be updated for this record."
+        )
+      );
+    }
+
+    metrics.recordClosingChecklistUpdate();
+    metrics.recordFeatureUsage("closing_readiness");
+    if (record.overallClosingReadinessState === "READY_TO_CLOSE") {
+      metrics.recordClosingReadyToClose();
+    } else if (record.overallClosingReadinessState === "BLOCKED") {
+      metrics.recordClosingBlocked();
+    } else if (record.overallClosingReadinessState === "CLOSED") {
+      metrics.recordClosingCompleted();
+    }
+    return record;
+  });
+
+  app.post("/closing-readiness/:id/milestones/:milestoneType", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Closing readiness");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string; milestoneType?: string };
+    const requestUrl = request.raw.url ?? request.url;
+    const id = params.id?.trim() || extractPathSegment(requestUrl, 1);
+    const milestoneType = params.milestoneType?.trim() || extractPathSegment(requestUrl, 3);
+    const patch = closingMilestoneUpdateSchema.parse(request.body);
+    if (!id || !milestoneType) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid closing milestone request", [
+          { field: "id", message: "id is required" },
+          { field: "milestoneType", message: "milestoneType is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.updateClosingMilestone(id, milestoneType as any, patch);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "CLOSING_READINESS_NOT_FOUND",
+          "The closing milestone could not be updated for this record."
+        )
+      );
+    }
+
+    metrics.recordClosingMilestoneUpdate();
+    metrics.recordFeatureUsage("closing_readiness");
+    if (record.overallClosingReadinessState === "READY_TO_CLOSE") {
+      metrics.recordClosingReadyToClose();
+    } else if (record.overallClosingReadinessState === "BLOCKED") {
+      metrics.recordClosingBlocked();
+    } else if (record.overallClosingReadinessState === "CLOSED") {
+      metrics.recordClosingCompleted();
+    }
+    return record;
+  });
+
+  app.post("/closing-readiness/:id/mark-ready", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Closing readiness");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid closing-readiness id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.markClosingReady(id);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "CLOSING_READINESS_NOT_FOUND",
+          "No closing readiness record was found for this id."
+        )
+      );
+    }
+
+    metrics.recordClosingReadinessUpdate();
+    metrics.recordFeatureUsage("closing_readiness");
+    if (record.overallClosingReadinessState === "READY_TO_CLOSE") {
+      metrics.recordClosingReadyToClose();
+    } else if (record.overallClosingReadinessState === "BLOCKED") {
+      metrics.recordClosingBlocked();
+    }
+    return record;
+  });
+
+  app.post("/closing-readiness/:id/mark-closed", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Closing readiness");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid closing-readiness id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const record = await persistence.searchRepository.markClosingComplete(id);
+    if (!record) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "CLOSING_READINESS_NOT_FOUND",
+          "No closing readiness record was found for this id."
+        )
+      );
+    }
+
+    metrics.recordClosingCompleted();
+    metrics.recordFeatureUsage("closing_readiness");
+    return record;
+  });
+
+  app.get("/closing-readiness/:id/summary", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Closing readiness");
+    }
+
+    const params = request.params as { id?: string };
+    const id = params.id?.trim();
+    if (!id) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid closing-readiness id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const summary = await persistence.searchRepository.getClosingReadinessSummary(id);
+    if (!summary) {
+      return reply.status(404).send(
+        buildErrorPayload(
+          "CLOSING_READINESS_NOT_FOUND",
+          "No closing readiness summary was found for this id."
+        )
+      );
+    }
+
+    metrics.recordClosingReadinessSummaryView();
+    return summary;
+  });
+
+  app.get("/transaction-command-center", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Buyer transaction command center");
+    }
+
+    const query = request.query as {
+      propertyId?: string;
+      propertyAddressLabel?: string;
+      shortlistId?: string;
+      sessionId?: string;
+    } | undefined;
+    const propertyId = query?.propertyId?.trim();
+    if (!propertyId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid transaction-command-center query", [
+          { field: "propertyId", message: "propertyId is required" }
+        ])
+      );
+    }
+
+    const sessionId = extractSessionId(request, query?.sessionId?.trim() || null);
+    const shortlistId = query?.shortlistId?.trim() || null;
+    const [
+      financialReadiness,
+      offerPreparation,
+      offerSubmission,
+      underContract,
+      closingReadiness,
+      workflowActivity
+    ] = await Promise.all([
+      persistence.searchRepository.getLatestFinancialReadiness(sessionId),
+      persistence.searchRepository.getLatestOfferPreparation({
+        propertyId,
+        shortlistId,
+        sessionId
+      }),
+      persistence.searchRepository.getLatestOfferSubmission({
+        propertyId,
+        shortlistId,
+        sessionId
+      }),
+      persistence.searchRepository.getLatestUnderContractCoordination({
+        propertyId,
+        shortlistId,
+        sessionId
+      }),
+      persistence.searchRepository.getLatestClosingReadiness({
+        propertyId,
+        shortlistId,
+        sessionId
+      }),
+      sessionId
+        ? persistence.searchRepository.listWorkflowActivity(sessionId, 50)
+        : Promise.resolve([])
+    ]);
+
+    const summary = buildBuyerTransactionCommandCenter({
+      propertyId,
+      propertyAddressLabel: query?.propertyAddressLabel?.trim() || null,
+      sessionId,
+      shortlistId,
+      financialReadiness,
+      offerPreparation,
+      offerSubmission,
+      underContract,
+      closingReadiness,
+      workflowActivity
+    });
+
+    await syncCommandCenterActivity(summary);
+    return summary;
+  });
+
+  app.get("/transaction-command-center/explanations", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Decision explainability");
+    }
+
+    const query = request.query as {
+      propertyId?: string;
+      propertyAddressLabel?: string;
+      shortlistId?: string;
+      sessionId?: string;
+    } | undefined;
+    const propertyId = query?.propertyId?.trim();
+    if (!propertyId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid transaction-command-center explanation query", [
+          { field: "propertyId", message: "propertyId is required" }
+        ])
+      );
+    }
+
+    const sessionId = extractSessionId(request, query?.sessionId?.trim() || null);
+    const shortlistId = query?.shortlistId?.trim() || null;
+    const [
+      financialReadiness,
+      offerPreparation,
+      offerSubmission,
+      underContract,
+      closingReadiness,
+      workflowActivity
+    ] = await Promise.all([
+      persistence.searchRepository.getLatestFinancialReadiness(sessionId),
+      persistence.searchRepository.getLatestOfferPreparation({
+        propertyId,
+        shortlistId,
+        sessionId
+      }),
+      persistence.searchRepository.getLatestOfferSubmission({
+        propertyId,
+        shortlistId,
+        sessionId
+      }),
+      persistence.searchRepository.getLatestUnderContractCoordination({
+        propertyId,
+        shortlistId,
+        sessionId
+      }),
+      persistence.searchRepository.getLatestClosingReadiness({
+        propertyId,
+        shortlistId,
+        sessionId
+      }),
+      sessionId
+        ? persistence.searchRepository.listWorkflowActivity(sessionId, 50)
+        : Promise.resolve([])
+    ]);
+
+    const summary = buildBuyerTransactionCommandCenter({
+      propertyId,
+      propertyAddressLabel: query?.propertyAddressLabel?.trim() || null,
+      sessionId,
+      shortlistId,
+      financialReadiness,
+      offerPreparation,
+      offerSubmission,
+      underContract,
+      closingReadiness,
+      workflowActivity
+    });
+
+    const explanations = buildTransactionCommandCenterExplanations(summary);
+    await persistence.searchRepository.createUnifiedActivity({
+      sessionId,
+      propertyId: summary.propertyId,
+      propertyAddressLabel: summary.propertyAddressLabel,
+      shortlistId,
+      moduleName: "decision_explainability",
+      eventCategory: "EXPLANATION_GENERATED",
+      subjectType: "transaction_command_center",
+      subjectId: summary.propertyId,
+      title: "Transaction explanation viewed",
+      summary: "The system generated an explanation for the current stage and transaction status.",
+      newValueSnapshot: {
+        explanationCount: explanations.explanations.length
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "transaction_command_center_explanations_requested",
+      actorType: "USER"
+    });
+    return explanations;
+  });
+
+  app.get("/explanations", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Decision explainability");
+    }
+
+    const query = request.query as {
+      moduleName?: string;
+      subjectType?: string;
+      subjectId?: string;
+    } | undefined;
+    const moduleName = query?.moduleName?.trim();
+    const subjectId = query?.subjectId?.trim();
+    const subjectType = query?.subjectType?.trim();
+
+    if (!moduleName || !subjectId || !subjectType) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid explanation query", [
+          { field: "moduleName", message: "moduleName is required" },
+          { field: "subjectType", message: "subjectType is required" },
+          { field: "subjectId", message: "subjectId is required" }
+        ])
+      );
+    }
+
+    const sessionId = extractSessionId(request);
+    const workflowActivity = sessionId
+      ? await persistence.searchRepository.listWorkflowActivity(sessionId, 50)
+      : [];
+
+    let explanationResponse: unknown;
+    switch (moduleName) {
+      case "financial_readiness": {
+        const record = await persistence.searchRepository.getFinancialReadiness(subjectId);
+        if (!record) {
+          return reply.status(404).send(
+            buildErrorPayload("SUBJECT_NOT_FOUND", "No financial readiness record was found for this id.")
+          );
+        }
+        explanationResponse = buildFinancialReadinessExplanations(record, workflowActivity);
+        break;
+      }
+      case "offer_preparation": {
+        const record = await persistence.searchRepository.getOfferPreparation(subjectId);
+        if (!record) {
+          return reply.status(404).send(
+            buildErrorPayload("SUBJECT_NOT_FOUND", "No offer preparation record was found for this id.")
+          );
+        }
+        explanationResponse = buildOfferPreparationExplanations(record, workflowActivity);
+        break;
+      }
+      case "offer_submission": {
+        const record = await persistence.searchRepository.getOfferSubmission(subjectId);
+        if (!record) {
+          return reply.status(404).send(
+            buildErrorPayload("SUBJECT_NOT_FOUND", "No offer submission record was found for this id.")
+          );
+        }
+        explanationResponse = buildOfferSubmissionExplanations(record, workflowActivity);
+        break;
+      }
+      case "under_contract": {
+        const record = await persistence.searchRepository.getUnderContractCoordination(subjectId);
+        if (!record) {
+          return reply.status(404).send(
+            buildErrorPayload("SUBJECT_NOT_FOUND", "No under-contract record was found for this id.")
+          );
+        }
+        explanationResponse = buildUnderContractExplanations(record, workflowActivity);
+        break;
+      }
+      case "closing_readiness": {
+        const record = await persistence.searchRepository.getClosingReadiness(subjectId);
+        if (!record) {
+          return reply.status(404).send(
+            buildErrorPayload("SUBJECT_NOT_FOUND", "No closing readiness record was found for this id.")
+          );
+        }
+        explanationResponse = buildClosingReadinessExplanations(record, workflowActivity);
+        break;
+      }
+      default:
+        return reply.status(400).send(
+          buildErrorPayload("MODULE_NOT_SUPPORTED", "This explanation module is not supported.")
+        );
+    }
+
+    await persistence.searchRepository.createUnifiedActivity({
+      sessionId,
+      moduleName: "decision_explainability",
+      eventCategory: "EXPLANATION_GENERATED",
+      subjectType,
+      subjectId,
+      title: "Explanation generated",
+      summary: `The system generated a deterministic explanation for ${moduleName.replaceAll("_", " ")}.`,
+      newValueSnapshot: {
+        moduleName
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "explanations_requested",
+      actorType: "USER"
+    });
+    return explanationResponse;
+  });
+
+  app.get("/explanations/module-summary", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Decision explainability");
+    }
+
+    const query = request.query as {
+      moduleName?: string;
+      subjectType?: string;
+      subjectId?: string;
+    } | undefined;
+    const search = new URLSearchParams();
+    if (query?.moduleName) {
+      search.set("moduleName", query.moduleName);
+    }
+    if (query?.subjectType) {
+      search.set("subjectType", query.subjectType);
+    }
+    if (query?.subjectId) {
+      search.set("subjectId", query.subjectId);
+    }
+    return app.inject({
+      method: "GET",
+      url: `/explanations?${search.toString()}`,
+      headers: request.headers
+    }).then((response) => {
+      reply.status(response.statusCode);
+      return response.json();
+    });
+  });
+
+  app.get("/notifications", async (request) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Notifications");
+    }
+
+    const query = request.query as {
+      sessionId?: string;
+      propertyId?: string;
+      shortlistId?: string;
+      limit?: string;
+    } | undefined;
+    const sessionId = extractSessionId(request, query?.sessionId?.trim() || null);
+    const propertyId = query?.propertyId?.trim() || null;
+    const shortlistId = query?.shortlistId?.trim() || null;
+    const effectiveLimit = parseLimit(
+      query as Record<string, unknown> | undefined,
+      config.performance.opsDefaultPageSize,
+      config.performance.opsMaxPageSize
+    );
+
+    if (sessionId || propertyId || shortlistId) {
+      await syncWorkflowNotificationsForScope({
+        sessionId,
+        propertyId,
+        shortlistId
+      });
+    }
+
+    const notifications = await persistence.searchRepository.listWorkflowNotifications({
+      sessionId,
+      ...(propertyId !== null ? { propertyId } : {}),
+      ...(shortlistId !== null ? { shortlistId } : {}),
+      statuses: ["UNREAD", "READ"],
+      limit: effectiveLimit
+    });
+
+    return { notifications };
+  });
+
+  app.get("/notifications/history", async (request) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Notifications");
+    }
+
+    const query = request.query as {
+      sessionId?: string;
+      propertyId?: string;
+      shortlistId?: string;
+      limit?: string;
+    } | undefined;
+    const sessionId = extractSessionId(request, query?.sessionId?.trim() || null);
+    const propertyId = query?.propertyId?.trim() || null;
+    const shortlistId = query?.shortlistId?.trim() || null;
+    const effectiveLimit = parseLimit(
+      query as Record<string, unknown> | undefined,
+      config.performance.opsDefaultPageSize,
+      config.performance.opsMaxPageSize
+    );
+
+    if (sessionId || propertyId || shortlistId) {
+      await syncWorkflowNotificationsForScope({
+        sessionId,
+        propertyId,
+        shortlistId
+      });
+    }
+
+    const history = await persistence.searchRepository.listWorkflowNotificationHistory({
+      sessionId,
+      ...(propertyId !== null ? { propertyId } : {}),
+      ...(shortlistId !== null ? { shortlistId } : {}),
+      limit: effectiveLimit
+    });
+
+    return { history };
+  });
+
+  app.patch("/notifications/:id/read", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Notifications");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const notificationId = params.id?.trim();
+
+    if (!notificationId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid notification id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const updated = await persistence.searchRepository.updateWorkflowNotification(notificationId, {
+      status: "READ",
+      readAt: new Date().toISOString()
+    });
+
+    if (!updated) {
+      return reply.status(404).send(
+        buildErrorPayload("NOTIFICATION_NOT_FOUND", "No notification was found for this id.")
+      );
+    }
+
+    return updated;
+  });
+
+  app.patch("/notifications/:id/dismiss", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Notifications");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const notificationId = params.id?.trim();
+
+    if (!notificationId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid notification id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const existing = await persistence.searchRepository.getWorkflowNotification(notificationId);
+    if (!existing) {
+      return reply.status(404).send(
+        buildErrorPayload("NOTIFICATION_NOT_FOUND", "No notification was found for this id.")
+      );
+    }
+
+    if (existing.severity === "CRITICAL") {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "NOTIFICATION_NOT_DISMISSIBLE",
+          "Critical notifications cannot be dismissed while unresolved."
+        )
+      );
+    }
+
+    const updated = await persistence.searchRepository.updateWorkflowNotification(notificationId, {
+      status: "DISMISSED",
+      dismissedAt: new Date().toISOString()
+    });
+
+    if (!updated) {
+      return reply.status(404).send(
+        buildErrorPayload("NOTIFICATION_NOT_FOUND", "No notification was found for this id.")
+      );
+    }
+
+    return updated;
+  });
+
   app.post("/shortlists", async (request, reply) => {
     if (!config.workflow.shortlistsEnabled) {
       throw featureDisabled("Shortlists");
@@ -3907,12 +5812,20 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     }
 
     const items = await persistence.searchRepository.listShortlistItems(shortlistId);
+    const offerPreparations = await persistence.searchRepository.listOfferPreparations(shortlistId);
+    const offerSubmissions = await persistence.searchRepository.listOfferSubmissions(shortlistId);
+    const underContracts = await persistence.searchRepository.listUnderContractCoordinations(shortlistId);
+    const closingReadiness = await persistence.searchRepository.listClosingReadiness(shortlistId);
     const offerReadiness = await persistence.searchRepository.listOfferReadiness(shortlistId);
     const negotiations = await persistence.searchRepository.listNegotiations(shortlistId);
     metrics.recordShortlistView();
     return {
       shortlist,
       items,
+      offerPreparations,
+      offerSubmissions,
+      underContracts,
+      closingReadiness,
       offerReadiness,
       negotiations
     };
@@ -4850,6 +6763,64 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     return {
       activity
     };
+  });
+
+  app.get("/activity", async (request) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Unified activity");
+    }
+
+    const query = request.query as Record<string, unknown> | undefined;
+    const sessionId = extractSessionId(request, typeof query?.sessionId === "string" ? query.sessionId : null);
+    const propertyId = typeof query?.propertyId === "string" ? query.propertyId.trim() || null : null;
+    const shortlistId = typeof query?.shortlistId === "string" ? query.shortlistId.trim() || null : null;
+    const effectiveLimit = parseLimit(
+      query,
+      config.performance.opsDefaultPageSize,
+      config.performance.opsMaxPageSize
+    );
+
+    if (sessionId || propertyId || shortlistId) {
+      await syncWorkflowNotificationsForScope({ sessionId, propertyId, shortlistId });
+    }
+
+    const activity = await persistence.searchRepository.listUnifiedActivity({
+      sessionId,
+      propertyId,
+      shortlistId,
+      limit: effectiveLimit
+    });
+
+    return { activity };
+  });
+
+  app.get("/activity/history", async (request) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Unified activity history");
+    }
+
+    const query = request.query as Record<string, unknown> | undefined;
+    const sessionId = extractSessionId(request, typeof query?.sessionId === "string" ? query.sessionId : null);
+    const propertyId = typeof query?.propertyId === "string" ? query.propertyId.trim() || null : null;
+    const shortlistId = typeof query?.shortlistId === "string" ? query.shortlistId.trim() || null : null;
+    const effectiveLimit = parseLimit(
+      query,
+      config.performance.opsDefaultPageSize,
+      config.performance.opsMaxPageSize
+    );
+
+    if (sessionId || propertyId || shortlistId) {
+      await syncWorkflowNotificationsForScope({ sessionId, propertyId, shortlistId });
+    }
+
+    const activity = await persistence.searchRepository.listUnifiedActivity({
+      sessionId,
+      propertyId,
+      shortlistId,
+      limit: effectiveLimit
+    });
+
+    return { activity };
   });
 
   app.get("/collaboration/activity", async (request, reply) => {

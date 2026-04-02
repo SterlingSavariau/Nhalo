@@ -123,6 +123,32 @@ export class MetricsCollector {
   private readonly financialReadinessCreates = { count: 0 };
   private readonly financialReadinessUpdates = { count: 0 };
   private readonly financialReadinessSummaryViews = { count: 0 };
+  private readonly offerPreparationCreates = { count: 0 };
+  private readonly offerPreparationUpdates = { count: 0 };
+  private readonly offerPreparationSummaryViews = { count: 0 };
+  private readonly offerSubmissionCreates = { count: 0 };
+  private readonly offerSubmissionSubmits = { count: 0 };
+  private readonly offerSubmissionUpdates = { count: 0 };
+  private readonly offerSubmissionSummaryViews = { count: 0 };
+  private readonly offerSubmissionAccepts = { count: 0 };
+  private readonly offerSubmissionRejects = { count: 0 };
+  private readonly offerSubmissionWithdraws = { count: 0 };
+  private readonly offerSubmissionExpires = { count: 0 };
+  private readonly underContractCreates = { count: 0 };
+  private readonly underContractUpdates = { count: 0 };
+  private readonly underContractTaskUpdates = { count: 0 };
+  private readonly underContractMilestoneUpdates = { count: 0 };
+  private readonly underContractSummaryViews = { count: 0 };
+  private readonly underContractReadyForClosing = { count: 0 };
+  private readonly underContractBlocked = { count: 0 };
+  private readonly closingReadinessCreates = { count: 0 };
+  private readonly closingReadinessUpdates = { count: 0 };
+  private readonly closingChecklistUpdates = { count: 0 };
+  private readonly closingMilestoneUpdates = { count: 0 };
+  private readonly closingReadinessSummaryViews = { count: 0 };
+  private readonly closingReadyToClose = { count: 0 };
+  private readonly closingCompleted = { count: 0 };
+  private readonly closingBlocked = { count: 0 };
   private readonly negotiationCreates = { count: 0 };
   private readonly negotiationEventCreates = { count: 0 };
   private readonly negotiationStatusChanges = { count: 0 };
@@ -497,6 +523,110 @@ export class MetricsCollector {
 
   recordFinancialReadinessSummaryView(): void {
     this.financialReadinessSummaryViews.count += 1;
+  }
+
+  recordOfferPreparationCreate(): void {
+    this.offerPreparationCreates.count += 1;
+  }
+
+  recordOfferPreparationUpdate(): void {
+    this.offerPreparationUpdates.count += 1;
+  }
+
+  recordOfferPreparationSummaryView(): void {
+    this.offerPreparationSummaryViews.count += 1;
+  }
+
+  recordOfferSubmissionCreate(): void {
+    this.offerSubmissionCreates.count += 1;
+  }
+
+  recordOfferSubmissionSubmit(): void {
+    this.offerSubmissionSubmits.count += 1;
+  }
+
+  recordOfferSubmissionUpdate(): void {
+    this.offerSubmissionUpdates.count += 1;
+  }
+
+  recordOfferSubmissionSummaryView(): void {
+    this.offerSubmissionSummaryViews.count += 1;
+  }
+
+  recordOfferSubmissionAccept(): void {
+    this.offerSubmissionAccepts.count += 1;
+  }
+
+  recordOfferSubmissionReject(): void {
+    this.offerSubmissionRejects.count += 1;
+  }
+
+  recordOfferSubmissionWithdraw(): void {
+    this.offerSubmissionWithdraws.count += 1;
+  }
+
+  recordOfferSubmissionExpire(): void {
+    this.offerSubmissionExpires.count += 1;
+  }
+
+  recordUnderContractCreate(): void {
+    this.underContractCreates.count += 1;
+  }
+
+  recordUnderContractUpdate(): void {
+    this.underContractUpdates.count += 1;
+  }
+
+  recordUnderContractTaskUpdate(): void {
+    this.underContractTaskUpdates.count += 1;
+  }
+
+  recordUnderContractMilestoneUpdate(): void {
+    this.underContractMilestoneUpdates.count += 1;
+  }
+
+  recordUnderContractSummaryView(): void {
+    this.underContractSummaryViews.count += 1;
+  }
+
+  recordUnderContractReadyForClosing(): void {
+    this.underContractReadyForClosing.count += 1;
+  }
+
+  recordUnderContractBlocked(): void {
+    this.underContractBlocked.count += 1;
+  }
+
+  recordClosingReadinessCreate(): void {
+    this.closingReadinessCreates.count += 1;
+  }
+
+  recordClosingReadinessUpdate(): void {
+    this.closingReadinessUpdates.count += 1;
+  }
+
+  recordClosingChecklistUpdate(): void {
+    this.closingChecklistUpdates.count += 1;
+  }
+
+  recordClosingMilestoneUpdate(): void {
+    this.closingMilestoneUpdates.count += 1;
+  }
+
+  recordClosingReadinessSummaryView(): void {
+    this.closingReadinessSummaryViews.count += 1;
+  }
+
+  recordClosingReadyToClose(): void {
+    this.closingReadyToClose.count += 1;
+  }
+
+  recordClosingCompleted(): void {
+    this.closingCompleted.count += 1;
+  }
+
+  recordClosingBlocked(): void {
+    this.closingBlocked.count += 1;
   }
 
   recordNegotiationCreate(): void {
@@ -1270,6 +1400,32 @@ export class MetricsCollector {
       financialReadinessCreateCount: this.financialReadinessCreates.count,
       financialReadinessUpdateCount: this.financialReadinessUpdates.count,
       financialReadinessSummaryViewCount: this.financialReadinessSummaryViews.count,
+      offerPreparationCreateCount: this.offerPreparationCreates.count,
+      offerPreparationUpdateCount: this.offerPreparationUpdates.count,
+      offerPreparationSummaryViewCount: this.offerPreparationSummaryViews.count,
+      offerSubmissionCreateCount: this.offerSubmissionCreates.count,
+      offerSubmissionSubmitCount: this.offerSubmissionSubmits.count,
+      offerSubmissionUpdateCount: this.offerSubmissionUpdates.count,
+      offerSubmissionSummaryViewCount: this.offerSubmissionSummaryViews.count,
+      offerSubmissionAcceptCount: this.offerSubmissionAccepts.count,
+      offerSubmissionRejectCount: this.offerSubmissionRejects.count,
+      offerSubmissionWithdrawCount: this.offerSubmissionWithdraws.count,
+      offerSubmissionExpireCount: this.offerSubmissionExpires.count,
+      underContractCreateCount: this.underContractCreates.count,
+      underContractUpdateCount: this.underContractUpdates.count,
+      underContractTaskUpdateCount: this.underContractTaskUpdates.count,
+      underContractMilestoneUpdateCount: this.underContractMilestoneUpdates.count,
+      underContractSummaryViewCount: this.underContractSummaryViews.count,
+      underContractReadyForClosingCount: this.underContractReadyForClosing.count,
+      underContractBlockedCount: this.underContractBlocked.count,
+      closingReadinessCreateCount: this.closingReadinessCreates.count,
+      closingReadinessUpdateCount: this.closingReadinessUpdates.count,
+      closingChecklistUpdateCount: this.closingChecklistUpdates.count,
+      closingMilestoneUpdateCount: this.closingMilestoneUpdates.count,
+      closingReadinessSummaryViewCount: this.closingReadinessSummaryViews.count,
+      closingReadyToCloseCount: this.closingReadyToClose.count,
+      closingCompletedCount: this.closingCompleted.count,
+      closingBlockedCount: this.closingBlocked.count,
       negotiationCreateCount: this.negotiationCreates.count,
       negotiationEventCreateCount: this.negotiationEventCreates.count,
       negotiationStatusChangeCount: this.negotiationStatusChanges.count,

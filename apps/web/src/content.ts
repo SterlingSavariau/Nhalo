@@ -164,6 +164,163 @@ export const FINANCIAL_READINESS_COPY = {
   assumptionsTitle: "Assumptions used"
 } as const;
 
+export const OFFER_PREPARATION_COPY = {
+  title: "Offer preparation",
+  intro:
+    "Offer preparation drafts the exact terms the buyer wants to make on this home. It stops at ready to submit and does not execute the offer.",
+  startAction: "Start offer draft",
+  updateAction: "Update offer draft",
+  blockedAction: "Finish financial readiness first",
+  readyAction: "Ready to submit",
+  dependencyLabel: "Financial readiness",
+  financialAlignmentTitle: "Financial alignment",
+  summaryTitle: "Offer summary",
+  blockersTitle: "What still needs attention",
+  recommendationTitle: "Recommendation",
+  nextStepsTitle: "Next steps",
+  nextActionLabel: "Next action",
+  maxAffordableLabel: "Maximum affordable price",
+  cashAvailableLabel: "Available cash",
+  affordabilityStatusLabel: "Affordability status",
+  readinessLabel: "Submission state",
+  offerPriceLabel: "Offer price",
+  earnestMoneyLabel: "Earnest money",
+  cashRequiredLabel: "Cash required",
+  downPaymentTypeLabel: "Down payment input",
+  downPaymentAmountLabel: "Down payment amount",
+  downPaymentPercentLabel: "Down payment percent",
+  downPaymentDisplayLabel: "Down payment",
+  financingContingencyLabel: "Financing contingency",
+  inspectionContingencyLabel: "Inspection contingency",
+  appraisalContingencyLabel: "Appraisal contingency",
+  closingTimelineLabel: "Closing timeline (days)",
+  possessionTimingLabel: "Possession timing",
+  possessionDaysLabel: "Days after closing",
+  notesLabel: "Internal notes",
+  rationaleLabel: "Buyer rationale"
+} as const;
+
+export const OFFER_SUBMISSION_COPY = {
+  title: "Offer submission",
+  intro:
+    "Offer submission tracks whether the drafted offer was submitted, how the seller responded, and what the buyer should do next. It stops at accepted-offer handoff and does not execute contracts.",
+  startAction: "Create submission record",
+  submitAction: "Submit offer",
+  updateAction: "Update submission",
+  blockedAction: "Complete offer preparation first",
+  readyAction: "Move to under-contract workflow",
+  dependencyLabel: "Offer preparation",
+  statusTitle: "Submission status",
+  responseTitle: "Seller response",
+  counterofferTitle: "Counteroffer",
+  recommendationTitle: "Recommendation",
+  nextStepsTitle: "Next steps",
+  nextActionLabel: "Next action",
+  urgencyLabel: "Urgency",
+  stateLabel: "Submission state",
+  sellerResponseLabel: "Seller response",
+  submittedAtLabel: "Submitted at",
+  expirationLabel: "Offer expiration",
+  offerPriceLabel: "Current price",
+  earnestMoneyLabel: "Earnest money",
+  closingTimelineLabel: "Closing timeline",
+  notesLabel: "Submission notes",
+  activityTitle: "Activity",
+  counterPriceLabel: "Counter price",
+  counterTimelineLabel: "Counter closing timeline",
+  counterExpirationLabel: "Counter expiration",
+  buyerDecisionLabel: "Buyer counter decision"
+} as const;
+
+export const UNDER_CONTRACT_COPY = {
+  title: "Under-contract coordination",
+  intro:
+    "Under-contract coordination tracks the buyer-side work that must happen after an accepted offer and before closing readiness. It shows the current contract tasks, deadlines, blockers, and next action.",
+  startAction: "Start under-contract workflow",
+  updateAction: "Update contract plan",
+  taskUpdateAction: "Update task",
+  milestoneUpdateAction: "Update milestone",
+  blockedAction: "Accepted offer required",
+  readyAction: "Proceed to closing readiness",
+  dependencyLabel: "Offer submission",
+  summaryTitle: "Contract progress",
+  deadlinesTitle: "Key deadlines",
+  tasksTitle: "Contract tasks",
+  milestonesTitle: "Milestones",
+  blockersTitle: "Blockers and risk",
+  recommendationTitle: "Recommendation",
+  activityTitle: "Activity",
+  nextStepsTitle: "Next steps",
+  nextActionLabel: "Next action",
+  stateLabel: "Coordination state",
+  riskLabel: "Risk level",
+  urgencyLabel: "Urgency",
+  acceptedAtLabel: "Accepted at",
+  targetClosingDateLabel: "Target closing date",
+  readyLabel: "Ready for closing",
+  immediateAttentionLabel: "Needs immediate attention",
+  notesLabel: "Contract notes",
+  internalActivityLabel: "Internal activity note"
+} as const;
+
+export const CLOSING_READINESS_COPY = {
+  title: "Closing readiness",
+  intro:
+    "Closing readiness tracks the final buyer-side items before close. It shows whether final funds, documents, appointment details, and settlement readiness are complete enough to close.",
+  startAction: "Start closing readiness",
+  updateAction: "Update closing plan",
+  checklistUpdateAction: "Update checklist item",
+  milestoneUpdateAction: "Update milestone",
+  blockedAction: "Ready-for-closing contract state required",
+  readyAction: "Proceed to close",
+  closedAction: "Closing complete",
+  markReadyAction: "Mark ready to close",
+  markClosedAction: "Mark closing complete",
+  dependencyLabel: "Under-contract coordination",
+  summaryTitle: "Closing summary",
+  checklistTitle: "Final checklist",
+  milestonesTitle: "Milestones",
+  blockersTitle: "Blockers and risk",
+  recommendationTitle: "Recommendation",
+  activityTitle: "Activity",
+  nextStepsTitle: "Next steps",
+  nextActionLabel: "Next action",
+  stateLabel: "Closing state",
+  riskLabel: "Risk level",
+  urgencyLabel: "Urgency",
+  readyLabel: "Ready to close",
+  closedLabel: "Closed",
+  immediateAttentionLabel: "Needs immediate attention",
+  targetClosingDateLabel: "Target closing date",
+  appointmentLabel: "Closing appointment",
+  appointmentLocationLabel: "Appointment location",
+  finalReviewDeadlineLabel: "Final review deadline",
+  finalFundsDeadlineLabel: "Final funds confirmation deadline",
+  finalFundsAmountLabel: "Final funds amount confirmed",
+  notesLabel: "Closing notes",
+  internalActivityLabel: "Internal activity note"
+} as const;
+
+export const TRANSACTION_COMMAND_CENTER_COPY = {
+  title: "Buyer transaction command center",
+  intro:
+    "This is the buyer's unified operating view. It shows the current stage, what is blocked, what is at risk, and the next action that moves the transaction forward.",
+  propertyTitle: "Property context",
+  progressTitle: "Stage progress",
+  blockersTitle: "Active blockers",
+  riskTitle: "Top risks",
+  nextActionTitle: "Most important next action",
+  keyDatesTitle: "Key dates",
+  activityTitle: "Recent activity",
+  currentStageLabel: "Current stage",
+  overallStateLabel: "Overall status",
+  riskLevelLabel: "Overall risk",
+  progressLabel: "Progress",
+  emptyAction: "Start financial readiness",
+  readyAction: "Advance to the next stage",
+  completeLabel: "Transaction complete"
+} as const;
+
 export const NEGOTIATION_COPY = {
   title: "Negotiation tracking",
   intro:
@@ -499,6 +656,48 @@ export function buildWorkflowActivityLabel(
       return "Financial readiness updated";
     case "financial_readiness_status_changed":
       return "Financial readiness state changed";
+    case "offer_preparation_created":
+      return "Offer preparation started";
+    case "offer_preparation_updated":
+      return "Offer preparation updated";
+    case "offer_preparation_status_changed":
+      return "Offer preparation state changed";
+    case "offer_submission_created":
+      return "Offer submission started";
+    case "offer_submission_submitted":
+      return "Offer submitted";
+    case "offer_submission_countered":
+      return "Seller countered offer";
+    case "offer_submission_accepted":
+      return "Offer accepted";
+    case "offer_submission_rejected":
+      return "Offer rejected";
+    case "offer_submission_withdrawn":
+      return "Offer withdrawn";
+    case "offer_submission_expired":
+      return "Offer expired";
+    case "under_contract_created":
+      return "Under-contract coordination started";
+    case "under_contract_task_updated":
+      return "Contract task updated";
+    case "under_contract_milestone_reached":
+      return "Contract milestone updated";
+    case "under_contract_blocked":
+      return "Contract workflow blocked";
+    case "under_contract_ready_for_closing":
+      return "Ready for closing";
+    case "closing_readiness_created":
+      return "Closing readiness started";
+    case "closing_checklist_updated":
+      return "Closing checklist updated";
+    case "closing_milestone_reached":
+      return "Closing milestone updated";
+    case "closing_blocked":
+      return "Closing readiness blocked";
+    case "closing_ready_to_close":
+      return "Ready to close";
+    case "closing_completed":
+      return "Closing complete";
     case "shortlist_updated":
       return "Shortlist updated";
     case "shortlist_deleted":

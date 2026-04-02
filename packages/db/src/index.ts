@@ -11,7 +11,14 @@ import {
 } from "@nhalo/config";
 import { randomBytes } from "node:crypto";
 import type {
+  AlertCategory,
   AffordabilityClassification,
+  ClosingChecklistItemState,
+  ClosingChecklistItemType,
+  ClosingMilestoneType,
+  ClosingReadiness,
+  ClosingReadinessInputs,
+  ClosingReadinessSummary,
   CollaborationActivityRecord,
   CollaborationRole,
   CreditScoreRange,
@@ -47,9 +54,36 @@ import type {
   ListingRecord,
   MarketSnapshot,
   MarketSnapshotRepository,
+  NotificationActionTarget,
+  NotificationModuleName,
+  NotificationSeverity,
+  NotificationStatus,
   OpsActionRecord,
   OpsSummary,
   LoanType,
+  OfferPreparation,
+  OfferPreparationContingency,
+  OfferPreparationDownPaymentType,
+  OfferPreparationInputs,
+  OfferPreparationPossessionTiming,
+  OfferPreparationState,
+  OfferPreparationSummary,
+  OfferSubmission,
+  OfferSubmissionBuyerCounterDecision,
+  OfferSubmissionMethod,
+  OfferSubmissionSellerResponseState,
+  OfferSubmissionSummary,
+  UnderContractCoordination,
+  UnderContractCoordinationInputs,
+  UnderContractCoordinationSummary,
+  UnifiedActivityActorType,
+  UnifiedActivityEventCategory,
+  UnifiedActivityModuleName,
+  UnifiedActivityRecord,
+  UnifiedActivityTriggerType,
+  ContractTaskState,
+  ContractTaskType,
+  CoordinationMilestoneType,
   PlanSummary,
   PlanTier,
   PartnerUsageSummary,
@@ -85,8 +119,14 @@ import type {
   ValidationSummary,
   UsageFrictionSummary,
   UsageFunnelSummary,
+  WorkflowNotification,
+  WorkflowNotificationHistoryEvent,
   WorkflowActivityRecord
 } from "@nhalo/types";
+import {
+  evaluateClosingReadiness,
+  toClosingReadinessSummary
+} from "./closing-readiness";
 import {
   evaluateFinancialReadiness,
   toFinancialReadinessSummary
@@ -95,6 +135,18 @@ import {
   evaluateOfferReadiness,
   toOfferReadinessRecommendation
 } from "./offer-readiness";
+import {
+  evaluateOfferPreparation,
+  toOfferPreparationSummary
+} from "./offer-preparation";
+import {
+  evaluateOfferSubmission,
+  toOfferSubmissionSummary
+} from "./offer-submission";
+import {
+  evaluateUnderContractCoordination,
+  toUnderContractCoordinationSummary
+} from "./under-contract";
 import { evaluateNegotiation, toNegotiationSummary } from "./negotiation";
 
 function randomToken(length = 32): string {
@@ -127,6 +179,152 @@ function olderThanDays(timestamp: string, days: number): boolean {
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function blockerCodes(value: Array<{ code: string }> | null | undefined): string[] {
+  return [...new Set((value ?? []).map((entry) => entry.code))].sort();
+}
+
+function stringListDifference(next: string[], previous: string[]): string[] {
+  return next.filter((value) => !previous.includes(value));
+}
+
+function deadlineEventCategoryFromDueAt(
+  dueAt?: string | null,
+  now = new Date().toISOString()
+): UnifiedActivityEventCategory {
+  if (!dueAt) {
+    return "DEADLINE_APPROACHING";
+  }
+  return new Date(dueAt).getTime() <= new Date(now).getTime()
+    ? "DEADLINE_MISSED"
+    : "DEADLINE_APPROACHING";
+}
+
+function buildChangeActivityEntries(input: {
+  workflowId?: string | null;
+  sessionId?: string | null;
+  propertyId?: string | null;
+  propertyAddressLabel?: string | null;
+  shortlistId?: string | null;
+  moduleName: UnifiedActivityModuleName;
+  subjectType: string;
+  subjectId: string;
+  stateLabel: string;
+  previousState?: string | null;
+  nextState?: string | null;
+  previousBlockers?: Array<{ code: string }> | null;
+  nextBlockers?: Array<{ code: string }> | null;
+  previousRisk?: string | null;
+  nextRisk?: string | null;
+  previousRecommendation?: string | null;
+  nextRecommendation?: string | null;
+  previousNextAction?: string | null;
+  nextNextAction?: string | null;
+  now: string;
+  triggerType?: UnifiedActivityTriggerType;
+}): Array<Omit<UnifiedActivityRecord, "id">> {
+  const entries: Array<Omit<UnifiedActivityRecord, "id">> = [];
+  const base = {
+    workflowId: input.workflowId ?? null,
+    sessionId: input.sessionId ?? null,
+    propertyId: input.propertyId ?? null,
+    propertyAddressLabel: input.propertyAddressLabel ?? null,
+    shortlistId: input.shortlistId ?? null,
+    moduleName: input.moduleName,
+    subjectType: input.subjectType,
+    subjectId: input.subjectId,
+    actorType: "SYSTEM" as const,
+    createdAt: input.now
+  };
+
+  if (input.previousState !== undefined && input.previousState !== input.nextState) {
+    entries.push({
+      ...base,
+      eventCategory: "STATE_CHANGED",
+      title: `${input.stateLabel} changed`,
+      summary: `${input.stateLabel} changed from ${input.previousState ?? "unknown"} to ${input.nextState ?? "unknown"}.`,
+      oldValueSnapshot: { state: input.previousState ?? null },
+      newValueSnapshot: { state: input.nextState ?? null },
+      triggerType: input.triggerType ?? "DERIVED_RECALCULATION",
+      triggerLabel: "state_changed"
+    });
+  }
+
+  const previousBlockerCodes = blockerCodes(input.previousBlockers);
+  const nextBlockerCodes = blockerCodes(input.nextBlockers);
+  const createdBlockers = stringListDifference(nextBlockerCodes, previousBlockerCodes);
+  const resolvedBlockers = stringListDifference(previousBlockerCodes, nextBlockerCodes);
+
+  if (createdBlockers.length > 0) {
+    entries.push({
+      ...base,
+      eventCategory: "BLOCKER_CREATED",
+      title: createdBlockers.length === 1 ? "New blocker detected" : "New blockers detected",
+      summary: `The system detected ${createdBlockers.length} new blocker${createdBlockers.length === 1 ? "" : "s"}: ${createdBlockers.join(", ")}.`,
+      oldValueSnapshot: { blockers: previousBlockerCodes },
+      newValueSnapshot: { blockers: nextBlockerCodes },
+      triggerType: input.triggerType ?? "SYSTEM_RULE",
+      triggerLabel: "blocker_created"
+    });
+  }
+
+  if (resolvedBlockers.length > 0) {
+    entries.push({
+      ...base,
+      eventCategory: "BLOCKER_RESOLVED",
+      title: resolvedBlockers.length === 1 ? "Blocker resolved" : "Blockers resolved",
+      summary: `The system cleared ${resolvedBlockers.length} blocker${resolvedBlockers.length === 1 ? "" : "s"}: ${resolvedBlockers.join(", ")}.`,
+      oldValueSnapshot: { blockers: previousBlockerCodes },
+      newValueSnapshot: { blockers: nextBlockerCodes },
+      triggerType: input.triggerType ?? "SYSTEM_RULE",
+      triggerLabel: "blocker_resolved"
+    });
+  }
+
+  if (input.previousRisk !== undefined && input.previousRisk !== input.nextRisk) {
+    entries.push({
+      ...base,
+      eventCategory: "RISK_CHANGED",
+      title: "Risk changed",
+      summary: `Risk changed from ${input.previousRisk ?? "unknown"} to ${input.nextRisk ?? "unknown"}.`,
+      oldValueSnapshot: { risk: input.previousRisk ?? null },
+      newValueSnapshot: { risk: input.nextRisk ?? null },
+      triggerType: input.triggerType ?? "DERIVED_RECALCULATION",
+      triggerLabel: "risk_changed"
+    });
+  }
+
+  if (
+    input.previousRecommendation !== undefined &&
+    input.previousRecommendation !== input.nextRecommendation
+  ) {
+    entries.push({
+      ...base,
+      eventCategory: "RECOMMENDATION_CHANGED",
+      title: "Recommendation changed",
+      summary: input.nextRecommendation ?? "The system recommendation changed.",
+      oldValueSnapshot: { recommendation: input.previousRecommendation ?? null },
+      newValueSnapshot: { recommendation: input.nextRecommendation ?? null },
+      triggerType: input.triggerType ?? "DERIVED_RECALCULATION",
+      triggerLabel: "recommendation_changed"
+    });
+  }
+
+  if (input.previousNextAction !== undefined && input.previousNextAction !== input.nextNextAction) {
+    entries.push({
+      ...base,
+      eventCategory: "NEXT_ACTION_CHANGED",
+      title: "Next action changed",
+      summary: `Your next action is now: ${input.nextNextAction ?? "Review the workflow"}.`,
+      oldValueSnapshot: { nextAction: input.previousNextAction ?? null },
+      newValueSnapshot: { nextAction: input.nextNextAction ?? null },
+      triggerType: input.triggerType ?? "DERIVED_RECALCULATION",
+      triggerLabel: "next_action_changed"
+    });
+  }
+
+  return entries;
 }
 
 type StoredSnapshot = {
@@ -166,6 +364,13 @@ type StoredSharedShortlist = SharedShortlist;
 type StoredSharedComment = SharedComment;
 type StoredReviewerDecision = ReviewerDecision;
 type StoredFinancialReadiness = FinancialReadiness;
+type StoredOfferPreparation = OfferPreparation;
+type StoredOfferSubmission = OfferSubmission;
+type StoredUnderContractCoordination = UnderContractCoordination;
+type StoredClosingReadiness = ClosingReadiness;
+type StoredWorkflowNotification = WorkflowNotification;
+type StoredWorkflowNotificationHistoryEvent = WorkflowNotificationHistoryEvent;
+type StoredUnifiedActivityRecord = UnifiedActivityRecord;
 type StoredOfferReadiness = OfferReadiness;
 type StoredNegotiationRecord = NegotiationRecord;
 type StoredNegotiationEvent = NegotiationEvent;
@@ -851,6 +1056,34 @@ function mapStoredShortlistItem(item: StoredShortlistItem): ShortlistItem {
   return clone(item);
 }
 
+function mapStoredOfferPreparation(record: StoredOfferPreparation): OfferPreparation {
+  return clone(record);
+}
+
+function mapStoredOfferSubmission(record: StoredOfferSubmission): OfferSubmission {
+  return clone(record);
+}
+
+function mapStoredUnderContractCoordination(
+  record: StoredUnderContractCoordination
+): UnderContractCoordination {
+  return clone(record);
+}
+
+function mapStoredClosingReadiness(record: StoredClosingReadiness): ClosingReadiness {
+  return clone(record);
+}
+
+function mapStoredWorkflowNotification(record: StoredWorkflowNotification): WorkflowNotification {
+  return clone(record);
+}
+
+function mapStoredWorkflowNotificationHistoryEvent(
+  record: StoredWorkflowNotificationHistoryEvent
+): WorkflowNotificationHistoryEvent {
+  return clone(record);
+}
+
 function mapStoredOfferReadiness(record: StoredOfferReadiness): OfferReadiness {
   return clone(record);
 }
@@ -892,6 +1125,27 @@ function workflowEventNames(): WorkflowActivityRecord["eventType"][] {
     "financial_readiness_created",
     "financial_readiness_updated",
     "financial_readiness_status_changed",
+    "offer_preparation_created",
+    "offer_preparation_updated",
+    "offer_preparation_status_changed",
+    "offer_submission_created",
+    "offer_submission_submitted",
+    "offer_submission_countered",
+    "offer_submission_accepted",
+    "offer_submission_rejected",
+    "offer_submission_withdrawn",
+    "offer_submission_expired",
+    "under_contract_created",
+    "under_contract_task_updated",
+    "under_contract_milestone_reached",
+    "under_contract_blocked",
+    "under_contract_ready_for_closing",
+    "closing_readiness_created",
+    "closing_checklist_updated",
+    "closing_milestone_reached",
+    "closing_blocked",
+    "closing_ready_to_close",
+    "closing_completed",
     "shortlist_created",
     "shortlist_updated",
     "shortlist_deleted",
@@ -939,6 +1193,14 @@ function toWorkflowActivity(event: StoredValidationEvent): WorkflowActivityRecor
     eventType: event.eventName as WorkflowActivityRecord["eventType"],
     shortlistId: (event.payload?.shortlistId as string | null | undefined) ?? null,
     shortlistItemId: (event.payload?.shortlistItemId as string | null | undefined) ?? null,
+    offerPreparationId:
+      (event.payload?.offerPreparationId as string | null | undefined) ?? null,
+    offerSubmissionId:
+      (event.payload?.offerSubmissionId as string | null | undefined) ?? null,
+    underContractId:
+      (event.payload?.underContractId as string | null | undefined) ?? null,
+    closingReadinessId:
+      (event.payload?.closingReadinessId as string | null | undefined) ?? null,
     offerReadinessId: (event.payload?.offerReadinessId as string | null | undefined) ?? null,
     negotiationRecordId:
       (event.payload?.negotiationRecordId as string | null | undefined) ?? null,
@@ -1085,6 +1347,10 @@ export class InMemorySearchRepository implements SearchRepository {
   public readonly shortlists: StoredShortlist[] = [];
   public readonly shortlistItems: StoredShortlistItem[] = [];
   public readonly financialReadinessRecords: StoredFinancialReadiness[] = [];
+  public readonly offerPreparationRecords: StoredOfferPreparation[] = [];
+  public readonly offerSubmissionRecords: StoredOfferSubmission[] = [];
+  public readonly underContractRecords: StoredUnderContractCoordination[] = [];
+  public readonly closingReadinessRecords: StoredClosingReadiness[] = [];
   public readonly offerReadinessRecords: StoredOfferReadiness[] = [];
   public readonly negotiations: StoredNegotiationRecord[] = [];
   public readonly negotiationEvents: StoredNegotiationEvent[] = [];
@@ -1099,6 +1365,56 @@ export class InMemorySearchRepository implements SearchRepository {
   public readonly feedbackRecords: StoredFeedback[] = [];
   public readonly validationEvents: StoredValidationEvent[] = [];
   public readonly dataQualityEvents: StoredDataQualityEvent[] = [];
+  public readonly workflowNotifications: StoredWorkflowNotification[] = [];
+  public readonly workflowNotificationHistory: StoredWorkflowNotificationHistoryEvent[] = [];
+  public readonly unifiedActivityRecords: StoredUnifiedActivityRecord[] = [];
+
+  private pushWorkflowNotificationHistory(
+    notificationId: string,
+    eventType: WorkflowNotificationHistoryEvent["eventType"],
+    previousValue: string | null,
+    nextValue: string | null,
+    createdAt: string
+  ): void {
+    this.workflowNotificationHistory.push({
+      id: createId("notification-history"),
+      notificationId,
+      eventType,
+      previousValue,
+      nextValue,
+      createdAt
+    });
+  }
+
+  private pushUnifiedActivity(
+    payload: Omit<UnifiedActivityRecord, "id"> & { id?: string }
+  ): StoredUnifiedActivityRecord {
+    const record: StoredUnifiedActivityRecord = {
+      id: payload.id ?? createId("activity"),
+      workflowId: payload.workflowId ?? null,
+      sessionId: payload.sessionId ?? null,
+      propertyId: payload.propertyId ?? null,
+      propertyAddressLabel: payload.propertyAddressLabel ?? null,
+      shortlistId: payload.shortlistId ?? null,
+      moduleName: payload.moduleName,
+      eventCategory: payload.eventCategory,
+      subjectType: payload.subjectType,
+      subjectId: payload.subjectId,
+      title: payload.title,
+      summary: payload.summary,
+      oldValueSnapshot: payload.oldValueSnapshot ?? null,
+      newValueSnapshot: payload.newValueSnapshot ?? null,
+      triggerType: payload.triggerType,
+      triggerLabel: payload.triggerLabel,
+      actorType: payload.actorType,
+      actorId: payload.actorId ?? null,
+      relatedNotificationId: payload.relatedNotificationId ?? null,
+      relatedExplanationId: payload.relatedExplanationId ?? null,
+      createdAt: payload.createdAt
+    };
+    this.unifiedActivityRecords.push(record);
+    return record;
+  }
 
   async saveSearch(payload: SearchPersistenceInput): Promise<{ historyRecordId: string | null }> {
     const historyRecordId = createId("history");
@@ -1564,6 +1880,26 @@ export class InMemorySearchRepository implements SearchRepository {
       this.offerReadinessRecords.length,
       ...this.offerReadinessRecords.filter((entry) => entry.shortlistId !== id)
     );
+    this.offerPreparationRecords.splice(
+      0,
+      this.offerPreparationRecords.length,
+      ...this.offerPreparationRecords.filter((entry) => entry.shortlistId !== id)
+    );
+    this.offerSubmissionRecords.splice(
+      0,
+      this.offerSubmissionRecords.length,
+      ...this.offerSubmissionRecords.filter((entry) => entry.shortlistId !== id)
+    );
+    this.underContractRecords.splice(
+      0,
+      this.underContractRecords.length,
+      ...this.underContractRecords.filter((entry) => entry.shortlistId !== id)
+    );
+    this.closingReadinessRecords.splice(
+      0,
+      this.closingReadinessRecords.length,
+      ...this.closingReadinessRecords.filter((entry) => entry.shortlistId !== id)
+    );
     const removedNegotiationIds = this.negotiations
       .filter((entry) => entry.shortlistId === id)
       .map((entry) => entry.id);
@@ -1701,6 +2037,45 @@ export class InMemorySearchRepository implements SearchRepository {
       },
       createdAt: now
     });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      moduleName: "financial_readiness",
+      eventCategory: "RECORD_CREATED",
+      subjectType: "financial_readiness",
+      subjectId: record.id,
+      title: "Financial readiness record created",
+      summary: `Financial readiness started with state ${record.readinessState.toLowerCase()}.`,
+      newValueSnapshot: {
+        readinessState: record.readinessState,
+        affordabilityClassification: record.affordabilityClassification,
+        nextAction: record.nextAction
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "financial_readiness_created",
+      actorType: "USER",
+      createdAt: now
+    });
+    for (const entry of buildChangeActivityEntries({
+      sessionId: record.sessionId ?? null,
+      moduleName: "financial_readiness",
+      subjectType: "financial_readiness",
+      subjectId: record.id,
+      stateLabel: "Financial readiness state",
+      previousState: null,
+      nextState: record.readinessState,
+      previousBlockers: [],
+      nextBlockers: record.blockers,
+      previousRisk: null,
+      nextRisk: record.risk,
+      previousRecommendation: null,
+      nextRecommendation: record.recommendation,
+      previousNextAction: null,
+      nextNextAction: record.nextAction,
+      now,
+      triggerType: "DERIVED_RECALCULATION"
+    })) {
+      this.pushUnifiedActivity(entry);
+    }
 
     return mapStoredFinancialReadiness(record);
   }
@@ -1745,6 +2120,7 @@ export class InMemorySearchRepository implements SearchRepository {
     }
 
     const now = new Date().toISOString();
+    const previousRecord = clone(record);
     const previousState = record.readinessState;
     const evaluation = evaluateFinancialReadiness({
       now,
@@ -1781,6 +2157,50 @@ export class InMemorySearchRepository implements SearchRepository {
         createdAt: now
       });
     }
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      moduleName: "financial_readiness",
+      eventCategory: "RECORD_UPDATED",
+      subjectType: "financial_readiness",
+      subjectId: record.id,
+      title: "Financial readiness updated",
+      summary: "Financial readiness details were updated.",
+      oldValueSnapshot: {
+        readinessState: previousRecord.readinessState,
+        affordabilityClassification: previousRecord.affordabilityClassification,
+        nextAction: previousRecord.nextAction
+      },
+      newValueSnapshot: {
+        readinessState: record.readinessState,
+        affordabilityClassification: record.affordabilityClassification,
+        nextAction: record.nextAction
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "financial_readiness_updated",
+      actorType: "USER",
+      createdAt: now
+    });
+    for (const entry of buildChangeActivityEntries({
+      sessionId: record.sessionId ?? null,
+      moduleName: "financial_readiness",
+      subjectType: "financial_readiness",
+      subjectId: record.id,
+      stateLabel: "Financial readiness state",
+      previousState: previousRecord.readinessState,
+      nextState: record.readinessState,
+      previousBlockers: previousRecord.blockers,
+      nextBlockers: record.blockers,
+      previousRisk: previousRecord.risk,
+      nextRisk: record.risk,
+      previousRecommendation: previousRecord.recommendation,
+      nextRecommendation: record.recommendation,
+      previousNextAction: previousRecord.nextAction,
+      nextNextAction: record.nextAction,
+      now,
+      triggerType: "DERIVED_RECALCULATION"
+    })) {
+      this.pushUnifiedActivity(entry);
+    }
 
     return mapStoredFinancialReadiness(record);
   }
@@ -1788,6 +2208,1934 @@ export class InMemorySearchRepository implements SearchRepository {
   async getFinancialReadinessSummary(id: string): Promise<FinancialReadinessSummary | null> {
     const record = await this.getFinancialReadiness(id);
     return record ? toFinancialReadinessSummary(record) : null;
+  }
+
+  async createOfferPreparation(
+    payload: OfferPreparationInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<OfferPreparation | null> {
+    const financialReadiness = this.financialReadinessRecords.find(
+      (entry) => entry.id === payload.financialReadinessId
+    );
+    if (!financialReadiness) {
+      return null;
+    }
+
+    const existing = this.offerPreparationRecords.find(
+      (entry) =>
+        entry.propertyId === payload.propertyId &&
+        (payload.shortlistId ? entry.shortlistId === payload.shortlistId : true)
+    );
+    if (existing) {
+      return mapStoredOfferPreparation(existing);
+    }
+
+    const recommendedOfferPrice =
+      payload.offerReadinessId
+        ? this.offerReadinessRecords.find((entry) => entry.id === payload.offerReadinessId)
+            ?.recommendedOfferPrice ?? null
+        : this.offerReadinessRecords.find(
+            (entry) =>
+              entry.propertyId === payload.propertyId &&
+              (payload.shortlistId ? entry.shortlistId === payload.shortlistId : true)
+          )?.recommendedOfferPrice ?? null;
+    const now = new Date().toISOString();
+    const evaluation = evaluateOfferPreparation({
+      now,
+      financialReadiness,
+      recommendedOfferPrice,
+      sessionId: payload.sessionId ?? financialReadiness.sessionId ?? null,
+      partnerId: payload.partnerId ?? financialReadiness.partnerId ?? null,
+      patch: payload
+    });
+
+    const record: OfferPreparation = {
+      id: createId("offer-preparation"),
+      ...evaluation,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.offerPreparationRecords.push(record);
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "offer_preparation_created",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        offerPreparationId: record.id,
+        propertyId: record.propertyId,
+        shortlistId: record.shortlistId ?? null,
+        offerState: record.offerState
+      },
+      createdAt: now
+    });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "offer_preparation",
+      eventCategory: "RECORD_CREATED",
+      subjectType: "offer_preparation",
+      subjectId: record.id,
+      title: "Offer preparation started",
+      summary: `Offer preparation started for ${record.propertyAddressLabel}.`,
+      newValueSnapshot: {
+        offerState: record.offerState,
+        readinessToSubmit: record.readinessToSubmit,
+        nextAction: record.nextAction
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "offer_preparation_created",
+      actorType: "USER",
+      createdAt: now
+    });
+    for (const entry of buildChangeActivityEntries({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "offer_preparation",
+      subjectType: "offer_preparation",
+      subjectId: record.id,
+      stateLabel: "Offer preparation state",
+      previousState: null,
+      nextState: record.offerState,
+      previousBlockers: [],
+      nextBlockers: record.blockers,
+      previousRisk: null,
+      nextRisk: record.risk,
+      previousRecommendation: null,
+      nextRecommendation: record.recommendation,
+      previousNextAction: null,
+      nextNextAction: record.nextAction,
+      now,
+      triggerType: "DERIVED_RECALCULATION"
+    })) {
+      this.pushUnifiedActivity(entry);
+    }
+
+    return mapStoredOfferPreparation(record);
+  }
+
+  async listOfferPreparations(shortlistId: string): Promise<OfferPreparation[]> {
+    return this.offerPreparationRecords
+      .filter((entry) => entry.shortlistId === shortlistId)
+      .map((entry) => mapStoredOfferPreparation(entry));
+  }
+
+  async getOfferPreparation(id: string): Promise<OfferPreparation | null> {
+    const record = this.offerPreparationRecords.find((entry) => entry.id === id) ?? null;
+    return record ? mapStoredOfferPreparation(record) : null;
+  }
+
+  async getLatestOfferPreparation(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<OfferPreparation | null> {
+    const record =
+      this.offerPreparationRecords
+        .filter(
+          (entry) =>
+            entry.propertyId === payload.propertyId &&
+            (payload.shortlistId ? entry.shortlistId === payload.shortlistId : true) &&
+            (payload.sessionId ? entry.sessionId === payload.sessionId : true)
+        )
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
+
+    return record ? mapStoredOfferPreparation(record) : null;
+  }
+
+  async updateOfferPreparation(
+    id: string,
+    patch: {
+      propertyAddressLabel?: string;
+      offerPrice?: number | null;
+      earnestMoneyAmount?: number | null;
+      downPaymentType?: OfferPreparationDownPaymentType | null;
+      downPaymentAmount?: number | null;
+      downPaymentPercent?: number | null;
+      financingContingency?: OfferPreparationContingency | null;
+      inspectionContingency?: OfferPreparationContingency | null;
+      appraisalContingency?: OfferPreparationContingency | null;
+      closingTimelineDays?: number | null;
+      possessionTiming?: OfferPreparationPossessionTiming | null;
+      possessionDaysAfterClosing?: number | null;
+      sellerConcessionsRequestedAmount?: number | null;
+      notes?: string | null;
+      buyerRationale?: string | null;
+    }
+  ): Promise<OfferPreparation | null> {
+    const record = this.offerPreparationRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const financialReadiness =
+      this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId) ?? null;
+    if (!financialReadiness) {
+      return null;
+    }
+
+    const recommendedOfferPrice =
+      record.offerReadinessId
+        ? this.offerReadinessRecords.find((entry) => entry.id === record.offerReadinessId)
+            ?.recommendedOfferPrice ?? null
+        : this.offerReadinessRecords.find(
+            (entry) =>
+              entry.propertyId === record.propertyId &&
+              (record.shortlistId ? entry.shortlistId === record.shortlistId : true)
+          )?.recommendedOfferPrice ?? null;
+    const now = new Date().toISOString();
+    const previousRecord = clone(record);
+    const previousState = record.offerState;
+    const evaluation = evaluateOfferPreparation({
+      now,
+      current: record,
+      patch,
+      financialReadiness,
+      recommendedOfferPrice
+    });
+
+    Object.assign(record, evaluation, {
+      updatedAt: now
+    });
+
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "offer_preparation_updated",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        offerPreparationId: record.id,
+        propertyId: record.propertyId,
+        offerState: record.offerState
+      },
+      createdAt: now
+    });
+
+    if (previousState !== record.offerState) {
+      this.validationEvents.push({
+        id: createId("workflow"),
+        eventName: "offer_preparation_status_changed",
+        sessionId: record.sessionId ?? null,
+        payload: {
+          offerPreparationId: record.id,
+          propertyId: record.propertyId,
+          fromState: previousState,
+          toState: record.offerState
+        },
+        createdAt: now
+      });
+    }
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "offer_preparation",
+      eventCategory: "RECORD_UPDATED",
+      subjectType: "offer_preparation",
+      subjectId: record.id,
+      title: "Offer preparation updated",
+      summary: "Offer terms were updated.",
+      oldValueSnapshot: {
+        offerState: previousRecord.offerState,
+        offerPrice: previousRecord.offerPrice,
+        nextAction: previousRecord.nextAction
+      },
+      newValueSnapshot: {
+        offerState: record.offerState,
+        offerPrice: record.offerPrice,
+        nextAction: record.nextAction
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "offer_preparation_updated",
+      actorType: "USER",
+      createdAt: now
+    });
+    for (const entry of buildChangeActivityEntries({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "offer_preparation",
+      subjectType: "offer_preparation",
+      subjectId: record.id,
+      stateLabel: "Offer preparation state",
+      previousState: previousRecord.offerState,
+      nextState: record.offerState,
+      previousBlockers: previousRecord.blockers,
+      nextBlockers: record.blockers,
+      previousRisk: previousRecord.risk,
+      nextRisk: record.risk,
+      previousRecommendation: previousRecord.recommendation,
+      nextRecommendation: record.recommendation,
+      previousNextAction: previousRecord.nextAction,
+      nextNextAction: record.nextAction,
+      now,
+      triggerType: "DERIVED_RECALCULATION"
+    })) {
+      this.pushUnifiedActivity(entry);
+    }
+
+    return mapStoredOfferPreparation(record);
+  }
+
+  async getOfferPreparationSummary(id: string): Promise<OfferPreparationSummary | null> {
+    const record = await this.getOfferPreparation(id);
+    return record ? toOfferPreparationSummary(record) : null;
+  }
+
+  private syncOfferSubmissionRecord(record: OfferSubmission): OfferSubmission {
+    const offerPreparation =
+      this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId) ?? null;
+    if (!offerPreparation) {
+      return record;
+    }
+
+    const financialReadiness =
+      (record.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId)
+        : null) ?? null;
+    const now = new Date().toISOString();
+    const previousState = record.submissionState;
+    const evaluation = evaluateOfferSubmission({
+      now,
+      current: record,
+      offerPreparation,
+      financialReadiness
+    });
+
+    Object.assign(record, evaluation, {
+      updatedAt: previousState === evaluation.submissionState ? record.updatedAt : now
+    });
+
+    if (previousState !== record.submissionState && record.submissionState === "EXPIRED") {
+      record.activityLog.push({
+        type: "offer_expired",
+        label: "Offer expired",
+        details: "The response window elapsed without a completed response.",
+        createdAt: now
+      });
+      this.validationEvents.push({
+        id: createId("workflow"),
+        eventName: "offer_submission_expired",
+        sessionId: record.sessionId ?? null,
+        payload: {
+          shortlistId: record.shortlistId ?? null,
+          offerPreparationId: record.offerPreparationId,
+          offerSubmissionId: record.id,
+          propertyId: record.propertyId,
+          fromState: previousState,
+          toState: record.submissionState
+        },
+        createdAt: now
+      });
+    }
+
+    return record;
+  }
+
+  async createOfferSubmission(
+    payload: OfferSubmissionInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<OfferSubmission | null> {
+    const offerPreparation =
+      this.offerPreparationRecords.find((entry) => entry.id === payload.offerPreparationId) ?? null;
+    if (!offerPreparation) {
+      return null;
+    }
+
+    const existing = this.offerSubmissionRecords.find(
+      (entry) =>
+        entry.propertyId === payload.propertyId &&
+        (payload.shortlistId ? entry.shortlistId === payload.shortlistId : true)
+    );
+    if (existing) {
+      return mapStoredOfferSubmission(this.syncOfferSubmissionRecord(existing));
+    }
+
+    const financialReadiness =
+      this.financialReadinessRecords.find(
+        (entry) => entry.id === (payload.financialReadinessId ?? offerPreparation.financialReadinessId)
+      ) ?? null;
+    const now = new Date().toISOString();
+    const evaluation = evaluateOfferSubmission({
+      now,
+      offerPreparation,
+      financialReadiness,
+      sessionId: payload.sessionId ?? offerPreparation.sessionId ?? null,
+      partnerId: payload.partnerId ?? offerPreparation.partnerId ?? null,
+      patch: payload
+    });
+
+    const record: OfferSubmission = {
+      id: createId("offer-submission"),
+      ...evaluation,
+      activityLog: [
+        {
+          type: "record_created",
+          label: "Submission record created",
+          details: null,
+          createdAt: now
+        }
+      ],
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.offerSubmissionRecords.push(record);
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "offer_submission_created",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        shortlistId: record.shortlistId ?? null,
+        offerPreparationId: record.offerPreparationId,
+        offerSubmissionId: record.id,
+        propertyId: record.propertyId,
+        submissionState: record.submissionState
+      },
+      createdAt: now
+    });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "offer_submission",
+      eventCategory: "RECORD_CREATED",
+      subjectType: "offer_submission",
+      subjectId: record.id,
+      title: "Offer submission record created",
+      summary: `Offer submission tracking started for ${record.propertyAddressLabel}.`,
+      newValueSnapshot: {
+        submissionState: record.submissionState,
+        sellerResponseState: record.sellerResponseState,
+        nextAction: record.nextAction
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "offer_submission_created",
+      actorType: "USER",
+      createdAt: now
+    });
+
+    return mapStoredOfferSubmission(record);
+  }
+
+  async listOfferSubmissions(shortlistId: string): Promise<OfferSubmission[]> {
+    const records = this.offerSubmissionRecords
+      .filter((entry) => entry.shortlistId === shortlistId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    for (const record of records) {
+      this.syncOfferSubmissionRecord(record);
+    }
+    return records.map((entry) => mapStoredOfferSubmission(entry));
+  }
+
+  async getOfferSubmission(id: string): Promise<OfferSubmission | null> {
+    const record = this.offerSubmissionRecords.find((entry) => entry.id === id) ?? null;
+    return record ? mapStoredOfferSubmission(this.syncOfferSubmissionRecord(record)) : null;
+  }
+
+  async getLatestOfferSubmission(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<OfferSubmission | null> {
+    const record =
+      this.offerSubmissionRecords
+        .filter(
+          (entry) =>
+            entry.propertyId === payload.propertyId &&
+            (payload.shortlistId ? entry.shortlistId === payload.shortlistId : true) &&
+            (payload.sessionId ? entry.sessionId === payload.sessionId : true)
+        )
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
+
+    return record ? mapStoredOfferSubmission(this.syncOfferSubmissionRecord(record)) : null;
+  }
+
+  async submitOfferSubmission(id: string, submittedAt?: string | null): Promise<OfferSubmission | null> {
+    const record = this.offerSubmissionRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const offerPreparation =
+      this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId) ?? null;
+    if (!offerPreparation || !offerPreparation.readinessToSubmit) {
+      return null;
+    }
+
+    const financialReadiness =
+      this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId) ?? null;
+    const now = new Date().toISOString();
+    const actualSubmittedAt = submittedAt ?? now;
+    const previousState = this.syncOfferSubmissionRecord(record).submissionState;
+    const evaluation = evaluateOfferSubmission({
+      now,
+      current: record,
+      offerPreparation,
+      financialReadiness,
+      patch: {
+        submittedAt: actualSubmittedAt,
+        sellerResponseState: "NO_RESPONSE"
+      }
+    });
+
+    Object.assign(record, evaluation, {
+      updatedAt: now
+    });
+    record.activityLog.push({
+      type: "offer_submitted",
+      label: "Offer submitted",
+      details: `Offer submission recorded for ${new Date(actualSubmittedAt).toLocaleString("en-US")}.`,
+      createdAt: now
+    });
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "offer_submission_submitted",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        shortlistId: record.shortlistId ?? null,
+        offerPreparationId: record.offerPreparationId,
+        offerSubmissionId: record.id,
+        propertyId: record.propertyId,
+        fromState: previousState,
+        toState: record.submissionState
+      },
+      createdAt: now
+    });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "offer_submission",
+      eventCategory: "STATE_CHANGED",
+      subjectType: "offer_submission",
+      subjectId: record.id,
+      title: "Offer submitted",
+      summary: `The offer was recorded as submitted on ${new Date(actualSubmittedAt).toLocaleString("en-US")}.`,
+      oldValueSnapshot: { submissionState: previousState },
+      newValueSnapshot: { submissionState: record.submissionState, submittedAt: actualSubmittedAt },
+      triggerType: "STATUS_TRANSITION",
+      triggerLabel: "offer_submission_submitted",
+      actorType: "USER",
+      createdAt: now
+    });
+
+    return mapStoredOfferSubmission(record);
+  }
+
+  async updateOfferSubmission(
+    id: string,
+    patch: {
+      submissionMethod?: OfferSubmissionMethod | null;
+      offerExpirationAt?: string | null;
+      sellerResponseState?: OfferSubmissionSellerResponseState | null;
+      sellerRespondedAt?: string | null;
+      buyerCounterDecision?: OfferSubmissionBuyerCounterDecision | null;
+      withdrawnAt?: string | null;
+      withdrawalReason?: string | null;
+      counterofferPrice?: number | null;
+      counterofferClosingTimelineDays?: number | null;
+      counterofferFinancingContingency?: OfferPreparationContingency | null;
+      counterofferInspectionContingency?: OfferPreparationContingency | null;
+      counterofferAppraisalContingency?: OfferPreparationContingency | null;
+      counterofferExpirationAt?: string | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<OfferSubmission | null> {
+    const record = this.offerSubmissionRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const offerPreparation =
+      this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId) ?? null;
+    if (!offerPreparation) {
+      return null;
+    }
+
+    const financialReadiness =
+      this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId) ?? null;
+    const now = new Date().toISOString();
+    const previousRecord = clone(this.syncOfferSubmissionRecord(record));
+    const previousState = this.syncOfferSubmissionRecord(record).submissionState;
+    const evaluation = evaluateOfferSubmission({
+      now,
+      current: record,
+      offerPreparation,
+      financialReadiness,
+      patch
+    });
+
+    Object.assign(record, evaluation, {
+      updatedAt: now
+    });
+
+    const eventMap: Partial<Record<OfferSubmission["submissionState"], WorkflowActivityRecord["eventType"]>> = {
+      COUNTERED: "offer_submission_countered",
+      ACCEPTED: "offer_submission_accepted",
+      REJECTED: "offer_submission_rejected",
+      WITHDRAWN: "offer_submission_withdrawn",
+      EXPIRED: "offer_submission_expired"
+    };
+    const activityMap: Partial<Record<OfferSubmission["submissionState"], OfferSubmission["activityLog"][number]["type"]>> = {
+      COUNTERED: "seller_countered",
+      ACCEPTED: "seller_accepted",
+      REJECTED: "seller_rejected",
+      WITHDRAWN: "buyer_withdrew",
+      EXPIRED: "offer_expired"
+    };
+    const labelMap: Partial<Record<OfferSubmission["submissionState"], string>> = {
+      COUNTERED: "Seller countered",
+      ACCEPTED: "Seller accepted",
+      REJECTED: "Seller rejected",
+      WITHDRAWN: "Buyer withdrew offer",
+      EXPIRED: "Offer expired"
+    };
+
+    if (previousState !== record.submissionState && eventMap[record.submissionState]) {
+      record.activityLog.push({
+        type: activityMap[record.submissionState]!,
+        label: labelMap[record.submissionState]!,
+        details: patch.internalActivityNote ?? null,
+        createdAt: now
+      });
+      this.validationEvents.push({
+        id: createId("workflow"),
+        eventName: eventMap[record.submissionState]!,
+        sessionId: record.sessionId ?? null,
+        payload: {
+          shortlistId: record.shortlistId ?? null,
+          offerPreparationId: record.offerPreparationId,
+          offerSubmissionId: record.id,
+          propertyId: record.propertyId,
+          fromState: previousState,
+          toState: record.submissionState
+        },
+        createdAt: now
+      });
+    } else if (patch.internalActivityNote?.trim()) {
+      record.activityLog.push({
+        type: "note_added",
+        label: "Submission note added",
+        details: patch.internalActivityNote.trim(),
+        createdAt: now
+      });
+    }
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "offer_submission",
+      eventCategory: "RECORD_UPDATED",
+      subjectType: "offer_submission",
+      subjectId: record.id,
+      title: "Offer submission updated",
+      summary: "Offer submission details were updated.",
+      oldValueSnapshot: {
+        submissionState: previousRecord.submissionState,
+        sellerResponseState: previousRecord.sellerResponseState,
+        nextAction: previousRecord.nextAction
+      },
+      newValueSnapshot: {
+        submissionState: record.submissionState,
+        sellerResponseState: record.sellerResponseState,
+        nextAction: record.nextAction
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "offer_submission_updated",
+      actorType: "USER",
+      createdAt: now
+    });
+    for (const entry of buildChangeActivityEntries({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "offer_submission",
+      subjectType: "offer_submission",
+      subjectId: record.id,
+      stateLabel: "Offer submission state",
+      previousState: previousRecord.submissionState,
+      nextState: record.submissionState,
+      previousBlockers: previousRecord.blockers,
+      nextBlockers: record.blockers,
+      previousRisk: previousRecord.risk,
+      nextRisk: record.risk,
+      previousRecommendation: previousRecord.recommendation,
+      nextRecommendation: record.recommendation,
+      previousNextAction: previousRecord.nextAction,
+      nextNextAction: record.nextAction,
+      now,
+      triggerType: "DERIVED_RECALCULATION"
+    })) {
+      this.pushUnifiedActivity(entry);
+    }
+
+    return mapStoredOfferSubmission(record);
+  }
+
+  async respondToOfferSubmissionCounter(
+    id: string,
+    decision: OfferSubmissionBuyerCounterDecision
+  ): Promise<OfferSubmission | null> {
+    const record = this.offerSubmissionRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const offerPreparation =
+      this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId) ?? null;
+    if (!offerPreparation || record.sellerResponseState !== "COUNTERED") {
+      return null;
+    }
+
+    const financialReadiness =
+      this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId) ?? null;
+    const now = new Date().toISOString();
+    const previousState = this.syncOfferSubmissionRecord(record).submissionState;
+    const evaluation = evaluateOfferSubmission({
+      now,
+      current: record,
+      offerPreparation,
+      financialReadiness,
+      patch: {
+        buyerCounterDecision: decision
+      }
+    });
+
+    Object.assign(record, evaluation, {
+      updatedAt: now
+    });
+    record.activityLog.push({
+      type: decision === "accepted" ? "buyer_accepted_counter" : "buyer_rejected_counter",
+      label: decision === "accepted" ? "Buyer accepted counteroffer" : "Buyer rejected counteroffer",
+      details: null,
+      createdAt: now
+    });
+
+    const eventName =
+      record.submissionState === "ACCEPTED"
+        ? "offer_submission_accepted"
+        : record.submissionState === "REJECTED"
+          ? "offer_submission_rejected"
+          : null;
+    if (eventName) {
+      this.validationEvents.push({
+        id: createId("workflow"),
+        eventName,
+        sessionId: record.sessionId ?? null,
+        payload: {
+          shortlistId: record.shortlistId ?? null,
+          offerPreparationId: record.offerPreparationId,
+          offerSubmissionId: record.id,
+          propertyId: record.propertyId,
+          fromState: previousState,
+          toState: record.submissionState
+        },
+        createdAt: now
+      });
+    }
+
+    return mapStoredOfferSubmission(record);
+  }
+
+  async getOfferSubmissionSummary(id: string): Promise<OfferSubmissionSummary | null> {
+    const record = await this.getOfferSubmission(id);
+    return record ? toOfferSubmissionSummary(record) : null;
+  }
+
+  private syncUnderContractRecord(record: UnderContractCoordination): UnderContractCoordination {
+    const offerSubmission =
+      this.offerSubmissionRecords.find((entry) => entry.id === record.offerSubmissionId) ?? null;
+    if (!offerSubmission) {
+      return record;
+    }
+
+    const offerPreparation =
+      (record.offerPreparationId
+        ? this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId)
+        : this.offerPreparationRecords.find((entry) => entry.id === offerSubmission.offerPreparationId)) ?? null;
+    const financialReadiness =
+      (record.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId)
+        : offerSubmission.financialReadinessId
+          ? this.financialReadinessRecords.find((entry) => entry.id === offerSubmission.financialReadinessId)
+          : null) ?? null;
+    const now = new Date().toISOString();
+    const previousState = record.overallCoordinationState;
+    const evaluation = evaluateUnderContractCoordination({
+      now,
+      current: record,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness
+    });
+
+    Object.assign(record, evaluation, {
+      id: record.id,
+      updatedAt: previousState === evaluation.overallCoordinationState ? record.updatedAt : now
+    });
+
+    if (previousState !== record.overallCoordinationState) {
+      const eventName =
+        record.overallCoordinationState === "READY_FOR_CLOSING"
+          ? "under_contract_ready_for_closing"
+          : record.overallCoordinationState === "BLOCKED"
+            ? "under_contract_blocked"
+            : null;
+      if (eventName) {
+        this.validationEvents.push({
+          id: createId("workflow"),
+          eventName,
+          sessionId: record.sessionId ?? null,
+          payload: {
+            shortlistId: record.shortlistId ?? null,
+            offerPreparationId: record.offerPreparationId ?? null,
+            offerSubmissionId: record.offerSubmissionId,
+            underContractId: record.id,
+            propertyId: record.propertyId,
+            fromState: previousState,
+            toState: record.overallCoordinationState
+          },
+          createdAt: now
+        });
+      }
+    }
+
+    return record;
+  }
+
+  async createUnderContractCoordination(
+    payload: UnderContractCoordinationInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null> {
+    const offerSubmission =
+      this.offerSubmissionRecords.find((entry) => entry.id === payload.offerSubmissionId) ?? null;
+    if (!offerSubmission || offerSubmission.submissionState !== "ACCEPTED") {
+      return null;
+    }
+
+    const existing = this.underContractRecords.find(
+      (entry) =>
+        entry.propertyId === payload.propertyId &&
+        (payload.shortlistId ? entry.shortlistId === payload.shortlistId : true)
+    );
+    if (existing) {
+      return mapStoredUnderContractCoordination(this.syncUnderContractRecord(existing));
+    }
+
+    const offerPreparation =
+      this.offerPreparationRecords.find((entry) => entry.id === offerSubmission.offerPreparationId) ?? null;
+    const financialReadiness =
+      (payload.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === payload.financialReadinessId)
+        : offerSubmission.financialReadinessId
+          ? this.financialReadinessRecords.find((entry) => entry.id === offerSubmission.financialReadinessId)
+          : null) ?? null;
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateUnderContractCoordination({
+      now,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness,
+      sessionId: payload.sessionId ?? offerSubmission.sessionId ?? null,
+      partnerId: payload.partnerId ?? offerSubmission.partnerId ?? null,
+      patch: payload
+    });
+
+    const record: UnderContractCoordination = {
+      ...evaluation,
+      id: createId("under-contract"),
+      activityLog: [
+        {
+          type: "record_created",
+          label: "Under-contract workflow created",
+          details: null,
+          createdAt: now
+        }
+      ],
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.underContractRecords.push(record);
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "under_contract_created",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        shortlistId: record.shortlistId ?? null,
+        offerPreparationId: record.offerPreparationId ?? null,
+        offerSubmissionId: record.offerSubmissionId,
+        underContractId: record.id,
+        propertyId: record.propertyId,
+        coordinationState: record.overallCoordinationState
+      },
+      createdAt: now
+    });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "under_contract",
+      eventCategory: "RECORD_CREATED",
+      subjectType: "under_contract",
+      subjectId: record.id,
+      title: "Under-contract coordination started",
+      summary: `Under-contract coordination started for ${record.propertyAddressLabel}.`,
+      newValueSnapshot: {
+        overallCoordinationState: record.overallCoordinationState,
+        nextAction: record.nextAction
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "under_contract_created",
+      actorType: "USER",
+      createdAt: now
+    });
+
+    return mapStoredUnderContractCoordination(record);
+  }
+
+  async listUnderContractCoordinations(shortlistId: string): Promise<UnderContractCoordination[]> {
+    const records = this.underContractRecords
+      .filter((entry) => entry.shortlistId === shortlistId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    for (const record of records) {
+      this.syncUnderContractRecord(record);
+    }
+    return records.map((entry) => mapStoredUnderContractCoordination(entry));
+  }
+
+  async getUnderContractCoordination(id: string): Promise<UnderContractCoordination | null> {
+    const record = this.underContractRecords.find((entry) => entry.id === id) ?? null;
+    return record ? mapStoredUnderContractCoordination(this.syncUnderContractRecord(record)) : null;
+  }
+
+  async getLatestUnderContractCoordination(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<UnderContractCoordination | null> {
+    const record =
+      this.underContractRecords
+        .filter(
+          (entry) =>
+            entry.propertyId === payload.propertyId &&
+            (payload.shortlistId ? entry.shortlistId === payload.shortlistId : true) &&
+            (payload.sessionId ? entry.sessionId === payload.sessionId : true)
+        )
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
+    return record ? mapStoredUnderContractCoordination(this.syncUnderContractRecord(record)) : null;
+  }
+
+  async updateUnderContractCoordination(
+    id: string,
+    patch: {
+      targetClosingDate?: string | null;
+      inspectionDeadline?: string | null;
+      appraisalDeadline?: string | null;
+      financingDeadline?: string | null;
+      contingencyDeadline?: string | null;
+      closingPreparationDeadline?: string | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null> {
+    const record = this.underContractRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const offerSubmission =
+      this.offerSubmissionRecords.find((entry) => entry.id === record.offerSubmissionId) ?? null;
+    if (!offerSubmission) {
+      return null;
+    }
+
+    const offerPreparation =
+      (record.offerPreparationId
+        ? this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId)
+        : this.offerPreparationRecords.find((entry) => entry.id === offerSubmission.offerPreparationId)) ?? null;
+    const financialReadiness =
+      (record.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId)
+        : null) ?? null;
+
+    const now = new Date().toISOString();
+    const previousRecord = clone(this.syncUnderContractRecord(record));
+    const previousState = previousRecord.overallCoordinationState;
+    const evaluation = evaluateUnderContractCoordination({
+      now,
+      current: record,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness,
+      patch
+    });
+
+    Object.assign(record, evaluation, {
+      id: record.id,
+      updatedAt: now
+    });
+
+    if (patch.internalActivityNote?.trim()) {
+      record.activityLog.push({
+        type: "note_added",
+        label: "Contract note added",
+        details: patch.internalActivityNote.trim(),
+        createdAt: now
+      });
+    }
+
+    if (previousState !== record.overallCoordinationState) {
+      const eventName =
+        record.overallCoordinationState === "READY_FOR_CLOSING"
+          ? "under_contract_ready_for_closing"
+          : record.overallCoordinationState === "BLOCKED"
+            ? "under_contract_blocked"
+            : null;
+      if (eventName) {
+        this.validationEvents.push({
+          id: createId("workflow"),
+          eventName,
+          sessionId: record.sessionId ?? null,
+          payload: {
+            shortlistId: record.shortlistId ?? null,
+            offerPreparationId: record.offerPreparationId ?? null,
+            offerSubmissionId: record.offerSubmissionId,
+            underContractId: record.id,
+            propertyId: record.propertyId,
+            fromState: previousState,
+            toState: record.overallCoordinationState
+          },
+          createdAt: now
+        });
+      }
+    }
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "under_contract",
+      eventCategory: "RECORD_UPDATED",
+      subjectType: "under_contract",
+      subjectId: record.id,
+      title: "Under-contract coordination updated",
+      summary: "Contract coordination details were updated.",
+      oldValueSnapshot: {
+        overallCoordinationState: previousRecord.overallCoordinationState,
+        nextAction: previousRecord.nextAction
+      },
+      newValueSnapshot: {
+        overallCoordinationState: record.overallCoordinationState,
+        nextAction: record.nextAction
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "under_contract_updated",
+      actorType: "USER",
+      createdAt: now
+    });
+    for (const entry of buildChangeActivityEntries({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "under_contract",
+      subjectType: "under_contract",
+      subjectId: record.id,
+      stateLabel: "Under-contract state",
+      previousState: previousRecord.overallCoordinationState,
+      nextState: record.overallCoordinationState,
+      previousBlockers: previousRecord.blockers,
+      nextBlockers: record.blockers,
+      previousRisk: previousRecord.risk,
+      nextRisk: record.risk,
+      previousRecommendation: previousRecord.recommendation,
+      nextRecommendation: record.recommendation,
+      previousNextAction: previousRecord.nextAction,
+      nextNextAction: record.nextAction,
+      now,
+      triggerType: "DERIVED_RECALCULATION"
+    })) {
+      this.pushUnifiedActivity(entry);
+    }
+
+    return mapStoredUnderContractCoordination(record);
+  }
+
+  async updateUnderContractTask(
+    id: string,
+    taskType: ContractTaskType,
+    patch: {
+      status?: ContractTaskState;
+      deadline?: string | null;
+      scheduledAt?: string | null;
+      completedAt?: string | null;
+      blockedReason?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null> {
+    const record = this.underContractRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const task = record.taskSummaries.find((entry) => entry.taskType === taskType);
+    if (!task) {
+      return null;
+    }
+
+    if (patch.status) {
+      task.status = patch.status;
+    }
+    if (patch.deadline !== undefined) {
+      task.deadline = patch.deadline;
+    }
+    if (patch.scheduledAt !== undefined) {
+      task.scheduledAt = patch.scheduledAt;
+    }
+    if (patch.completedAt !== undefined) {
+      task.completedAt = patch.completedAt;
+    }
+    if (patch.blockedReason !== undefined) {
+      task.blockedReason = patch.blockedReason;
+    }
+    if (patch.notes !== undefined) {
+      task.notes = patch.notes;
+    }
+
+    const offerSubmission =
+      this.offerSubmissionRecords.find((entry) => entry.id === record.offerSubmissionId) ?? null;
+    if (!offerSubmission) {
+      return null;
+    }
+
+    const offerPreparation =
+      (record.offerPreparationId
+        ? this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId)
+        : this.offerPreparationRecords.find((entry) => entry.id === offerSubmission.offerPreparationId)) ?? null;
+    const financialReadiness =
+      (record.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId)
+        : null) ?? null;
+    const now = new Date().toISOString();
+    const previousState = this.syncUnderContractRecord(record).overallCoordinationState;
+    const evaluation = evaluateUnderContractCoordination({
+      now,
+      current: record,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness
+    });
+    Object.assign(record, evaluation, {
+      id: record.id,
+      updatedAt: now,
+      lastActionAt: now
+    });
+    record.activityLog.push({
+      type: "task_updated",
+      label: `${task.label} updated`,
+      details: patch.notes ?? patch.blockedReason ?? null,
+      createdAt: now
+    });
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "under_contract_task_updated",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        shortlistId: record.shortlistId ?? null,
+        offerPreparationId: record.offerPreparationId ?? null,
+        offerSubmissionId: record.offerSubmissionId,
+        underContractId: record.id,
+        propertyId: record.propertyId,
+        taskType,
+        status: task.status,
+        fromState: previousState,
+        toState: record.overallCoordinationState
+      },
+      createdAt: now
+    });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "under_contract",
+      eventCategory: "RECORD_UPDATED",
+      subjectType: "under_contract",
+      subjectId: record.id,
+      title: `${task.label} updated`,
+      summary: patch.notes ?? patch.blockedReason ?? `Task status is now ${task.status.toLowerCase()}.`,
+      newValueSnapshot: {
+        taskType,
+        status: task.status
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "under_contract_task_updated",
+      actorType: "USER",
+      createdAt: now
+    });
+    return mapStoredUnderContractCoordination(record);
+  }
+
+  async updateUnderContractMilestone(
+    id: string,
+    milestoneType: CoordinationMilestoneType,
+    patch: {
+      status?: "PENDING" | "REACHED" | "BLOCKED";
+      occurredAt?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null> {
+    const record = this.underContractRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const milestone = record.milestoneSummaries.find((entry) => entry.milestoneType === milestoneType);
+    if (!milestone) {
+      return null;
+    }
+
+    if (patch.status) {
+      milestone.status = patch.status;
+    }
+    if (patch.occurredAt !== undefined) {
+      milestone.occurredAt = patch.occurredAt;
+    }
+    if (patch.notes !== undefined) {
+      milestone.notes = patch.notes;
+    }
+
+    const offerSubmission =
+      this.offerSubmissionRecords.find((entry) => entry.id === record.offerSubmissionId) ?? null;
+    if (!offerSubmission) {
+      return null;
+    }
+
+    const offerPreparation =
+      (record.offerPreparationId
+        ? this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId)
+        : this.offerPreparationRecords.find((entry) => entry.id === offerSubmission.offerPreparationId)) ?? null;
+    const financialReadiness =
+      (record.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId)
+        : null) ?? null;
+    const now = new Date().toISOString();
+    const previousState = this.syncUnderContractRecord(record).overallCoordinationState;
+    const evaluation = evaluateUnderContractCoordination({
+      now,
+      current: record,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness
+    });
+    Object.assign(record, evaluation, {
+      id: record.id,
+      updatedAt: now,
+      lastActionAt: now
+    });
+    record.activityLog.push({
+      type: "milestone_reached",
+      label: `${milestone.label} updated`,
+      details: patch.notes ?? null,
+      createdAt: now
+    });
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "under_contract_milestone_reached",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        shortlistId: record.shortlistId ?? null,
+        offerPreparationId: record.offerPreparationId ?? null,
+        offerSubmissionId: record.offerSubmissionId,
+        underContractId: record.id,
+        propertyId: record.propertyId,
+        milestoneType,
+        status: milestone.status,
+        fromState: previousState,
+        toState: record.overallCoordinationState
+      },
+      createdAt: now
+    });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "under_contract",
+      eventCategory: "MILESTONE_REACHED",
+      subjectType: "under_contract",
+      subjectId: record.id,
+      title: `${milestone.label} updated`,
+      summary: patch.notes ?? `Milestone status is now ${milestone.status.toLowerCase()}.`,
+      newValueSnapshot: {
+        milestoneType,
+        status: milestone.status
+      },
+      triggerType: "STATUS_TRANSITION",
+      triggerLabel: "under_contract_milestone_reached",
+      actorType: "USER",
+      createdAt: now
+    });
+    return mapStoredUnderContractCoordination(record);
+  }
+
+  async getUnderContractCoordinationSummary(id: string): Promise<UnderContractCoordinationSummary | null> {
+    const record = await this.getUnderContractCoordination(id);
+    return record ? toUnderContractCoordinationSummary(record) : null;
+  }
+
+  private syncClosingReadinessRecord(record: ClosingReadiness): ClosingReadiness {
+    const underContract =
+      this.underContractRecords.find((entry) => entry.id === record.underContractCoordinationId) ?? null;
+    if (!underContract) {
+      return record;
+    }
+
+    const syncedUnderContract = this.syncUnderContractRecord(underContract);
+    const offerSubmission =
+      (record.offerSubmissionId
+        ? this.offerSubmissionRecords.find((entry) => entry.id === record.offerSubmissionId)
+        : this.offerSubmissionRecords.find((entry) => entry.id === syncedUnderContract.offerSubmissionId)) ?? null;
+    const offerPreparation =
+      (record.offerPreparationId
+        ? this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId)
+        : syncedUnderContract.offerPreparationId
+          ? this.offerPreparationRecords.find((entry) => entry.id === syncedUnderContract.offerPreparationId)
+          : null) ?? null;
+    const financialReadiness =
+      (record.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId)
+        : syncedUnderContract.financialReadinessId
+          ? this.financialReadinessRecords.find((entry) => entry.id === syncedUnderContract.financialReadinessId)
+          : null) ?? null;
+    const now = new Date().toISOString();
+    const previousState = record.overallClosingReadinessState;
+    const evaluation = evaluateClosingReadiness({
+      now,
+      current: record,
+      underContract: syncedUnderContract,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness
+    });
+
+    Object.assign(record, evaluation, {
+      id: record.id,
+      updatedAt: previousState === evaluation.overallClosingReadinessState ? record.updatedAt : now
+    });
+
+    if (previousState !== record.overallClosingReadinessState) {
+      let eventName: WorkflowActivityRecord["eventType"] | null = null;
+      if (record.overallClosingReadinessState === "READY_TO_CLOSE") {
+        eventName = "closing_ready_to_close";
+      } else if (record.overallClosingReadinessState === "BLOCKED") {
+        eventName = "closing_blocked";
+      } else if (record.overallClosingReadinessState === "CLOSED") {
+        eventName = "closing_completed";
+      }
+      if (eventName) {
+        this.validationEvents.push({
+          id: createId("workflow"),
+          eventName,
+          sessionId: record.sessionId ?? null,
+          payload: {
+            shortlistId: record.shortlistId ?? null,
+            offerPreparationId: record.offerPreparationId ?? null,
+            offerSubmissionId: record.offerSubmissionId ?? null,
+            underContractId: record.underContractCoordinationId,
+            closingReadinessId: record.id,
+            propertyId: record.propertyId,
+            fromState: previousState,
+            toState: record.overallClosingReadinessState
+          },
+          createdAt: now
+        });
+      }
+    }
+
+    return record;
+  }
+
+  async createClosingReadiness(
+    payload: ClosingReadinessInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<ClosingReadiness | null> {
+    const underContract =
+      this.underContractRecords.find((entry) => entry.id === payload.underContractCoordinationId) ?? null;
+    if (!underContract) {
+      return null;
+    }
+
+    const syncedUnderContract = this.syncUnderContractRecord(underContract);
+    if (syncedUnderContract.overallCoordinationState !== "READY_FOR_CLOSING" || !syncedUnderContract.readyForClosing) {
+      return null;
+    }
+
+    const existing = this.closingReadinessRecords.find(
+      (entry) =>
+        entry.propertyId === payload.propertyId &&
+        (payload.shortlistId ? entry.shortlistId === payload.shortlistId : true)
+    );
+    if (existing) {
+      return mapStoredClosingReadiness(this.syncClosingReadinessRecord(existing));
+    }
+
+    const offerSubmission =
+      (payload.offerSubmissionId
+        ? this.offerSubmissionRecords.find((entry) => entry.id === payload.offerSubmissionId)
+        : this.offerSubmissionRecords.find((entry) => entry.id === syncedUnderContract.offerSubmissionId)) ?? null;
+    const offerPreparation =
+      (payload.offerPreparationId
+        ? this.offerPreparationRecords.find((entry) => entry.id === payload.offerPreparationId)
+        : syncedUnderContract.offerPreparationId
+          ? this.offerPreparationRecords.find((entry) => entry.id === syncedUnderContract.offerPreparationId)
+          : null) ?? null;
+    const financialReadiness =
+      (payload.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === payload.financialReadinessId)
+        : syncedUnderContract.financialReadinessId
+          ? this.financialReadinessRecords.find((entry) => entry.id === syncedUnderContract.financialReadinessId)
+          : null) ?? null;
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateClosingReadiness({
+      now,
+      underContract: syncedUnderContract,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness,
+      sessionId: payload.sessionId ?? syncedUnderContract.sessionId ?? null,
+      partnerId: payload.partnerId ?? syncedUnderContract.partnerId ?? null,
+      patch: payload
+    });
+
+    const record: ClosingReadiness = {
+      ...evaluation,
+      id: createId("closing-readiness"),
+      activityLog: [
+        {
+          type: "record_created",
+          label: "Closing readiness started",
+          details: null,
+          createdAt: now
+        }
+      ],
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.closingReadinessRecords.push(record);
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "closing_readiness_created",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        shortlistId: record.shortlistId ?? null,
+        offerPreparationId: record.offerPreparationId ?? null,
+        offerSubmissionId: record.offerSubmissionId ?? null,
+        underContractId: record.underContractCoordinationId,
+        closingReadinessId: record.id,
+        propertyId: record.propertyId,
+        closingState: record.overallClosingReadinessState
+      },
+      createdAt: now
+    });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "closing_readiness",
+      eventCategory: "RECORD_CREATED",
+      subjectType: "closing_readiness",
+      subjectId: record.id,
+      title: "Closing readiness started",
+      summary: `Closing readiness started for ${record.propertyAddressLabel}.`,
+      newValueSnapshot: {
+        overallClosingReadinessState: record.overallClosingReadinessState,
+        nextAction: record.nextAction
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "closing_readiness_created",
+      actorType: "USER",
+      createdAt: now
+    });
+
+    return mapStoredClosingReadiness(record);
+  }
+
+  async listClosingReadiness(shortlistId: string): Promise<ClosingReadiness[]> {
+    const records = this.closingReadinessRecords
+      .filter((entry) => entry.shortlistId === shortlistId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    for (const record of records) {
+      this.syncClosingReadinessRecord(record);
+    }
+    return records.map((entry) => mapStoredClosingReadiness(entry));
+  }
+
+  async getClosingReadiness(id: string): Promise<ClosingReadiness | null> {
+    const record = this.closingReadinessRecords.find((entry) => entry.id === id) ?? null;
+    return record ? mapStoredClosingReadiness(this.syncClosingReadinessRecord(record)) : null;
+  }
+
+  async getLatestClosingReadiness(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<ClosingReadiness | null> {
+    const record =
+      this.closingReadinessRecords
+        .filter(
+          (entry) =>
+            entry.propertyId === payload.propertyId &&
+            (payload.shortlistId ? entry.shortlistId === payload.shortlistId : true) &&
+            (payload.sessionId ? entry.sessionId === payload.sessionId : true)
+        )
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
+    return record ? mapStoredClosingReadiness(this.syncClosingReadinessRecord(record)) : null;
+  }
+
+  async updateClosingReadiness(
+    id: string,
+    patch: {
+      targetClosingDate?: string | null;
+      closingAppointmentAt?: string | null;
+      closingAppointmentLocation?: string | null;
+      closingAppointmentNotes?: string | null;
+      finalReviewDeadline?: string | null;
+      finalFundsConfirmationDeadline?: string | null;
+      finalFundsAmountConfirmed?: number | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<ClosingReadiness | null> {
+    const record = this.closingReadinessRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const underContract =
+      this.underContractRecords.find((entry) => entry.id === record.underContractCoordinationId) ?? null;
+    if (!underContract) {
+      return null;
+    }
+    const syncedUnderContract = this.syncUnderContractRecord(underContract);
+    const offerSubmission =
+      (record.offerSubmissionId
+        ? this.offerSubmissionRecords.find((entry) => entry.id === record.offerSubmissionId)
+        : null) ?? null;
+    const offerPreparation =
+      (record.offerPreparationId
+        ? this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId)
+        : null) ?? null;
+    const financialReadiness =
+      (record.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId)
+        : null) ?? null;
+
+    const now = new Date().toISOString();
+    const previousRecord = clone(record);
+    const evaluation = evaluateClosingReadiness({
+      now,
+      current: record,
+      underContract: syncedUnderContract,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness,
+      patch
+    });
+
+    Object.assign(record, evaluation, {
+      id: record.id,
+      updatedAt: now
+    });
+
+    if (patch.internalActivityNote?.trim()) {
+      record.activityLog.push({
+        type: "note_added",
+        label: "Closing note added",
+        details: patch.internalActivityNote.trim(),
+        createdAt: now
+      });
+    }
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "closing_readiness",
+      eventCategory: "RECORD_UPDATED",
+      subjectType: "closing_readiness",
+      subjectId: record.id,
+      title: "Closing readiness updated",
+      summary: "Closing readiness details were updated.",
+      oldValueSnapshot: {
+        overallClosingReadinessState: previousRecord.overallClosingReadinessState,
+        nextAction: previousRecord.nextAction
+      },
+      newValueSnapshot: {
+        overallClosingReadinessState: record.overallClosingReadinessState,
+        nextAction: record.nextAction
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "closing_readiness_updated",
+      actorType: "USER",
+      createdAt: now
+    });
+    for (const entry of buildChangeActivityEntries({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "closing_readiness",
+      subjectType: "closing_readiness",
+      subjectId: record.id,
+      stateLabel: "Closing readiness state",
+      previousState: previousRecord.overallClosingReadinessState,
+      nextState: record.overallClosingReadinessState,
+      previousBlockers: previousRecord.blockers,
+      nextBlockers: record.blockers,
+      previousRisk: previousRecord.risk,
+      nextRisk: record.risk,
+      previousRecommendation: previousRecord.recommendation,
+      nextRecommendation: record.recommendation,
+      previousNextAction: previousRecord.nextAction,
+      nextNextAction: record.nextAction,
+      now,
+      triggerType: "DERIVED_RECALCULATION"
+    })) {
+      this.pushUnifiedActivity(entry);
+    }
+
+    return mapStoredClosingReadiness(record);
+  }
+
+  async updateClosingChecklistItem(
+    id: string,
+    itemType: ClosingChecklistItemType,
+    patch: {
+      status?: ClosingChecklistItemState;
+      deadline?: string | null;
+      completedAt?: string | null;
+      blockedReason?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<ClosingReadiness | null> {
+    const record = this.closingReadinessRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const checklistItem = record.checklistItemSummaries.find((entry) => entry.itemType === itemType);
+    if (!checklistItem) {
+      return null;
+    }
+    if (patch.status !== undefined) checklistItem.status = patch.status;
+    if (patch.deadline !== undefined) checklistItem.deadline = patch.deadline;
+    if (patch.completedAt !== undefined) checklistItem.completedAt = patch.completedAt;
+    if (patch.blockedReason !== undefined) checklistItem.blockedReason = patch.blockedReason;
+    if (patch.notes !== undefined) checklistItem.notes = patch.notes;
+
+    const underContract =
+      this.underContractRecords.find((entry) => entry.id === record.underContractCoordinationId) ?? null;
+    if (!underContract) {
+      return null;
+    }
+    const syncedUnderContract = this.syncUnderContractRecord(underContract);
+    const offerSubmission =
+      (record.offerSubmissionId
+        ? this.offerSubmissionRecords.find((entry) => entry.id === record.offerSubmissionId)
+        : null) ?? null;
+    const offerPreparation =
+      (record.offerPreparationId
+        ? this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId)
+        : null) ?? null;
+    const financialReadiness =
+      (record.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId)
+        : null) ?? null;
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateClosingReadiness({
+      now,
+      current: record,
+      underContract: syncedUnderContract,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness
+    });
+    Object.assign(record, evaluation, {
+      id: record.id,
+      updatedAt: now,
+      lastActionAt: now
+    });
+    record.activityLog.push({
+      type: "checklist_updated",
+      label: `${checklistItem.label} updated`,
+      details: patch.notes ?? patch.blockedReason ?? null,
+      createdAt: now
+    });
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "closing_checklist_updated",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        shortlistId: record.shortlistId ?? null,
+        offerPreparationId: record.offerPreparationId ?? null,
+        offerSubmissionId: record.offerSubmissionId ?? null,
+        underContractId: record.underContractCoordinationId,
+        closingReadinessId: record.id,
+        propertyId: record.propertyId,
+        itemType,
+        status: checklistItem.status
+      },
+      createdAt: now
+    });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "closing_readiness",
+      eventCategory: "RECORD_UPDATED",
+      subjectType: "closing_readiness",
+      subjectId: record.id,
+      title: `${checklistItem.label} updated`,
+      summary: patch.notes ?? patch.blockedReason ?? `Checklist item status is now ${checklistItem.status.toLowerCase()}.`,
+      newValueSnapshot: {
+        itemType,
+        status: checklistItem.status
+      },
+      triggerType: "USER_ACTION",
+      triggerLabel: "closing_checklist_updated",
+      actorType: "USER",
+      createdAt: now
+    });
+    return mapStoredClosingReadiness(record);
+  }
+
+  async updateClosingMilestone(
+    id: string,
+    milestoneType: ClosingMilestoneType,
+    patch: {
+      status?: "PENDING" | "REACHED" | "BLOCKED";
+      occurredAt?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<ClosingReadiness | null> {
+    const record = this.closingReadinessRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const milestone = record.milestoneSummaries.find((entry) => entry.milestoneType === milestoneType);
+    if (!milestone) {
+      return null;
+    }
+    if (patch.status !== undefined) milestone.status = patch.status;
+    if (patch.occurredAt !== undefined) milestone.occurredAt = patch.occurredAt;
+    if (patch.notes !== undefined) milestone.notes = patch.notes;
+
+    const underContract =
+      this.underContractRecords.find((entry) => entry.id === record.underContractCoordinationId) ?? null;
+    if (!underContract) {
+      return null;
+    }
+    const syncedUnderContract = this.syncUnderContractRecord(underContract);
+    const offerSubmission =
+      (record.offerSubmissionId
+        ? this.offerSubmissionRecords.find((entry) => entry.id === record.offerSubmissionId)
+        : null) ?? null;
+    const offerPreparation =
+      (record.offerPreparationId
+        ? this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId)
+        : null) ?? null;
+    const financialReadiness =
+      (record.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId)
+        : null) ?? null;
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateClosingReadiness({
+      now,
+      current: record,
+      underContract: syncedUnderContract,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness
+    });
+    Object.assign(record, evaluation, {
+      id: record.id,
+      updatedAt: now,
+      lastActionAt: now
+    });
+    record.activityLog.push({
+      type: "milestone_reached",
+      label: `${milestone.label} updated`,
+      details: patch.notes ?? null,
+      createdAt: now
+    });
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "closing_milestone_reached",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        shortlistId: record.shortlistId ?? null,
+        offerPreparationId: record.offerPreparationId ?? null,
+        offerSubmissionId: record.offerSubmissionId ?? null,
+        underContractId: record.underContractCoordinationId,
+        closingReadinessId: record.id,
+        propertyId: record.propertyId,
+        milestoneType,
+        status: milestone.status
+      },
+      createdAt: now
+    });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "closing_readiness",
+      eventCategory: "MILESTONE_REACHED",
+      subjectType: "closing_readiness",
+      subjectId: record.id,
+      title: `${milestone.label} updated`,
+      summary: patch.notes ?? `Milestone status is now ${milestone.status.toLowerCase()}.`,
+      newValueSnapshot: {
+        milestoneType,
+        status: milestone.status
+      },
+      triggerType: "STATUS_TRANSITION",
+      triggerLabel: "closing_milestone_reached",
+      actorType: "USER",
+      createdAt: now
+    });
+    return mapStoredClosingReadiness(record);
+  }
+
+  async markClosingReady(id: string): Promise<ClosingReadiness | null> {
+    const record = this.closingReadinessRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+    const updated = await this.updateClosingReadiness(id, {});
+    if (!updated || updated.overallClosingReadinessState !== "READY_TO_CLOSE") {
+      return updated;
+    }
+    return updated;
+  }
+
+  async markClosingComplete(id: string, closedAt?: string | null): Promise<ClosingReadiness | null> {
+    const record = this.closingReadinessRecords.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const underContract =
+      this.underContractRecords.find((entry) => entry.id === record.underContractCoordinationId) ?? null;
+    if (!underContract) {
+      return null;
+    }
+    const syncedUnderContract = this.syncUnderContractRecord(underContract);
+    const offerSubmission =
+      (record.offerSubmissionId
+        ? this.offerSubmissionRecords.find((entry) => entry.id === record.offerSubmissionId)
+        : null) ?? null;
+    const offerPreparation =
+      (record.offerPreparationId
+        ? this.offerPreparationRecords.find((entry) => entry.id === record.offerPreparationId)
+        : null) ?? null;
+    const financialReadiness =
+      (record.financialReadinessId
+        ? this.financialReadinessRecords.find((entry) => entry.id === record.financialReadinessId)
+        : null) ?? null;
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateClosingReadiness({
+      now,
+      current: record,
+      underContract: syncedUnderContract,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness,
+      patch: {
+        closedAt: closedAt ?? now
+      }
+    });
+    Object.assign(record, evaluation, {
+      id: record.id,
+      updatedAt: now,
+      lastActionAt: now
+    });
+    record.activityLog.push({
+      type: "closed",
+      label: "Closing marked complete",
+      details: null,
+      createdAt: now
+    });
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "closing_completed",
+      sessionId: record.sessionId ?? null,
+      payload: {
+        shortlistId: record.shortlistId ?? null,
+        offerPreparationId: record.offerPreparationId ?? null,
+        offerSubmissionId: record.offerSubmissionId ?? null,
+        underContractId: record.underContractCoordinationId,
+        closingReadinessId: record.id,
+        propertyId: record.propertyId,
+        toState: record.overallClosingReadinessState
+      },
+      createdAt: now
+    });
+    this.pushUnifiedActivity({
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId,
+      propertyAddressLabel: record.propertyAddressLabel,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "closing_readiness",
+      eventCategory: "MILESTONE_REACHED",
+      subjectType: "closing_readiness",
+      subjectId: record.id,
+      title: "Closing completed",
+      summary: "The closing was marked complete.",
+      oldValueSnapshot: { overallClosingReadinessState: "READY_TO_CLOSE" },
+      newValueSnapshot: { overallClosingReadinessState: record.overallClosingReadinessState },
+      triggerType: "STATUS_TRANSITION",
+      triggerLabel: "closing_completed",
+      actorType: "USER",
+      createdAt: now
+    });
+    return mapStoredClosingReadiness(record);
+  }
+
+  async getClosingReadinessSummary(id: string): Promise<ClosingReadinessSummary | null> {
+    const record = await this.getClosingReadiness(id);
+    return record ? toClosingReadinessSummary(record) : null;
   }
 
   async createOfferReadiness(payload: {
@@ -2227,6 +4575,34 @@ export class InMemorySearchRepository implements SearchRepository {
       this.offerReadinessRecords.length,
       ...this.offerReadinessRecords.filter((entry) => entry.shortlistItemId !== item.id)
     );
+    this.offerPreparationRecords.splice(
+      0,
+      this.offerPreparationRecords.length,
+      ...this.offerPreparationRecords.filter(
+        (entry) => !(entry.shortlistId === shortlistId && entry.propertyId === item.canonicalPropertyId)
+      )
+    );
+    this.offerSubmissionRecords.splice(
+      0,
+      this.offerSubmissionRecords.length,
+      ...this.offerSubmissionRecords.filter(
+        (entry) => !(entry.shortlistId === shortlistId && entry.propertyId === item.canonicalPropertyId)
+      )
+    );
+    this.underContractRecords.splice(
+      0,
+      this.underContractRecords.length,
+      ...this.underContractRecords.filter(
+        (entry) => !(entry.shortlistId === shortlistId && entry.propertyId === item.canonicalPropertyId)
+      )
+    );
+    this.closingReadinessRecords.splice(
+      0,
+      this.closingReadinessRecords.length,
+      ...this.closingReadinessRecords.filter(
+        (entry) => !(entry.shortlistId === shortlistId && entry.propertyId === item.canonicalPropertyId)
+      )
+    );
     const removedNegotiationIds = this.negotiations
       .filter((entry) => entry.shortlistId === shortlistId && entry.propertyId === item.canonicalPropertyId)
       .map((entry) => entry.id);
@@ -2370,6 +4746,356 @@ export class InMemorySearchRepository implements SearchRepository {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .slice(0, limit)
       .map((entry) => clone(entry));
+  }
+
+  async createUnifiedActivity(payload: {
+    workflowId?: string | null;
+    sessionId?: string | null;
+    propertyId?: string | null;
+    propertyAddressLabel?: string | null;
+    shortlistId?: string | null;
+    moduleName: UnifiedActivityModuleName;
+    eventCategory: UnifiedActivityEventCategory;
+    subjectType: string;
+    subjectId: string;
+    title: string;
+    summary: string;
+    oldValueSnapshot?: Record<string, unknown> | null;
+    newValueSnapshot?: Record<string, unknown> | null;
+    triggerType: UnifiedActivityTriggerType;
+    triggerLabel: string;
+    actorType?: UnifiedActivityActorType;
+    actorId?: string | null;
+    relatedNotificationId?: string | null;
+    relatedExplanationId?: string | null;
+    createdAt?: string;
+  }): Promise<UnifiedActivityRecord> {
+    return clone(
+      this.pushUnifiedActivity({
+        ...payload,
+        actorType: payload.actorType ?? "SYSTEM",
+        createdAt: payload.createdAt ?? new Date().toISOString()
+      })
+    );
+  }
+
+  async listUnifiedActivity(filters?: {
+    sessionId?: string | null;
+    propertyId?: string | null;
+    shortlistId?: string | null;
+    moduleName?: UnifiedActivityModuleName;
+    eventCategories?: UnifiedActivityEventCategory[];
+    subjectType?: string;
+    subjectId?: string;
+    limit?: number;
+  }): Promise<UnifiedActivityRecord[]> {
+    const records = this.unifiedActivityRecords
+      .filter((entry) => {
+        if (filters?.sessionId !== undefined && entry.sessionId !== (filters.sessionId ?? null)) {
+          return false;
+        }
+        if (filters?.propertyId && entry.propertyId !== filters.propertyId) {
+          return false;
+        }
+        if (filters?.shortlistId && entry.shortlistId !== filters.shortlistId) {
+          return false;
+        }
+        if (filters?.moduleName && entry.moduleName !== filters.moduleName) {
+          return false;
+        }
+        if (filters?.subjectType && entry.subjectType !== filters.subjectType) {
+          return false;
+        }
+        if (filters?.subjectId && entry.subjectId !== filters.subjectId) {
+          return false;
+        }
+        if (filters?.eventCategories?.length && !filters.eventCategories.includes(entry.eventCategory)) {
+          return false;
+        }
+        return true;
+      })
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+    return records.slice(0, filters?.limit ?? records.length).map((entry) => clone(entry));
+  }
+
+  async createWorkflowNotification(payload: {
+    workflowId?: string | null;
+    sessionId?: string | null;
+    propertyId?: string | null;
+    propertyAddressLabel?: string | null;
+    shortlistId?: string | null;
+    moduleName: NotificationModuleName;
+    alertCategory: AlertCategory;
+    severity: NotificationSeverity;
+    status?: NotificationStatus;
+    triggeringRuleLabel: string;
+    relatedSubjectType: string;
+    relatedSubjectId: string;
+    title: string;
+    message: string;
+    actionLabel?: string | null;
+    actionTarget?: NotificationActionTarget | null;
+    dueAt?: string | null;
+    explanationSubjectType?: string | null;
+    explanationSubjectId?: string | null;
+  }): Promise<WorkflowNotification> {
+    const now = new Date().toISOString();
+    const record: WorkflowNotification = {
+      id: createId("notification"),
+      workflowId: payload.workflowId ?? null,
+      sessionId: payload.sessionId ?? null,
+      propertyId: payload.propertyId ?? null,
+      propertyAddressLabel: payload.propertyAddressLabel ?? null,
+      shortlistId: payload.shortlistId ?? null,
+      moduleName: payload.moduleName,
+      alertCategory: payload.alertCategory,
+      severity: payload.severity,
+      status: payload.status ?? "UNREAD",
+      triggeringRuleLabel: payload.triggeringRuleLabel,
+      relatedSubjectType: payload.relatedSubjectType,
+      relatedSubjectId: payload.relatedSubjectId,
+      title: payload.title,
+      message: payload.message,
+      actionLabel: payload.actionLabel ?? null,
+      actionTarget: payload.actionTarget ?? null,
+      dueAt: payload.dueAt ?? null,
+      readAt: null,
+      dismissedAt: null,
+      resolvedAt: null,
+      explanationSubjectType: payload.explanationSubjectType ?? null,
+      explanationSubjectId: payload.explanationSubjectId ?? null,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.workflowNotifications.push(record);
+    this.pushWorkflowNotificationHistory(record.id, "CREATED", null, record.status, now);
+    this.pushUnifiedActivity({
+      workflowId: record.workflowId ?? null,
+      sessionId: record.sessionId ?? null,
+      propertyId: record.propertyId ?? null,
+      propertyAddressLabel: record.propertyAddressLabel ?? null,
+      shortlistId: record.shortlistId ?? null,
+      moduleName: "notification_alerting",
+      eventCategory: "NOTIFICATION_CREATED",
+      subjectType: "workflow_notification",
+      subjectId: record.id,
+      title: record.title,
+      summary: record.message,
+      newValueSnapshot: {
+        moduleName: record.moduleName,
+        alertCategory: record.alertCategory,
+        severity: record.severity,
+        status: record.status,
+        dueAt: record.dueAt
+      },
+      triggerType: record.alertCategory === "DEADLINE_ALERT" ? "DEADLINE_RULE" : "SYSTEM_RULE",
+      triggerLabel: record.triggeringRuleLabel,
+      actorType: "SYSTEM",
+      relatedNotificationId: record.id,
+      createdAt: now
+    });
+    if (record.alertCategory === "DEADLINE_ALERT") {
+      this.pushUnifiedActivity({
+        workflowId: record.workflowId ?? null,
+        sessionId: record.sessionId ?? null,
+        propertyId: record.propertyId ?? null,
+        propertyAddressLabel: record.propertyAddressLabel ?? null,
+        shortlistId: record.shortlistId ?? null,
+        moduleName: record.moduleName === "transaction_command_center" ? "transaction_command_center" : record.moduleName,
+        eventCategory: deadlineEventCategoryFromDueAt(record.dueAt, now),
+        subjectType: record.relatedSubjectType,
+        subjectId: record.relatedSubjectId,
+        title: record.title,
+        summary: record.message,
+        newValueSnapshot: {
+          dueAt: record.dueAt,
+          severity: record.severity
+        },
+        triggerType: "DEADLINE_RULE",
+        triggerLabel: record.triggeringRuleLabel,
+        actorType: "SYSTEM",
+        relatedNotificationId: record.id,
+        createdAt: now
+      });
+    }
+    if (record.alertCategory === "MILESTONE_ALERT") {
+      this.pushUnifiedActivity({
+        workflowId: record.workflowId ?? null,
+        sessionId: record.sessionId ?? null,
+        propertyId: record.propertyId ?? null,
+        propertyAddressLabel: record.propertyAddressLabel ?? null,
+        shortlistId: record.shortlistId ?? null,
+        moduleName: record.moduleName === "transaction_command_center" ? "transaction_command_center" : record.moduleName,
+        eventCategory: "MILESTONE_REACHED",
+        subjectType: record.relatedSubjectType,
+        subjectId: record.relatedSubjectId,
+        title: record.title,
+        summary: record.message,
+        newValueSnapshot: {
+          alertCategory: record.alertCategory,
+          severity: record.severity
+        },
+        triggerType: "STATUS_TRANSITION",
+        triggerLabel: record.triggeringRuleLabel,
+        actorType: "SYSTEM",
+        relatedNotificationId: record.id,
+        createdAt: now
+      });
+    }
+    return mapStoredWorkflowNotification(record);
+  }
+
+  async getWorkflowNotification(id: string): Promise<WorkflowNotification | null> {
+    const record = this.workflowNotifications.find((entry) => entry.id === id) ?? null;
+    return record ? mapStoredWorkflowNotification(record) : null;
+  }
+
+  async listWorkflowNotifications(filters?: {
+    sessionId?: string | null;
+    propertyId?: string | null;
+    shortlistId?: string | null;
+    statuses?: NotificationStatus[];
+    limit?: number;
+  }): Promise<WorkflowNotification[]> {
+    const records = this.workflowNotifications
+      .filter((entry) => {
+        if (filters?.sessionId !== undefined && entry.sessionId !== (filters.sessionId ?? null)) {
+          return false;
+        }
+        if (filters?.propertyId !== undefined && entry.propertyId !== (filters.propertyId ?? null)) {
+          return false;
+        }
+        if (filters?.shortlistId !== undefined && entry.shortlistId !== (filters.shortlistId ?? null)) {
+          return false;
+        }
+        if (filters?.statuses && !filters.statuses.includes(entry.status)) {
+          return false;
+        }
+        return true;
+      })
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+
+    return records.slice(0, filters?.limit ?? records.length).map((entry) => mapStoredWorkflowNotification(entry));
+  }
+
+  async updateWorkflowNotification(
+    id: string,
+    patch: {
+      severity?: NotificationSeverity;
+      status?: NotificationStatus;
+      title?: string;
+      message?: string;
+      actionLabel?: string | null;
+      actionTarget?: NotificationActionTarget | null;
+      dueAt?: string | null;
+      readAt?: string | null;
+      dismissedAt?: string | null;
+      resolvedAt?: string | null;
+      explanationSubjectType?: string | null;
+      explanationSubjectId?: string | null;
+    }
+  ): Promise<WorkflowNotification | null> {
+    const record = this.workflowNotifications.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const previousStatus = record.status;
+    const previousSeverity = record.severity;
+
+    Object.assign(record, {
+      ...patch,
+      updatedAt: now
+    });
+
+    if (patch.status && patch.status !== previousStatus) {
+      const eventType: WorkflowNotificationHistoryEvent["eventType"] =
+        patch.status === "READ"
+          ? "READ"
+          : patch.status === "DISMISSED"
+            ? "DISMISSED"
+            : patch.status === "RESOLVED"
+              ? "RESOLVED"
+              : "READ";
+      this.pushWorkflowNotificationHistory(id, eventType, previousStatus, patch.status, now);
+      const activityCategory: UnifiedActivityEventCategory =
+        patch.status === "READ"
+          ? "NOTIFICATION_READ"
+          : patch.status === "DISMISSED"
+            ? "NOTIFICATION_DISMISSED"
+            : "NOTIFICATION_RESOLVED";
+      this.pushUnifiedActivity({
+        workflowId: record.workflowId ?? null,
+        sessionId: record.sessionId ?? null,
+        propertyId: record.propertyId ?? null,
+        propertyAddressLabel: record.propertyAddressLabel ?? null,
+        shortlistId: record.shortlistId ?? null,
+        moduleName: "notification_alerting",
+        eventCategory: activityCategory,
+        subjectType: "workflow_notification",
+        subjectId: id,
+        title: record.title,
+        summary:
+          activityCategory === "NOTIFICATION_READ"
+            ? "Notification marked read."
+            : activityCategory === "NOTIFICATION_DISMISSED"
+              ? "Notification dismissed."
+              : "Notification resolved.",
+        oldValueSnapshot: {
+          status: previousStatus
+        },
+        newValueSnapshot: {
+          status: patch.status
+        },
+        triggerType: "USER_ACTION",
+        triggerLabel: eventType.toLowerCase(),
+        actorType: patch.status === "RESOLVED" ? "SYSTEM" : "USER",
+        relatedNotificationId: id,
+        createdAt: now
+      });
+    }
+
+    if (patch.severity && patch.severity !== previousSeverity) {
+      this.pushWorkflowNotificationHistory(id, "SEVERITY_CHANGED", previousSeverity, patch.severity, now);
+    }
+
+    return mapStoredWorkflowNotification(record);
+  }
+
+  async listWorkflowNotificationHistory(filters?: {
+    sessionId?: string | null;
+    propertyId?: string | null;
+    shortlistId?: string | null;
+    notificationId?: string;
+    limit?: number;
+  }): Promise<WorkflowNotificationHistoryEvent[]> {
+    const allowedIds = new Set(
+      this.workflowNotifications
+        .filter((entry) => {
+          if (filters?.notificationId && entry.id !== filters.notificationId) {
+            return false;
+          }
+          if (filters?.sessionId !== undefined && entry.sessionId !== (filters.sessionId ?? null)) {
+            return false;
+          }
+          if (filters?.propertyId !== undefined && entry.propertyId !== (filters.propertyId ?? null)) {
+            return false;
+          }
+          if (filters?.shortlistId !== undefined && entry.shortlistId !== (filters.shortlistId ?? null)) {
+            return false;
+          }
+          return true;
+        })
+        .map((entry) => entry.id)
+    );
+
+    return this.workflowNotificationHistory
+      .filter((entry) => allowedIds.has(entry.notificationId))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, filters?.limit ?? this.workflowNotificationHistory.length)
+      .map((entry) => mapStoredWorkflowNotificationHistoryEvent(entry));
   }
 
   async createSharedSnapshot(payload: {
@@ -3494,6 +6220,38 @@ type PrismaClientLike = {
     findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
     update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   };
+  offerPreparation: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    delete?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
+  offerSubmission: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    delete?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
+  underContractCoordination: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    delete?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
+  closingReadiness: {
+    create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+    findFirst(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    findUnique(args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    update(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    delete?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  };
   offerReadiness: {
     create(args: Record<string, unknown>): Promise<Record<string, unknown>>;
     findMany(args: Record<string, unknown>): Promise<Record<string, unknown>[]>;
@@ -3717,6 +6475,384 @@ function mapPrismaFinancialReadiness(record: Record<string, unknown>): Financial
     lastEvaluatedAt: (record.lastEvaluatedAt as Date).toISOString(),
     createdAt: (record.createdAt as Date).toISOString(),
     updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaOfferPreparation(record: Record<string, unknown>): OfferPreparation {
+  return {
+    id: record.id as string,
+    sessionId: (record.sessionId as string | null) ?? null,
+    partnerId: (record.partnerId as string | null) ?? null,
+    propertyId: record.propertyId as string,
+    propertyAddressLabel: record.propertyAddressLabel as string,
+    shortlistId: (record.shortlistId as string | null) ?? null,
+    offerReadinessId: (record.offerReadinessId as string | null) ?? null,
+    financialReadinessId: record.financialReadinessId as string,
+    offerPrice: (record.offerPrice as number | null) ?? null,
+    earnestMoneyAmount: (record.earnestMoneyAmount as number | null) ?? null,
+    downPaymentType:
+      (record.downPaymentType as OfferPreparationDownPaymentType | null) ?? null,
+    downPaymentAmount: (record.downPaymentAmount as number | null) ?? null,
+    downPaymentPercent: (record.downPaymentPercent as number | null) ?? null,
+    financingContingency:
+      (record.financingContingency as OfferPreparationContingency | null) ?? null,
+    inspectionContingency:
+      (record.inspectionContingency as OfferPreparationContingency | null) ?? null,
+    appraisalContingency:
+      (record.appraisalContingency as OfferPreparationContingency | null) ?? null,
+    closingTimelineDays: (record.closingTimelineDays as number | null) ?? null,
+    possessionTiming:
+      (record.possessionTiming as OfferPreparationPossessionTiming | null) ?? null,
+    possessionDaysAfterClosing: (record.possessionDaysAfterClosing as number | null) ?? null,
+    sellerConcessionsRequestedAmount:
+      (record.sellerConcessionsRequestedAmount as number | null) ?? null,
+    notes: (record.notes as string | null) ?? null,
+    buyerRationale: (record.buyerRationale as string | null) ?? null,
+    offerSummary: clone(
+      (record.offerSummaryJson as OfferPreparation["offerSummary"] | null) ?? {
+        propertyId: record.propertyId as string,
+        propertyAddressLabel: record.propertyAddressLabel as string,
+        offerPrice: (record.offerPrice as number | null) ?? null,
+        earnestMoneyAmount: (record.earnestMoneyAmount as number | null) ?? null,
+        downPaymentAmount: (record.downPaymentAmount as number | null) ?? null,
+        downPaymentPercent: (record.downPaymentPercent as number | null) ?? null,
+        financingContingency:
+          (record.financingContingency as OfferPreparationContingency | null) ?? null,
+        inspectionContingency:
+          (record.inspectionContingency as OfferPreparationContingency | null) ?? null,
+        appraisalContingency:
+          (record.appraisalContingency as OfferPreparationContingency | null) ?? null,
+        closingTimelineDays: (record.closingTimelineDays as number | null) ?? null,
+        possessionTiming:
+          (record.possessionTiming as OfferPreparationPossessionTiming | null) ?? null
+      }
+    ),
+    offerState: record.offerState as OfferPreparationState,
+    offerRiskLevel: record.offerRiskLevel as OfferPreparation["offerRiskLevel"],
+    offerCompletenessState:
+      record.offerCompletenessState as OfferPreparation["offerCompletenessState"],
+    readinessToSubmit: Boolean(record.readinessToSubmit),
+    cashRequiredAtOffer: (record.cashRequiredAtOffer as number | null) ?? null,
+    missingItems: clone(
+      (record.missingItemsJson as OfferPreparation["missingItems"] | null) ?? []
+    ),
+    blockers: clone((record.blockersJson as OfferPreparation["blockers"] | null) ?? []),
+    recommendation: (record.recommendation as string | null) ?? "",
+    risk: (record.risk as string | null) ?? "",
+    alternative: (record.alternative as string | null) ?? "",
+    nextAction: (record.nextAction as string | null) ?? "",
+    nextSteps: clone((record.nextStepsJson as string[] | null) ?? []),
+    financialAlignment: clone(
+      (record.financialAlignmentJson as OfferPreparation["financialAlignment"] | null) ?? {
+        maxAffordableHomePrice: null,
+        targetCashToClose: null,
+        availableCashSavings: null,
+        affordabilityClassification: "BLOCKED",
+        readinessState: "BLOCKED",
+        financiallyAligned: false,
+        recommendedOfferPrice: null
+      }
+    ),
+    assumptionsUsed: clone(
+      (record.assumptionsJson as OfferPreparation["assumptionsUsed"] | null) ?? {
+        lowEarnestMoneyPercent: 0.01,
+        standardEarnestMoneyPercent: { min: 0.01, max: 0.03 },
+        aggressiveClosingTimelineDays: 14,
+        slowClosingTimelineDays: 45,
+        affordabilityTolerancePercent: 0.05
+      }
+    ),
+    lastEvaluatedAt: (record.lastEvaluatedAt as Date).toISOString(),
+    createdAt: (record.createdAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaOfferSubmission(record: Record<string, unknown>): OfferSubmission {
+  return {
+    id: record.id as string,
+    sessionId: (record.sessionId as string | null) ?? null,
+    partnerId: (record.partnerId as string | null) ?? null,
+    propertyId: record.propertyId as string,
+    propertyAddressLabel: record.propertyAddressLabel as string,
+    shortlistId: (record.shortlistId as string | null) ?? null,
+    financialReadinessId: (record.financialReadinessId as string | null) ?? null,
+    offerPreparationId: record.offerPreparationId as string,
+    submissionMethod: (record.submissionMethod as OfferSubmissionMethod | null) ?? null,
+    submittedAt: record.submittedAt ? (record.submittedAt as Date).toISOString() : null,
+    offerExpirationAt: record.offerExpirationAt ? (record.offerExpirationAt as Date).toISOString() : null,
+    sellerResponseState:
+      (record.sellerResponseState as OfferSubmissionSellerResponseState | null) ?? "NO_RESPONSE",
+    sellerRespondedAt: record.sellerRespondedAt ? (record.sellerRespondedAt as Date).toISOString() : null,
+    buyerCounterDecision:
+      (record.buyerCounterDecision as OfferSubmissionBuyerCounterDecision | null) ?? null,
+    withdrawnAt: record.withdrawnAt ? (record.withdrawnAt as Date).toISOString() : null,
+    withdrawalReason: (record.withdrawalReason as string | null) ?? null,
+    counterofferPrice: (record.counterofferPrice as number | null) ?? null,
+    counterofferClosingTimelineDays: (record.counterofferClosingTimelineDays as number | null) ?? null,
+    counterofferFinancingContingency:
+      (record.counterofferFinancingContingency as OfferPreparationContingency | null) ?? null,
+    counterofferInspectionContingency:
+      (record.counterofferInspectionContingency as OfferPreparationContingency | null) ?? null,
+    counterofferAppraisalContingency:
+      (record.counterofferAppraisalContingency as OfferPreparationContingency | null) ?? null,
+    counterofferExpirationAt:
+      record.counterofferExpirationAt ? (record.counterofferExpirationAt as Date).toISOString() : null,
+    notes: (record.notes as string | null) ?? null,
+    internalActivityNote: (record.internalActivityNote as string | null) ?? null,
+    originalOfferSnapshot: clone(
+      (record.originalOfferSnapshotJson as OfferSubmission["originalOfferSnapshot"] | null) ?? {
+        offerPrice: null,
+        earnestMoneyAmount: null,
+        downPaymentAmount: null,
+        downPaymentPercent: null,
+        financingContingency: null,
+        inspectionContingency: null,
+        appraisalContingency: null,
+        closingTimelineDays: null
+      }
+    ),
+    submissionSummary: clone(
+      (record.submissionSummaryJson as OfferSubmission["submissionSummary"] | null) ?? {
+        propertyId: record.propertyId as string,
+        propertyAddressLabel: record.propertyAddressLabel as string,
+        offerPreparationId: record.offerPreparationId as string,
+        submittedAt: record.submittedAt ? (record.submittedAt as Date).toISOString() : null,
+        offerExpirationAt: record.offerExpirationAt ? (record.offerExpirationAt as Date).toISOString() : null,
+        currentOfferPrice: (record.counterofferPrice as number | null) ?? null,
+        earnestMoneyAmount: null,
+        closingTimelineDays: (record.counterofferClosingTimelineDays as number | null) ?? null
+      }
+    ),
+    submissionState: record.submissionState as OfferSubmission["submissionState"],
+    urgencyLevel: record.urgencyLevel as OfferSubmission["urgencyLevel"],
+    counterofferSummary: clone(
+      (record.counterofferSummaryJson as OfferSubmission["counterofferSummary"] | null) ?? {
+        present: false,
+        counterofferPrice: null,
+        counterofferClosingTimelineDays: null,
+        counterofferFinancingContingency: null,
+        counterofferInspectionContingency: null,
+        counterofferAppraisalContingency: null,
+        counterofferExpirationAt: null,
+        changedFields: []
+      }
+    ),
+    missingItems: clone(
+      (record.missingItemsJson as OfferSubmission["missingItems"] | null) ?? []
+    ),
+    blockers: clone((record.blockersJson as OfferSubmission["blockers"] | null) ?? []),
+    recommendation: (record.recommendation as string | null) ?? "",
+    risk: (record.risk as string | null) ?? "",
+    alternative: (record.alternative as string | null) ?? "",
+    nextAction: (record.nextAction as string | null) ?? "",
+    nextSteps: clone((record.nextStepsJson as string[] | null) ?? []),
+    requiresBuyerResponse: Boolean(record.requiresBuyerResponse),
+    isExpired: Boolean(record.isExpired),
+    activityLog: clone((record.activityLogJson as OfferSubmission["activityLog"] | null) ?? []),
+    lastActionAt: record.lastActionAt ? (record.lastActionAt as Date).toISOString() : null,
+    lastEvaluatedAt: (record.lastEvaluatedAt as Date).toISOString(),
+    createdAt: (record.createdAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaUnderContractCoordination(record: Record<string, unknown>): UnderContractCoordination {
+  return {
+    id: record.id as string,
+    sessionId: (record.sessionId as string | null) ?? null,
+    partnerId: (record.partnerId as string | null) ?? null,
+    propertyId: record.propertyId as string,
+    propertyAddressLabel: record.propertyAddressLabel as string,
+    shortlistId: (record.shortlistId as string | null) ?? null,
+    financialReadinessId: (record.financialReadinessId as string | null) ?? null,
+    offerPreparationId: (record.offerPreparationId as string | null) ?? null,
+    offerSubmissionId: record.offerSubmissionId as string,
+    acceptedAt: (record.acceptedAt as Date).toISOString(),
+    targetClosingDate: (record.targetClosingDate as Date).toISOString(),
+    inspectionDeadline: record.inspectionDeadline ? (record.inspectionDeadline as Date).toISOString() : null,
+    appraisalDeadline: record.appraisalDeadline ? (record.appraisalDeadline as Date).toISOString() : null,
+    financingDeadline: record.financingDeadline ? (record.financingDeadline as Date).toISOString() : null,
+    contingencyDeadline: record.contingencyDeadline ? (record.contingencyDeadline as Date).toISOString() : null,
+    closingPreparationDeadline:
+      record.closingPreparationDeadline ? (record.closingPreparationDeadline as Date).toISOString() : null,
+    notes: (record.notes as string | null) ?? null,
+    internalActivityNote: (record.internalActivityNote as string | null) ?? null,
+    coordinationSummary: clone(
+      (record.coordinationSummaryJson as UnderContractCoordination["coordinationSummary"] | null) ?? {
+        propertyId: record.propertyId as string,
+        propertyAddressLabel: record.propertyAddressLabel as string,
+        offerSubmissionId: record.offerSubmissionId as string,
+        acceptedAt: (record.acceptedAt as Date).toISOString(),
+        targetClosingDate: (record.targetClosingDate as Date).toISOString()
+      }
+    ),
+    overallCoordinationState:
+      record.overallCoordinationState as UnderContractCoordination["overallCoordinationState"],
+    overallRiskLevel: record.overallRiskLevel as UnderContractCoordination["overallRiskLevel"],
+    urgencyLevel: record.urgencyLevel as UnderContractCoordination["urgencyLevel"],
+    readyForClosing: Boolean(record.readyForClosing),
+    requiresImmediateAttention: Boolean(record.requiresImmediateAttention),
+    taskSummaries: clone(
+      (record.taskRecordsJson as UnderContractCoordination["taskSummaries"] | null) ?? []
+    ),
+    milestoneSummaries: clone(
+      (record.milestoneRecordsJson as UnderContractCoordination["milestoneSummaries"] | null) ?? []
+    ),
+    deadlineSummaries: clone(
+      (record.deadlineRecordsJson as UnderContractCoordination["deadlineSummaries"] | null) ?? []
+    ),
+    missingItems: clone(
+      (record.missingItemsJson as UnderContractCoordination["missingItems"] | null) ?? []
+    ),
+    blockers: clone((record.blockersJson as UnderContractCoordination["blockers"] | null) ?? []),
+    recommendation: (record.recommendation as string | null) ?? "",
+    risk: (record.risk as string | null) ?? "",
+    alternative: (record.alternative as string | null) ?? "",
+    nextAction: (record.nextAction as string | null) ?? "",
+    nextSteps: clone((record.nextStepsJson as string[] | null) ?? []),
+    activityLog: clone((record.activityLogJson as UnderContractCoordination["activityLog"] | null) ?? []),
+    lastActionAt: record.lastActionAt ? (record.lastActionAt as Date).toISOString() : null,
+    lastEvaluatedAt: (record.lastEvaluatedAt as Date).toISOString(),
+    createdAt: (record.createdAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaClosingReadiness(record: Record<string, unknown>): ClosingReadiness {
+  return {
+    id: record.id as string,
+    sessionId: (record.sessionId as string | null) ?? null,
+    partnerId: (record.partnerId as string | null) ?? null,
+    propertyId: record.propertyId as string,
+    propertyAddressLabel: record.propertyAddressLabel as string,
+    shortlistId: (record.shortlistId as string | null) ?? null,
+    financialReadinessId: (record.financialReadinessId as string | null) ?? null,
+    offerPreparationId: (record.offerPreparationId as string | null) ?? null,
+    offerSubmissionId: (record.offerSubmissionId as string | null) ?? null,
+    underContractCoordinationId: record.underContractCoordinationId as string,
+    targetClosingDate: (record.targetClosingDate as Date).toISOString(),
+    closingAppointmentAt:
+      record.closingAppointmentAt ? (record.closingAppointmentAt as Date).toISOString() : null,
+    closingAppointmentLocation: (record.closingAppointmentLocation as string | null) ?? null,
+    closingAppointmentNotes: (record.closingAppointmentNotes as string | null) ?? null,
+    finalReviewDeadline:
+      record.finalReviewDeadline ? (record.finalReviewDeadline as Date).toISOString() : null,
+    finalFundsConfirmationDeadline:
+      record.finalFundsConfirmationDeadline
+        ? (record.finalFundsConfirmationDeadline as Date).toISOString()
+        : null,
+    finalFundsAmountConfirmed: (record.finalFundsAmountConfirmed as number | null) ?? null,
+    closedAt: record.closedAt ? (record.closedAt as Date).toISOString() : null,
+    notes: (record.notes as string | null) ?? null,
+    internalActivityNote: (record.internalActivityNote as string | null) ?? null,
+    closingSummary: clone(
+      (record.closingSummaryJson as ClosingReadiness["closingSummary"] | null) ?? {
+        propertyId: record.propertyId as string,
+        propertyAddressLabel: record.propertyAddressLabel as string,
+        underContractCoordinationId: record.underContractCoordinationId as string,
+        targetClosingDate: (record.targetClosingDate as Date).toISOString(),
+        closingAppointmentAt:
+          record.closingAppointmentAt ? (record.closingAppointmentAt as Date).toISOString() : null,
+        closedAt: record.closedAt ? (record.closedAt as Date).toISOString() : null
+      }
+    ),
+    overallClosingReadinessState:
+      record.overallClosingReadinessState as ClosingReadiness["overallClosingReadinessState"],
+    overallRiskLevel: record.overallRiskLevel as ClosingReadiness["overallRiskLevel"],
+    urgencyLevel: record.urgencyLevel as ClosingReadiness["urgencyLevel"],
+    readyToClose: Boolean(record.readyToClose),
+    closed: Boolean(record.closed),
+    checklistItemSummaries: clone(
+      (record.checklistItemsJson as ClosingReadiness["checklistItemSummaries"] | null) ?? []
+    ),
+    milestoneSummaries: clone(
+      (record.milestoneRecordsJson as ClosingReadiness["milestoneSummaries"] | null) ?? []
+    ),
+    missingItems: clone(
+      (record.missingItemsJson as ClosingReadiness["missingItems"] | null) ?? []
+    ),
+    blockers: clone((record.blockersJson as ClosingReadiness["blockers"] | null) ?? []),
+    recommendation: (record.recommendation as string | null) ?? "",
+    risk: (record.risk as string | null) ?? "",
+    alternative: (record.alternative as string | null) ?? "",
+    nextAction: (record.nextAction as string | null) ?? "",
+    nextSteps: clone((record.nextStepsJson as string[] | null) ?? []),
+    activityLog: clone((record.activityLogJson as ClosingReadiness["activityLog"] | null) ?? []),
+    requiresImmediateAttention: Boolean(record.requiresImmediateAttention),
+    lastActionAt: record.lastActionAt ? (record.lastActionAt as Date).toISOString() : null,
+    lastEvaluatedAt: (record.lastEvaluatedAt as Date).toISOString(),
+    createdAt: (record.createdAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaWorkflowNotification(record: Record<string, unknown>): WorkflowNotification {
+  return {
+    id: record.id as string,
+    workflowId: (record.workflowId as string | null) ?? null,
+    sessionId: (record.sessionId as string | null) ?? null,
+    propertyId: (record.propertyId as string | null) ?? null,
+    propertyAddressLabel: (record.propertyAddressLabel as string | null) ?? null,
+    shortlistId: (record.shortlistId as string | null) ?? null,
+    moduleName: record.moduleName as NotificationModuleName,
+    alertCategory: record.alertCategory as AlertCategory,
+    severity: record.severity as NotificationSeverity,
+    status: record.status as NotificationStatus,
+    triggeringRuleLabel: record.triggeringRuleLabel as string,
+    relatedSubjectType: record.relatedSubjectType as string,
+    relatedSubjectId: record.relatedSubjectId as string,
+    title: record.title as string,
+    message: record.message as string,
+    actionLabel: (record.actionLabel as string | null) ?? null,
+    actionTarget: clone((record.actionTargetJson as NotificationActionTarget | null) ?? null),
+    dueAt: record.dueAt ? (record.dueAt as Date).toISOString() : null,
+    readAt: record.readAt ? (record.readAt as Date).toISOString() : null,
+    dismissedAt: record.dismissedAt ? (record.dismissedAt as Date).toISOString() : null,
+    resolvedAt: record.resolvedAt ? (record.resolvedAt as Date).toISOString() : null,
+    explanationSubjectType: (record.explanationSubjectType as string | null) ?? null,
+    explanationSubjectId: (record.explanationSubjectId as string | null) ?? null,
+    createdAt: (record.createdAt as Date).toISOString(),
+    updatedAt: (record.updatedAt as Date).toISOString()
+  };
+}
+
+function mapPrismaWorkflowNotificationHistoryEvent(
+  record: Record<string, unknown>
+): WorkflowNotificationHistoryEvent {
+  return {
+    id: record.id as string,
+    notificationId: record.notificationId as string,
+    eventType: record.eventType as WorkflowNotificationHistoryEvent["eventType"],
+    previousValue: (record.previousValue as string | null) ?? null,
+    nextValue: (record.nextValue as string | null) ?? null,
+    createdAt: (record.createdAt as Date).toISOString()
+  };
+}
+
+function mapPrismaUnifiedActivityRecord(record: Record<string, unknown>): UnifiedActivityRecord {
+  return {
+    id: record.id as string,
+    workflowId: (record.workflowId as string | null) ?? null,
+    sessionId: (record.sessionId as string | null) ?? null,
+    propertyId: (record.propertyId as string | null) ?? null,
+    propertyAddressLabel: (record.propertyAddressLabel as string | null) ?? null,
+    shortlistId: (record.shortlistId as string | null) ?? null,
+    moduleName: record.moduleName as UnifiedActivityModuleName,
+    eventCategory: record.eventCategory as UnifiedActivityEventCategory,
+    subjectType: record.subjectType as string,
+    subjectId: record.subjectId as string,
+    title: record.title as string,
+    summary: record.summary as string,
+    oldValueSnapshot: clone((record.oldValueSnapshotJson as Record<string, unknown> | null) ?? null),
+    newValueSnapshot: clone((record.newValueSnapshotJson as Record<string, unknown> | null) ?? null),
+    triggerType: record.triggerType as UnifiedActivityTriggerType,
+    triggerLabel: record.triggerLabel as string,
+    actorType: record.actorType as UnifiedActivityActorType,
+    actorId: (record.actorId as string | null) ?? null,
+    relatedNotificationId: (record.relatedNotificationId as string | null) ?? null,
+    relatedExplanationId: (record.relatedExplanationId as string | null) ?? null,
+    createdAt: (record.createdAt as Date).toISOString()
   };
 }
 
@@ -4126,6 +7262,444 @@ function mapPrismaAuditRecord(
 
 export class PrismaSearchRepository implements SearchRepository {
   constructor(private readonly client: PrismaClientLike) {}
+
+  private async syncOfferSubmissionRecord(
+    record: Record<string, unknown>
+  ): Promise<OfferSubmission> {
+    const mapped = mapPrismaOfferSubmission(record);
+    const offerPreparationRecord = await this.client.offerPreparation.findUnique({
+      where: {
+        id: mapped.offerPreparationId
+      }
+    });
+    if (!offerPreparationRecord) {
+      return mapped;
+    }
+
+    const offerPreparation = mapPrismaOfferPreparation(offerPreparationRecord);
+    const financialReadinessRecord = mapped.financialReadinessId
+      ? await this.client.financialReadiness.findUnique({
+          where: {
+            id: mapped.financialReadinessId
+          }
+        })
+      : null;
+    const financialReadiness = financialReadinessRecord
+      ? mapPrismaFinancialReadiness(financialReadinessRecord)
+      : null;
+    const now = new Date().toISOString();
+    const evaluation = evaluateOfferSubmission({
+      now,
+      current: mapped,
+      offerPreparation,
+      financialReadiness
+    });
+
+    if (
+      mapped.submissionState !== evaluation.submissionState ||
+      mapped.isExpired !== evaluation.isExpired ||
+      mapped.lastEvaluatedAt !== evaluation.lastEvaluatedAt
+    ) {
+      const nextActivityLog = clone(mapped.activityLog);
+      if (mapped.submissionState !== evaluation.submissionState && evaluation.submissionState === "EXPIRED") {
+        nextActivityLog.push({
+          type: "offer_expired",
+          label: "Offer expired",
+          details: "The response window elapsed without a completed response.",
+          createdAt: now
+        });
+
+        await this.recordValidationEvent({
+          eventName: "offer_submission_expired",
+          sessionId: mapped.sessionId ?? null,
+          payload: {
+            shortlistId: mapped.shortlistId ?? null,
+            offerPreparationId: mapped.offerPreparationId,
+            offerSubmissionId: mapped.id,
+            propertyId: mapped.propertyId,
+            fromState: mapped.submissionState,
+            toState: evaluation.submissionState
+          }
+        });
+      }
+
+      const updated = await this.client.offerSubmission.update({
+        where: {
+          id: mapped.id
+        },
+        data: {
+          propertyAddressLabel: evaluation.propertyAddressLabel,
+          submissionMethod: evaluation.submissionMethod,
+          submittedAt: evaluation.submittedAt ? new Date(evaluation.submittedAt) : null,
+          offerExpirationAt: evaluation.offerExpirationAt ? new Date(evaluation.offerExpirationAt) : null,
+          sellerResponseState: evaluation.sellerResponseState,
+          sellerRespondedAt: evaluation.sellerRespondedAt ? new Date(evaluation.sellerRespondedAt) : null,
+          buyerCounterDecision: evaluation.buyerCounterDecision,
+          withdrawnAt: evaluation.withdrawnAt ? new Date(evaluation.withdrawnAt) : null,
+          withdrawalReason: evaluation.withdrawalReason,
+          notes: evaluation.notes ?? null,
+          internalActivityNote: evaluation.internalActivityNote ?? null,
+          counterofferPrice: evaluation.counterofferPrice,
+          counterofferClosingTimelineDays: evaluation.counterofferClosingTimelineDays,
+          counterofferFinancingContingency: evaluation.counterofferFinancingContingency,
+          counterofferInspectionContingency: evaluation.counterofferInspectionContingency,
+          counterofferAppraisalContingency: evaluation.counterofferAppraisalContingency,
+          counterofferExpirationAt: evaluation.counterofferExpirationAt
+            ? new Date(evaluation.counterofferExpirationAt)
+            : null,
+          submissionSummaryJson: evaluation.submissionSummary,
+          submissionState: evaluation.submissionState,
+          urgencyLevel: evaluation.urgencyLevel,
+          counterofferSummaryJson: evaluation.counterofferSummary,
+          missingItemsJson: evaluation.missingItems,
+          blockersJson: evaluation.blockers,
+          recommendation: evaluation.recommendation,
+          risk: evaluation.risk,
+          alternative: evaluation.alternative,
+          nextAction: evaluation.nextAction,
+          nextStepsJson: evaluation.nextSteps,
+          requiresBuyerResponse: evaluation.requiresBuyerResponse,
+          isExpired: evaluation.isExpired,
+          activityLogJson: nextActivityLog,
+          lastActionAt: evaluation.lastActionAt ? new Date(evaluation.lastActionAt) : null,
+          lastEvaluatedAt: new Date(now)
+        }
+      });
+
+      return mapPrismaOfferSubmission(updated);
+    }
+
+    return mapped;
+  }
+
+  private async syncUnderContractRecord(
+    record: Record<string, unknown>
+  ): Promise<UnderContractCoordination> {
+    const mapped = mapPrismaUnderContractCoordination(record);
+    const offerSubmissionRecord = await this.client.offerSubmission.findUnique({
+      where: {
+        id: mapped.offerSubmissionId
+      }
+    });
+    if (!offerSubmissionRecord) {
+      return mapped;
+    }
+
+    const offerSubmission = await this.syncOfferSubmissionRecord(offerSubmissionRecord);
+    const offerPreparationRecord = mapped.offerPreparationId
+      ? await this.client.offerPreparation.findUnique({
+          where: {
+            id: mapped.offerPreparationId
+          }
+        })
+      : await this.client.offerPreparation.findUnique({
+          where: {
+            id: offerSubmission.offerPreparationId
+          }
+        });
+    const offerPreparation = offerPreparationRecord
+      ? mapPrismaOfferPreparation(offerPreparationRecord)
+      : null;
+    const financialReadinessRecord = mapped.financialReadinessId
+      ? await this.client.financialReadiness.findUnique({
+          where: {
+            id: mapped.financialReadinessId
+          }
+        })
+      : null;
+    const financialReadiness = financialReadinessRecord
+      ? mapPrismaFinancialReadiness(financialReadinessRecord)
+      : null;
+    const now = new Date().toISOString();
+    const evaluation = evaluateUnderContractCoordination({
+      now,
+      current: mapped,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness
+    });
+
+    if (
+      mapped.overallCoordinationState !== evaluation.overallCoordinationState ||
+      mapped.readyForClosing !== evaluation.readyForClosing ||
+      mapped.lastEvaluatedAt !== evaluation.lastEvaluatedAt
+    ) {
+      const nextActivityLog = clone(mapped.activityLog);
+      if (
+        mapped.overallCoordinationState !== evaluation.overallCoordinationState &&
+        evaluation.overallCoordinationState === "READY_FOR_CLOSING"
+      ) {
+        nextActivityLog.push({
+          type: "ready_for_closing",
+          label: "Ready for closing",
+          details: "All required pre-closing contract tasks are complete or validly waived.",
+          createdAt: now
+        });
+
+        await this.recordValidationEvent({
+          eventName: "under_contract_ready_for_closing",
+          sessionId: mapped.sessionId ?? null,
+          payload: {
+            shortlistId: mapped.shortlistId ?? null,
+            offerPreparationId: mapped.offerPreparationId ?? null,
+            offerSubmissionId: mapped.offerSubmissionId,
+            underContractId: mapped.id,
+            propertyId: mapped.propertyId,
+            fromState: mapped.overallCoordinationState,
+            toState: evaluation.overallCoordinationState
+          }
+        });
+      } else if (
+        mapped.overallCoordinationState !== evaluation.overallCoordinationState &&
+        evaluation.overallCoordinationState === "BLOCKED"
+      ) {
+        nextActivityLog.push({
+          type: "blocked",
+          label: "Contract workflow blocked",
+          details: evaluation.nextAction,
+          createdAt: now
+        });
+
+        await this.recordValidationEvent({
+          eventName: "under_contract_blocked",
+          sessionId: mapped.sessionId ?? null,
+          payload: {
+            shortlistId: mapped.shortlistId ?? null,
+            offerPreparationId: mapped.offerPreparationId ?? null,
+            offerSubmissionId: mapped.offerSubmissionId,
+            underContractId: mapped.id,
+            propertyId: mapped.propertyId,
+            fromState: mapped.overallCoordinationState,
+            toState: evaluation.overallCoordinationState
+          }
+        });
+      }
+
+      const updated = await this.client.underContractCoordination.update({
+        where: {
+          id: mapped.id
+        },
+        data: {
+          propertyAddressLabel: evaluation.propertyAddressLabel,
+          acceptedAt: new Date(evaluation.acceptedAt),
+          targetClosingDate: new Date(evaluation.targetClosingDate),
+          inspectionDeadline: evaluation.inspectionDeadline ? new Date(evaluation.inspectionDeadline) : null,
+          appraisalDeadline: evaluation.appraisalDeadline ? new Date(evaluation.appraisalDeadline) : null,
+          financingDeadline: evaluation.financingDeadline ? new Date(evaluation.financingDeadline) : null,
+          contingencyDeadline: evaluation.contingencyDeadline ? new Date(evaluation.contingencyDeadline) : null,
+          closingPreparationDeadline: evaluation.closingPreparationDeadline
+            ? new Date(evaluation.closingPreparationDeadline)
+            : null,
+          notes: evaluation.notes ?? null,
+          internalActivityNote: evaluation.internalActivityNote ?? null,
+          coordinationSummaryJson: evaluation.coordinationSummary,
+          overallCoordinationState: evaluation.overallCoordinationState,
+          overallRiskLevel: evaluation.overallRiskLevel,
+          urgencyLevel: evaluation.urgencyLevel,
+          readyForClosing: evaluation.readyForClosing,
+          requiresImmediateAttention: evaluation.requiresImmediateAttention,
+          taskRecordsJson: evaluation.taskSummaries,
+          milestoneRecordsJson: evaluation.milestoneSummaries,
+          deadlineRecordsJson: evaluation.deadlineSummaries,
+          missingItemsJson: evaluation.missingItems,
+          blockersJson: evaluation.blockers,
+          recommendation: evaluation.recommendation,
+          risk: evaluation.risk,
+          alternative: evaluation.alternative,
+          nextAction: evaluation.nextAction,
+          nextStepsJson: evaluation.nextSteps,
+          activityLogJson: nextActivityLog,
+          lastActionAt: evaluation.lastActionAt ? new Date(evaluation.lastActionAt) : null,
+          lastEvaluatedAt: new Date(now)
+        }
+      });
+
+      return mapPrismaUnderContractCoordination(updated);
+    }
+
+    return mapped;
+  }
+
+  private async syncClosingReadinessRecord(
+    record: Record<string, unknown>
+  ): Promise<ClosingReadiness> {
+    const mapped = mapPrismaClosingReadiness(record);
+    const underContractRecord = await this.client.underContractCoordination.findUnique({
+      where: {
+        id: mapped.underContractCoordinationId
+      }
+    });
+    if (!underContractRecord) {
+      return mapped;
+    }
+
+    const underContract = await this.syncUnderContractRecord(underContractRecord);
+    const offerSubmissionRecord = mapped.offerSubmissionId
+      ? await this.client.offerSubmission.findUnique({
+          where: {
+            id: mapped.offerSubmissionId
+          }
+        })
+      : null;
+    const offerSubmission = offerSubmissionRecord
+      ? await this.syncOfferSubmissionRecord(offerSubmissionRecord)
+      : null;
+    const offerPreparationRecord = mapped.offerPreparationId
+      ? await this.client.offerPreparation.findUnique({
+          where: {
+            id: mapped.offerPreparationId
+          }
+        })
+      : null;
+    const offerPreparation = offerPreparationRecord ? mapPrismaOfferPreparation(offerPreparationRecord) : null;
+    const financialReadinessRecord = mapped.financialReadinessId
+      ? await this.client.financialReadiness.findUnique({
+          where: {
+            id: mapped.financialReadinessId
+          }
+        })
+      : null;
+    const financialReadiness = financialReadinessRecord
+      ? mapPrismaFinancialReadiness(financialReadinessRecord)
+      : null;
+    const now = new Date().toISOString();
+    const evaluation = evaluateClosingReadiness({
+      now,
+      current: mapped,
+      underContract,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness
+    });
+
+    if (
+      mapped.overallClosingReadinessState !== evaluation.overallClosingReadinessState ||
+      mapped.readyToClose !== evaluation.readyToClose ||
+      mapped.closed !== evaluation.closed ||
+      mapped.lastEvaluatedAt !== evaluation.lastEvaluatedAt
+    ) {
+      const nextActivityLog = clone(mapped.activityLog);
+      if (
+        mapped.overallClosingReadinessState !== evaluation.overallClosingReadinessState &&
+        evaluation.overallClosingReadinessState === "READY_TO_CLOSE"
+      ) {
+        nextActivityLog.push({
+          type: "ready_to_close",
+          label: "Ready to close",
+          details: "All required final closing items are complete or validly waived.",
+          createdAt: now
+        });
+        await this.recordValidationEvent({
+          eventName: "closing_ready_to_close",
+          sessionId: mapped.sessionId ?? null,
+          payload: {
+            shortlistId: mapped.shortlistId ?? null,
+            offerPreparationId: mapped.offerPreparationId ?? null,
+            offerSubmissionId: mapped.offerSubmissionId ?? null,
+            underContractId: mapped.underContractCoordinationId,
+            closingReadinessId: mapped.id,
+            propertyId: mapped.propertyId,
+            fromState: mapped.overallClosingReadinessState,
+            toState: evaluation.overallClosingReadinessState
+          }
+        });
+      } else if (
+        mapped.overallClosingReadinessState !== evaluation.overallClosingReadinessState &&
+        evaluation.overallClosingReadinessState === "BLOCKED"
+      ) {
+        nextActivityLog.push({
+          type: "blocked",
+          label: "Closing readiness blocked",
+          details: evaluation.nextAction,
+          createdAt: now
+        });
+        await this.recordValidationEvent({
+          eventName: "closing_blocked",
+          sessionId: mapped.sessionId ?? null,
+          payload: {
+            shortlistId: mapped.shortlistId ?? null,
+            offerPreparationId: mapped.offerPreparationId ?? null,
+            offerSubmissionId: mapped.offerSubmissionId ?? null,
+            underContractId: mapped.underContractCoordinationId,
+            closingReadinessId: mapped.id,
+            propertyId: mapped.propertyId,
+            fromState: mapped.overallClosingReadinessState,
+            toState: evaluation.overallClosingReadinessState
+          }
+        });
+      } else if (
+        mapped.overallClosingReadinessState !== evaluation.overallClosingReadinessState &&
+        evaluation.overallClosingReadinessState === "CLOSED"
+      ) {
+        nextActivityLog.push({
+          type: "closed",
+          label: "Closing marked complete",
+          details: null,
+          createdAt: now
+        });
+        await this.recordValidationEvent({
+          eventName: "closing_completed",
+          sessionId: mapped.sessionId ?? null,
+          payload: {
+            shortlistId: mapped.shortlistId ?? null,
+            offerPreparationId: mapped.offerPreparationId ?? null,
+            offerSubmissionId: mapped.offerSubmissionId ?? null,
+            underContractId: mapped.underContractCoordinationId,
+            closingReadinessId: mapped.id,
+            propertyId: mapped.propertyId,
+            fromState: mapped.overallClosingReadinessState,
+            toState: evaluation.overallClosingReadinessState
+          }
+        });
+      }
+
+      const updated = await this.client.closingReadiness.update({
+        where: {
+          id: mapped.id
+        },
+        data: {
+          propertyAddressLabel: evaluation.propertyAddressLabel,
+          targetClosingDate: new Date(evaluation.targetClosingDate),
+          closingAppointmentAt: evaluation.closingAppointmentAt
+            ? new Date(evaluation.closingAppointmentAt)
+            : null,
+          closingAppointmentLocation: evaluation.closingAppointmentLocation ?? null,
+          closingAppointmentNotes: evaluation.closingAppointmentNotes ?? null,
+          finalReviewDeadline: evaluation.finalReviewDeadline ? new Date(evaluation.finalReviewDeadline) : null,
+          finalFundsConfirmationDeadline: evaluation.finalFundsConfirmationDeadline
+            ? new Date(evaluation.finalFundsConfirmationDeadline)
+            : null,
+          finalFundsAmountConfirmed: evaluation.finalFundsAmountConfirmed ?? null,
+          closedAt: evaluation.closedAt ? new Date(evaluation.closedAt) : null,
+          notes: evaluation.notes ?? null,
+          internalActivityNote: evaluation.internalActivityNote ?? null,
+          closingSummaryJson: evaluation.closingSummary,
+          overallClosingReadinessState: evaluation.overallClosingReadinessState,
+          overallRiskLevel: evaluation.overallRiskLevel,
+          urgencyLevel: evaluation.urgencyLevel,
+          readyToClose: evaluation.readyToClose,
+          closed: evaluation.closed,
+          checklistItemsJson: evaluation.checklistItemSummaries,
+          milestoneRecordsJson: evaluation.milestoneSummaries,
+          missingItemsJson: evaluation.missingItems,
+          blockersJson: evaluation.blockers,
+          recommendation: evaluation.recommendation,
+          risk: evaluation.risk,
+          alternative: evaluation.alternative,
+          nextAction: evaluation.nextAction,
+          nextStepsJson: evaluation.nextSteps,
+          activityLogJson: nextActivityLog,
+          requiresImmediateAttention: evaluation.requiresImmediateAttention,
+          lastActionAt: evaluation.lastActionAt ? new Date(evaluation.lastActionAt) : null,
+          lastEvaluatedAt: new Date(now)
+        }
+      });
+
+      return mapPrismaClosingReadiness(updated);
+    }
+
+    return mapped;
+  }
 
   async saveSearch(payload: SearchPersistenceInput): Promise<{ historyRecordId: string | null }> {
     await Promise.all(payload.listings.map((listing) => this.upsertProperty(listing)));
@@ -4880,6 +8454,1778 @@ export class PrismaSearchRepository implements SearchRepository {
   async getFinancialReadinessSummary(id: string): Promise<FinancialReadinessSummary | null> {
     const record = await this.getFinancialReadiness(id);
     return record ? toFinancialReadinessSummary(record) : null;
+  }
+
+  async createOfferPreparation(
+    payload: OfferPreparationInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<OfferPreparation | null> {
+    const financialReadinessRecord = await this.client.financialReadiness.findUnique({
+      where: {
+        id: payload.financialReadinessId
+      }
+    });
+    if (!financialReadinessRecord) {
+      return null;
+    }
+
+    const existing = await this.client.offerPreparation.findFirst({
+      where: {
+        propertyId: payload.propertyId,
+        ...(payload.shortlistId ? { shortlistId: payload.shortlistId } : {})
+      }
+    });
+    if (existing) {
+      return mapPrismaOfferPreparation(existing);
+    }
+
+    const financialReadiness = mapPrismaFinancialReadiness(financialReadinessRecord);
+    const offerReadiness = payload.offerReadinessId
+      ? await this.client.offerReadiness.findUnique({
+          where: {
+            id: payload.offerReadinessId
+          }
+        })
+      : await this.client.offerReadiness.findFirst({
+          where: {
+            propertyId: payload.propertyId,
+            ...(payload.shortlistId ? { shortlistId: payload.shortlistId } : {})
+          }
+        });
+    const recommendedOfferPrice = offerReadiness
+      ? mapPrismaOfferReadiness(offerReadiness).recommendedOfferPrice
+      : null;
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateOfferPreparation({
+      now,
+      financialReadiness,
+      recommendedOfferPrice,
+      sessionId: payload.sessionId ?? financialReadiness.sessionId ?? null,
+      partnerId: payload.partnerId ?? financialReadiness.partnerId ?? null,
+      patch: payload
+    });
+
+    const record = await this.client.offerPreparation.create({
+      data: {
+        sessionId: evaluation.sessionId ?? null,
+        partnerId: evaluation.partnerId ?? null,
+        propertyId: evaluation.propertyId,
+        propertyAddressLabel: evaluation.propertyAddressLabel,
+        shortlistId: evaluation.shortlistId ?? null,
+        offerReadinessId: evaluation.offerReadinessId ?? null,
+        financialReadinessId: evaluation.financialReadinessId,
+        offerPrice: evaluation.offerPrice,
+        earnestMoneyAmount: evaluation.earnestMoneyAmount,
+        downPaymentType: evaluation.downPaymentType,
+        downPaymentAmount: evaluation.downPaymentAmount,
+        downPaymentPercent: evaluation.downPaymentPercent,
+        financingContingency: evaluation.financingContingency,
+        inspectionContingency: evaluation.inspectionContingency,
+        appraisalContingency: evaluation.appraisalContingency,
+        closingTimelineDays: evaluation.closingTimelineDays,
+        possessionTiming: evaluation.possessionTiming ?? null,
+        possessionDaysAfterClosing: evaluation.possessionDaysAfterClosing ?? null,
+        sellerConcessionsRequestedAmount: evaluation.sellerConcessionsRequestedAmount ?? null,
+        notes: evaluation.notes ?? null,
+        buyerRationale: evaluation.buyerRationale ?? null,
+        offerSummaryJson: evaluation.offerSummary,
+        offerState: evaluation.offerState,
+        offerRiskLevel: evaluation.offerRiskLevel,
+        offerCompletenessState: evaluation.offerCompletenessState,
+        readinessToSubmit: evaluation.readinessToSubmit,
+        cashRequiredAtOffer: evaluation.cashRequiredAtOffer,
+        missingItemsJson: evaluation.missingItems,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        financialAlignmentJson: evaluation.financialAlignment,
+        assumptionsJson: evaluation.assumptionsUsed,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "offer_preparation_created",
+      sessionId: evaluation.sessionId ?? null,
+      payload: {
+        offerPreparationId: record.id as string,
+        propertyId: evaluation.propertyId,
+        shortlistId: evaluation.shortlistId ?? null,
+        offerState: evaluation.offerState
+      }
+    });
+
+    return mapPrismaOfferPreparation(record);
+  }
+
+  async listOfferPreparations(shortlistId: string): Promise<OfferPreparation[]> {
+    const records = await this.client.offerPreparation.findMany({
+      where: {
+        shortlistId
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+
+    return records.map((record) => mapPrismaOfferPreparation(record));
+  }
+
+  async getOfferPreparation(id: string): Promise<OfferPreparation | null> {
+    const record = await this.client.offerPreparation.findUnique({
+      where: {
+        id
+      }
+    });
+
+    return record ? mapPrismaOfferPreparation(record) : null;
+  }
+
+  async getLatestOfferPreparation(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<OfferPreparation | null> {
+    const record = await this.client.offerPreparation.findFirst({
+      where: {
+        propertyId: payload.propertyId,
+        ...(payload.shortlistId ? { shortlistId: payload.shortlistId } : {}),
+        ...(payload.sessionId ? { sessionId: payload.sessionId } : {})
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+
+    return record ? mapPrismaOfferPreparation(record) : null;
+  }
+
+  async updateOfferPreparation(
+    id: string,
+    patch: {
+      propertyAddressLabel?: string;
+      offerPrice?: number | null;
+      earnestMoneyAmount?: number | null;
+      downPaymentType?: OfferPreparationDownPaymentType | null;
+      downPaymentAmount?: number | null;
+      downPaymentPercent?: number | null;
+      financingContingency?: OfferPreparationContingency | null;
+      inspectionContingency?: OfferPreparationContingency | null;
+      appraisalContingency?: OfferPreparationContingency | null;
+      closingTimelineDays?: number | null;
+      possessionTiming?: OfferPreparationPossessionTiming | null;
+      possessionDaysAfterClosing?: number | null;
+      sellerConcessionsRequestedAmount?: number | null;
+      notes?: string | null;
+      buyerRationale?: string | null;
+    }
+  ): Promise<OfferPreparation | null> {
+    const existing = await this.client.offerPreparation.findUnique({
+      where: {
+        id
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const current = mapPrismaOfferPreparation(existing);
+    const financialReadinessRecord = await this.client.financialReadiness.findUnique({
+      where: {
+        id: current.financialReadinessId
+      }
+    });
+    if (!financialReadinessRecord) {
+      return null;
+    }
+
+    const financialReadiness = mapPrismaFinancialReadiness(financialReadinessRecord);
+    const offerReadinessRecord = current.offerReadinessId
+      ? await this.client.offerReadiness.findUnique({
+          where: {
+            id: current.offerReadinessId
+          }
+        })
+      : await this.client.offerReadiness.findFirst({
+          where: {
+            propertyId: current.propertyId,
+            ...(current.shortlistId ? { shortlistId: current.shortlistId } : {})
+          }
+        });
+    const recommendedOfferPrice = offerReadinessRecord
+      ? mapPrismaOfferReadiness(offerReadinessRecord).recommendedOfferPrice
+      : null;
+
+    const now = new Date().toISOString();
+    const previousState = current.offerState;
+    const evaluation = evaluateOfferPreparation({
+      now,
+      current,
+      patch,
+      financialReadiness,
+      recommendedOfferPrice
+    });
+
+    const record = await this.client.offerPreparation.update({
+      where: {
+        id
+      },
+      data: {
+        sessionId: evaluation.sessionId ?? null,
+        partnerId: evaluation.partnerId ?? null,
+        propertyId: evaluation.propertyId,
+        propertyAddressLabel: evaluation.propertyAddressLabel,
+        shortlistId: evaluation.shortlistId ?? null,
+        offerReadinessId: evaluation.offerReadinessId ?? null,
+        financialReadinessId: evaluation.financialReadinessId,
+        offerPrice: evaluation.offerPrice,
+        earnestMoneyAmount: evaluation.earnestMoneyAmount,
+        downPaymentType: evaluation.downPaymentType,
+        downPaymentAmount: evaluation.downPaymentAmount,
+        downPaymentPercent: evaluation.downPaymentPercent,
+        financingContingency: evaluation.financingContingency,
+        inspectionContingency: evaluation.inspectionContingency,
+        appraisalContingency: evaluation.appraisalContingency,
+        closingTimelineDays: evaluation.closingTimelineDays,
+        possessionTiming: evaluation.possessionTiming ?? null,
+        possessionDaysAfterClosing: evaluation.possessionDaysAfterClosing ?? null,
+        sellerConcessionsRequestedAmount: evaluation.sellerConcessionsRequestedAmount ?? null,
+        notes: evaluation.notes ?? null,
+        buyerRationale: evaluation.buyerRationale ?? null,
+        offerSummaryJson: evaluation.offerSummary,
+        offerState: evaluation.offerState,
+        offerRiskLevel: evaluation.offerRiskLevel,
+        offerCompletenessState: evaluation.offerCompletenessState,
+        readinessToSubmit: evaluation.readinessToSubmit,
+        cashRequiredAtOffer: evaluation.cashRequiredAtOffer,
+        missingItemsJson: evaluation.missingItems,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        financialAlignmentJson: evaluation.financialAlignment,
+        assumptionsJson: evaluation.assumptionsUsed,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "offer_preparation_updated",
+      sessionId: evaluation.sessionId ?? null,
+      payload: {
+        offerPreparationId: id,
+        propertyId: evaluation.propertyId,
+        offerState: evaluation.offerState
+      }
+    });
+
+    if (previousState !== evaluation.offerState) {
+      await this.recordValidationEvent({
+        eventName: "offer_preparation_status_changed",
+        sessionId: evaluation.sessionId ?? null,
+        payload: {
+          offerPreparationId: id,
+          propertyId: evaluation.propertyId,
+          fromState: previousState,
+          toState: evaluation.offerState
+        }
+      });
+    }
+
+    return mapPrismaOfferPreparation(record);
+  }
+
+  async getOfferPreparationSummary(id: string): Promise<OfferPreparationSummary | null> {
+    const record = await this.getOfferPreparation(id);
+    return record ? toOfferPreparationSummary(record) : null;
+  }
+
+  async createOfferSubmission(
+    payload: OfferSubmissionInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<OfferSubmission | null> {
+    const offerPreparationRecord = await this.client.offerPreparation.findUnique({
+      where: {
+        id: payload.offerPreparationId
+      }
+    });
+    if (!offerPreparationRecord) {
+      return null;
+    }
+
+    const existing = await this.client.offerSubmission.findFirst({
+      where: {
+        propertyId: payload.propertyId,
+        ...(payload.shortlistId ? { shortlistId: payload.shortlistId } : {})
+      }
+    });
+    if (existing) {
+      return this.syncOfferSubmissionRecord(existing);
+    }
+
+    const offerPreparation = mapPrismaOfferPreparation(offerPreparationRecord);
+    const financialReadinessRecord = await this.client.financialReadiness.findUnique({
+      where: {
+        id: payload.financialReadinessId ?? offerPreparation.financialReadinessId
+      }
+    });
+    const financialReadiness = financialReadinessRecord
+      ? mapPrismaFinancialReadiness(financialReadinessRecord)
+      : null;
+    const now = new Date().toISOString();
+    const evaluation = evaluateOfferSubmission({
+      now,
+      offerPreparation,
+      financialReadiness,
+      sessionId: payload.sessionId ?? offerPreparation.sessionId ?? null,
+      partnerId: payload.partnerId ?? offerPreparation.partnerId ?? null,
+      patch: payload
+    });
+
+    const activityLog: OfferSubmission["activityLog"] = [
+      {
+        type: "record_created",
+        label: "Submission record created",
+        details: null,
+        createdAt: now
+      }
+    ];
+
+    const record = await this.client.offerSubmission.create({
+      data: {
+        sessionId: evaluation.sessionId ?? null,
+        partnerId: evaluation.partnerId ?? null,
+        propertyId: evaluation.propertyId,
+        propertyAddressLabel: evaluation.propertyAddressLabel,
+        shortlistId: evaluation.shortlistId ?? null,
+        financialReadinessId: evaluation.financialReadinessId ?? null,
+        offerPreparationId: evaluation.offerPreparationId,
+        submissionMethod: evaluation.submissionMethod ?? null,
+        submittedAt: evaluation.submittedAt ? new Date(evaluation.submittedAt) : null,
+        offerExpirationAt: evaluation.offerExpirationAt ? new Date(evaluation.offerExpirationAt) : null,
+        sellerResponseState: evaluation.sellerResponseState,
+        sellerRespondedAt: evaluation.sellerRespondedAt ? new Date(evaluation.sellerRespondedAt) : null,
+        buyerCounterDecision: evaluation.buyerCounterDecision ?? null,
+        withdrawnAt: evaluation.withdrawnAt ? new Date(evaluation.withdrawnAt) : null,
+        withdrawalReason: evaluation.withdrawalReason ?? null,
+        notes: evaluation.notes ?? null,
+        internalActivityNote: evaluation.internalActivityNote ?? null,
+        originalOfferSnapshotJson: evaluation.originalOfferSnapshot,
+        submissionSummaryJson: evaluation.submissionSummary,
+        submissionState: evaluation.submissionState,
+        urgencyLevel: evaluation.urgencyLevel,
+        counterofferPrice: evaluation.counterofferPrice ?? null,
+        counterofferClosingTimelineDays: evaluation.counterofferClosingTimelineDays ?? null,
+        counterofferFinancingContingency: evaluation.counterofferFinancingContingency ?? null,
+        counterofferInspectionContingency: evaluation.counterofferInspectionContingency ?? null,
+        counterofferAppraisalContingency: evaluation.counterofferAppraisalContingency ?? null,
+        counterofferExpirationAt: evaluation.counterofferExpirationAt
+          ? new Date(evaluation.counterofferExpirationAt)
+          : null,
+        counterofferSummaryJson: evaluation.counterofferSummary,
+        missingItemsJson: evaluation.missingItems,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        requiresBuyerResponse: evaluation.requiresBuyerResponse,
+        isExpired: evaluation.isExpired,
+        activityLogJson: activityLog,
+        lastActionAt: evaluation.lastActionAt ? new Date(evaluation.lastActionAt) : null,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "offer_submission_created",
+      sessionId: evaluation.sessionId ?? null,
+      payload: {
+        shortlistId: evaluation.shortlistId ?? null,
+        offerPreparationId: evaluation.offerPreparationId,
+        offerSubmissionId: record.id as string,
+        propertyId: evaluation.propertyId,
+        submissionState: evaluation.submissionState
+      }
+    });
+
+    return mapPrismaOfferSubmission(record);
+  }
+
+  async listOfferSubmissions(shortlistId: string): Promise<OfferSubmission[]> {
+    const records = await this.client.offerSubmission.findMany({
+      where: {
+        shortlistId
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+
+    return Promise.all(records.map((record) => this.syncOfferSubmissionRecord(record)));
+  }
+
+  async getOfferSubmission(id: string): Promise<OfferSubmission | null> {
+    const record = await this.client.offerSubmission.findUnique({
+      where: {
+        id
+      }
+    });
+
+    return record ? this.syncOfferSubmissionRecord(record) : null;
+  }
+
+  async getLatestOfferSubmission(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<OfferSubmission | null> {
+    const record = await this.client.offerSubmission.findFirst({
+      where: {
+        propertyId: payload.propertyId,
+        ...(payload.shortlistId ? { shortlistId: payload.shortlistId } : {}),
+        ...(payload.sessionId ? { sessionId: payload.sessionId } : {})
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+
+    return record ? this.syncOfferSubmissionRecord(record) : null;
+  }
+
+  async submitOfferSubmission(id: string, submittedAt?: string | null): Promise<OfferSubmission | null> {
+    const existing = await this.client.offerSubmission.findUnique({
+      where: {
+        id
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const current = await this.syncOfferSubmissionRecord(existing);
+    const offerPreparationRecord = await this.client.offerPreparation.findUnique({
+      where: {
+        id: current.offerPreparationId
+      }
+    });
+    if (!offerPreparationRecord) {
+      return null;
+    }
+
+    const offerPreparation = mapPrismaOfferPreparation(offerPreparationRecord);
+    if (!offerPreparation.readinessToSubmit) {
+      return null;
+    }
+
+    const financialReadinessRecord = current.financialReadinessId
+      ? await this.client.financialReadiness.findUnique({
+          where: {
+            id: current.financialReadinessId
+          }
+        })
+      : null;
+    const financialReadiness = financialReadinessRecord
+      ? mapPrismaFinancialReadiness(financialReadinessRecord)
+      : null;
+    const now = new Date().toISOString();
+    const actualSubmittedAt = submittedAt ?? now;
+    const evaluation = evaluateOfferSubmission({
+      now,
+      current,
+      offerPreparation,
+      financialReadiness,
+      patch: {
+        submittedAt: actualSubmittedAt,
+        sellerResponseState: "NO_RESPONSE"
+      }
+    });
+    const nextActivityLog = clone(current.activityLog);
+    nextActivityLog.push({
+      type: "offer_submitted",
+      label: "Offer submitted",
+      details: `Offer submission recorded for ${new Date(actualSubmittedAt).toLocaleString("en-US")}.`,
+      createdAt: now
+    });
+
+    const record = await this.client.offerSubmission.update({
+      where: {
+        id
+      },
+      data: {
+        submittedAt: new Date(actualSubmittedAt),
+        sellerResponseState: evaluation.sellerResponseState,
+        submissionSummaryJson: evaluation.submissionSummary,
+        submissionState: evaluation.submissionState,
+        urgencyLevel: evaluation.urgencyLevel,
+        counterofferSummaryJson: evaluation.counterofferSummary,
+        missingItemsJson: evaluation.missingItems,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        requiresBuyerResponse: evaluation.requiresBuyerResponse,
+        isExpired: evaluation.isExpired,
+        activityLogJson: nextActivityLog,
+        lastActionAt: evaluation.lastActionAt ? new Date(evaluation.lastActionAt) : null,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "offer_submission_submitted",
+      sessionId: current.sessionId ?? null,
+      payload: {
+        shortlistId: current.shortlistId ?? null,
+        offerPreparationId: current.offerPreparationId,
+        offerSubmissionId: id,
+        propertyId: current.propertyId,
+        fromState: current.submissionState,
+        toState: evaluation.submissionState
+      }
+    });
+
+    return mapPrismaOfferSubmission(record);
+  }
+
+  async updateOfferSubmission(
+    id: string,
+    patch: {
+      submissionMethod?: OfferSubmissionMethod | null;
+      offerExpirationAt?: string | null;
+      sellerResponseState?: OfferSubmissionSellerResponseState | null;
+      sellerRespondedAt?: string | null;
+      buyerCounterDecision?: OfferSubmissionBuyerCounterDecision | null;
+      withdrawnAt?: string | null;
+      withdrawalReason?: string | null;
+      counterofferPrice?: number | null;
+      counterofferClosingTimelineDays?: number | null;
+      counterofferFinancingContingency?: OfferPreparationContingency | null;
+      counterofferInspectionContingency?: OfferPreparationContingency | null;
+      counterofferAppraisalContingency?: OfferPreparationContingency | null;
+      counterofferExpirationAt?: string | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<OfferSubmission | null> {
+    const existing = await this.client.offerSubmission.findUnique({
+      where: {
+        id
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const current = await this.syncOfferSubmissionRecord(existing);
+    const offerPreparationRecord = await this.client.offerPreparation.findUnique({
+      where: {
+        id: current.offerPreparationId
+      }
+    });
+    if (!offerPreparationRecord) {
+      return null;
+    }
+
+    const offerPreparation = mapPrismaOfferPreparation(offerPreparationRecord);
+    const financialReadinessRecord = current.financialReadinessId
+      ? await this.client.financialReadiness.findUnique({
+          where: {
+            id: current.financialReadinessId
+          }
+        })
+      : null;
+    const financialReadiness = financialReadinessRecord
+      ? mapPrismaFinancialReadiness(financialReadinessRecord)
+      : null;
+    const now = new Date().toISOString();
+    const evaluation = evaluateOfferSubmission({
+      now,
+      current,
+      offerPreparation,
+      financialReadiness,
+      patch
+    });
+    const nextActivityLog = clone(current.activityLog);
+
+    const stateToEvent: Partial<Record<OfferSubmission["submissionState"], WorkflowActivityRecord["eventType"]>> = {
+      COUNTERED: "offer_submission_countered",
+      ACCEPTED: "offer_submission_accepted",
+      REJECTED: "offer_submission_rejected",
+      WITHDRAWN: "offer_submission_withdrawn",
+      EXPIRED: "offer_submission_expired"
+    };
+    const stateToLog: Partial<Record<OfferSubmission["submissionState"], OfferSubmission["activityLog"][number]>> = {
+      COUNTERED: {
+        type: "seller_countered",
+        label: "Seller countered",
+        details: patch.internalActivityNote ?? null,
+        createdAt: now
+      },
+      ACCEPTED: {
+        type: "seller_accepted",
+        label: "Seller accepted",
+        details: patch.internalActivityNote ?? null,
+        createdAt: now
+      },
+      REJECTED: {
+        type: "seller_rejected",
+        label: "Seller rejected",
+        details: patch.internalActivityNote ?? null,
+        createdAt: now
+      },
+      WITHDRAWN: {
+        type: "buyer_withdrew",
+        label: "Buyer withdrew offer",
+        details: patch.withdrawalReason ?? patch.internalActivityNote ?? null,
+        createdAt: now
+      },
+      EXPIRED: {
+        type: "offer_expired",
+        label: "Offer expired",
+        details: patch.internalActivityNote ?? null,
+        createdAt: now
+      }
+    };
+    if (current.submissionState !== evaluation.submissionState && stateToLog[evaluation.submissionState]) {
+      nextActivityLog.push(stateToLog[evaluation.submissionState]!);
+    } else if (patch.internalActivityNote?.trim()) {
+      nextActivityLog.push({
+        type: "note_added",
+        label: "Submission note added",
+        details: patch.internalActivityNote.trim(),
+        createdAt: now
+      });
+    }
+
+    const record = await this.client.offerSubmission.update({
+      where: {
+        id
+      },
+      data: {
+        submissionMethod: evaluation.submissionMethod ?? null,
+        offerExpirationAt: evaluation.offerExpirationAt ? new Date(evaluation.offerExpirationAt) : null,
+        sellerResponseState: evaluation.sellerResponseState,
+        sellerRespondedAt: evaluation.sellerRespondedAt ? new Date(evaluation.sellerRespondedAt) : null,
+        buyerCounterDecision: evaluation.buyerCounterDecision ?? null,
+        withdrawnAt: evaluation.withdrawnAt ? new Date(evaluation.withdrawnAt) : null,
+        withdrawalReason: evaluation.withdrawalReason ?? null,
+        notes: evaluation.notes ?? null,
+        internalActivityNote: evaluation.internalActivityNote ?? null,
+        counterofferPrice: evaluation.counterofferPrice ?? null,
+        counterofferClosingTimelineDays: evaluation.counterofferClosingTimelineDays ?? null,
+        counterofferFinancingContingency: evaluation.counterofferFinancingContingency ?? null,
+        counterofferInspectionContingency: evaluation.counterofferInspectionContingency ?? null,
+        counterofferAppraisalContingency: evaluation.counterofferAppraisalContingency ?? null,
+        counterofferExpirationAt: evaluation.counterofferExpirationAt
+          ? new Date(evaluation.counterofferExpirationAt)
+          : null,
+        submissionSummaryJson: evaluation.submissionSummary,
+        submissionState: evaluation.submissionState,
+        urgencyLevel: evaluation.urgencyLevel,
+        counterofferSummaryJson: evaluation.counterofferSummary,
+        missingItemsJson: evaluation.missingItems,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        requiresBuyerResponse: evaluation.requiresBuyerResponse,
+        isExpired: evaluation.isExpired,
+        activityLogJson: nextActivityLog,
+        lastActionAt: evaluation.lastActionAt ? new Date(evaluation.lastActionAt) : null,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    if (current.submissionState !== evaluation.submissionState && stateToEvent[evaluation.submissionState]) {
+      await this.recordValidationEvent({
+        eventName: stateToEvent[evaluation.submissionState]!,
+        sessionId: current.sessionId ?? null,
+        payload: {
+          shortlistId: current.shortlistId ?? null,
+          offerPreparationId: current.offerPreparationId,
+          offerSubmissionId: id,
+          propertyId: current.propertyId,
+          fromState: current.submissionState,
+          toState: evaluation.submissionState
+        }
+      });
+    }
+
+    return mapPrismaOfferSubmission(record);
+  }
+
+  async respondToOfferSubmissionCounter(
+    id: string,
+    decision: OfferSubmissionBuyerCounterDecision
+  ): Promise<OfferSubmission | null> {
+    const existing = await this.client.offerSubmission.findUnique({
+      where: {
+        id
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const current = await this.syncOfferSubmissionRecord(existing);
+    if (current.sellerResponseState !== "COUNTERED") {
+      return null;
+    }
+
+    const record = await this.updateOfferSubmission(id, {
+      buyerCounterDecision: decision
+    });
+    return record;
+  }
+
+  async getOfferSubmissionSummary(id: string): Promise<OfferSubmissionSummary | null> {
+    const record = await this.getOfferSubmission(id);
+    return record ? toOfferSubmissionSummary(record) : null;
+  }
+
+  async createUnderContractCoordination(
+    payload: UnderContractCoordinationInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null> {
+    const offerSubmissionRecord = await this.client.offerSubmission.findUnique({
+      where: {
+        id: payload.offerSubmissionId
+      }
+    });
+    if (!offerSubmissionRecord) {
+      return null;
+    }
+
+    const offerSubmission = await this.syncOfferSubmissionRecord(offerSubmissionRecord);
+    if (offerSubmission.submissionState !== "ACCEPTED") {
+      return null;
+    }
+
+    const existing = await this.client.underContractCoordination.findFirst({
+      where: {
+        propertyId: payload.propertyId,
+        ...(payload.shortlistId ? { shortlistId: payload.shortlistId } : {})
+      }
+    });
+    if (existing) {
+      return this.syncUnderContractRecord(existing);
+    }
+
+    const offerPreparationRecord = await this.client.offerPreparation.findUnique({
+      where: {
+        id: offerSubmission.offerPreparationId
+      }
+    });
+    const offerPreparation = offerPreparationRecord
+      ? mapPrismaOfferPreparation(offerPreparationRecord)
+      : null;
+    const financialReadinessRecord = payload.financialReadinessId
+      ? await this.client.financialReadiness.findUnique({
+          where: {
+            id: payload.financialReadinessId
+          }
+        })
+      : offerSubmission.financialReadinessId
+        ? await this.client.financialReadiness.findUnique({
+            where: {
+              id: offerSubmission.financialReadinessId
+            }
+          })
+        : null;
+    const financialReadiness = financialReadinessRecord
+      ? mapPrismaFinancialReadiness(financialReadinessRecord)
+      : null;
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateUnderContractCoordination({
+      now,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness,
+      sessionId: payload.sessionId ?? offerSubmission.sessionId ?? null,
+      partnerId: payload.partnerId ?? offerSubmission.partnerId ?? null,
+      patch: payload
+    });
+
+    const activityLog: UnderContractCoordination["activityLog"] = [
+      {
+        type: "record_created",
+        label: "Under-contract workflow created",
+        details: null,
+        createdAt: now
+      }
+    ];
+
+    const record = await this.client.underContractCoordination.create({
+      data: {
+        sessionId: evaluation.sessionId ?? null,
+        partnerId: evaluation.partnerId ?? null,
+        propertyId: evaluation.propertyId,
+        propertyAddressLabel: evaluation.propertyAddressLabel,
+        shortlistId: evaluation.shortlistId ?? null,
+        financialReadinessId: evaluation.financialReadinessId ?? null,
+        offerPreparationId: evaluation.offerPreparationId ?? null,
+        offerSubmissionId: evaluation.offerSubmissionId,
+        acceptedAt: new Date(evaluation.acceptedAt),
+        targetClosingDate: new Date(evaluation.targetClosingDate),
+        inspectionDeadline: evaluation.inspectionDeadline ? new Date(evaluation.inspectionDeadline) : null,
+        appraisalDeadline: evaluation.appraisalDeadline ? new Date(evaluation.appraisalDeadline) : null,
+        financingDeadline: evaluation.financingDeadline ? new Date(evaluation.financingDeadline) : null,
+        contingencyDeadline: evaluation.contingencyDeadline ? new Date(evaluation.contingencyDeadline) : null,
+        closingPreparationDeadline: evaluation.closingPreparationDeadline
+          ? new Date(evaluation.closingPreparationDeadline)
+          : null,
+        notes: evaluation.notes ?? null,
+        internalActivityNote: evaluation.internalActivityNote ?? null,
+        coordinationSummaryJson: evaluation.coordinationSummary,
+        overallCoordinationState: evaluation.overallCoordinationState,
+        overallRiskLevel: evaluation.overallRiskLevel,
+        urgencyLevel: evaluation.urgencyLevel,
+        readyForClosing: evaluation.readyForClosing,
+        requiresImmediateAttention: evaluation.requiresImmediateAttention,
+        taskRecordsJson: evaluation.taskSummaries,
+        milestoneRecordsJson: evaluation.milestoneSummaries,
+        deadlineRecordsJson: evaluation.deadlineSummaries,
+        missingItemsJson: evaluation.missingItems,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        activityLogJson: activityLog,
+        lastActionAt: evaluation.lastActionAt ? new Date(evaluation.lastActionAt) : null,
+        lastEvaluatedAt: new Date(evaluation.lastEvaluatedAt)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "under_contract_created",
+      sessionId: evaluation.sessionId ?? null,
+      payload: {
+        shortlistId: evaluation.shortlistId ?? null,
+        offerPreparationId: evaluation.offerPreparationId ?? null,
+        offerSubmissionId: evaluation.offerSubmissionId,
+        underContractId: record.id as string,
+        propertyId: evaluation.propertyId,
+        coordinationState: evaluation.overallCoordinationState
+      }
+    });
+
+    return mapPrismaUnderContractCoordination(record);
+  }
+
+  async listUnderContractCoordinations(shortlistId: string): Promise<UnderContractCoordination[]> {
+    const records = await this.client.underContractCoordination.findMany({
+      where: {
+        shortlistId
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+
+    return Promise.all(records.map((record) => this.syncUnderContractRecord(record)));
+  }
+
+  async getUnderContractCoordination(id: string): Promise<UnderContractCoordination | null> {
+    const record = await this.client.underContractCoordination.findUnique({
+      where: {
+        id
+      }
+    });
+    return record ? this.syncUnderContractRecord(record) : null;
+  }
+
+  async getLatestUnderContractCoordination(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<UnderContractCoordination | null> {
+    const record = await this.client.underContractCoordination.findFirst({
+      where: {
+        propertyId: payload.propertyId,
+        ...(payload.shortlistId ? { shortlistId: payload.shortlistId } : {}),
+        ...(payload.sessionId ? { sessionId: payload.sessionId } : {})
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+    return record ? this.syncUnderContractRecord(record) : null;
+  }
+
+  async updateUnderContractCoordination(
+    id: string,
+    patch: {
+      targetClosingDate?: string | null;
+      inspectionDeadline?: string | null;
+      appraisalDeadline?: string | null;
+      financingDeadline?: string | null;
+      contingencyDeadline?: string | null;
+      closingPreparationDeadline?: string | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null> {
+    const existing = await this.client.underContractCoordination.findUnique({
+      where: {
+        id
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const current = await this.syncUnderContractRecord(existing);
+    const offerSubmissionRecord = await this.client.offerSubmission.findUnique({
+      where: {
+        id: current.offerSubmissionId
+      }
+    });
+    if (!offerSubmissionRecord) {
+      return null;
+    }
+
+    const offerSubmission = await this.syncOfferSubmissionRecord(offerSubmissionRecord);
+    const offerPreparationRecord = current.offerPreparationId
+      ? await this.client.offerPreparation.findUnique({
+          where: {
+            id: current.offerPreparationId
+          }
+        })
+      : null;
+    const offerPreparation = offerPreparationRecord ? mapPrismaOfferPreparation(offerPreparationRecord) : null;
+    const financialReadinessRecord = current.financialReadinessId
+      ? await this.client.financialReadiness.findUnique({
+          where: {
+            id: current.financialReadinessId
+          }
+        })
+      : null;
+    const financialReadiness = financialReadinessRecord ? mapPrismaFinancialReadiness(financialReadinessRecord) : null;
+    const now = new Date().toISOString();
+    const evaluation = evaluateUnderContractCoordination({
+      now,
+      current,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness,
+      patch
+    });
+    const nextActivityLog = clone(current.activityLog);
+    if (patch.internalActivityNote?.trim()) {
+      nextActivityLog.push({
+        type: "note_added",
+        label: "Contract note added",
+        details: patch.internalActivityNote.trim(),
+        createdAt: now
+      });
+    }
+
+    const record = await this.client.underContractCoordination.update({
+      where: {
+        id
+      },
+      data: {
+        propertyAddressLabel: evaluation.propertyAddressLabel,
+        acceptedAt: new Date(evaluation.acceptedAt),
+        targetClosingDate: new Date(evaluation.targetClosingDate),
+        inspectionDeadline: evaluation.inspectionDeadline ? new Date(evaluation.inspectionDeadline) : null,
+        appraisalDeadline: evaluation.appraisalDeadline ? new Date(evaluation.appraisalDeadline) : null,
+        financingDeadline: evaluation.financingDeadline ? new Date(evaluation.financingDeadline) : null,
+        contingencyDeadline: evaluation.contingencyDeadline ? new Date(evaluation.contingencyDeadline) : null,
+        closingPreparationDeadline: evaluation.closingPreparationDeadline
+          ? new Date(evaluation.closingPreparationDeadline)
+          : null,
+        notes: evaluation.notes ?? null,
+        internalActivityNote: evaluation.internalActivityNote ?? null,
+        coordinationSummaryJson: evaluation.coordinationSummary,
+        overallCoordinationState: evaluation.overallCoordinationState,
+        overallRiskLevel: evaluation.overallRiskLevel,
+        urgencyLevel: evaluation.urgencyLevel,
+        readyForClosing: evaluation.readyForClosing,
+        requiresImmediateAttention: evaluation.requiresImmediateAttention,
+        taskRecordsJson: evaluation.taskSummaries,
+        milestoneRecordsJson: evaluation.milestoneSummaries,
+        deadlineRecordsJson: evaluation.deadlineSummaries,
+        missingItemsJson: evaluation.missingItems,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        activityLogJson: nextActivityLog,
+        lastActionAt: evaluation.lastActionAt ? new Date(evaluation.lastActionAt) : null,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    if (
+      current.overallCoordinationState !== evaluation.overallCoordinationState &&
+      evaluation.overallCoordinationState === "READY_FOR_CLOSING"
+    ) {
+      await this.recordValidationEvent({
+        eventName: "under_contract_ready_for_closing",
+        sessionId: current.sessionId ?? null,
+        payload: {
+          shortlistId: current.shortlistId ?? null,
+          offerPreparationId: current.offerPreparationId ?? null,
+          offerSubmissionId: current.offerSubmissionId,
+          underContractId: id,
+          propertyId: current.propertyId,
+          fromState: current.overallCoordinationState,
+          toState: evaluation.overallCoordinationState
+        }
+      });
+    } else if (
+      current.overallCoordinationState !== evaluation.overallCoordinationState &&
+      evaluation.overallCoordinationState === "BLOCKED"
+    ) {
+      await this.recordValidationEvent({
+        eventName: "under_contract_blocked",
+        sessionId: current.sessionId ?? null,
+        payload: {
+          shortlistId: current.shortlistId ?? null,
+          offerPreparationId: current.offerPreparationId ?? null,
+          offerSubmissionId: current.offerSubmissionId,
+          underContractId: id,
+          propertyId: current.propertyId,
+          fromState: current.overallCoordinationState,
+          toState: evaluation.overallCoordinationState
+        }
+      });
+    }
+
+    return mapPrismaUnderContractCoordination(record);
+  }
+
+  async updateUnderContractTask(
+    id: string,
+    taskType: ContractTaskType,
+    patch: {
+      status?: ContractTaskState;
+      deadline?: string | null;
+      scheduledAt?: string | null;
+      completedAt?: string | null;
+      blockedReason?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null> {
+    const existing = await this.client.underContractCoordination.findUnique({
+      where: {
+        id
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const current = await this.syncUnderContractRecord(existing);
+    const task = current.taskSummaries.find((entry) => entry.taskType === taskType);
+    if (!task) {
+      return null;
+    }
+    if (patch.status !== undefined) {
+      task.status = patch.status;
+    }
+    if (patch.deadline !== undefined) {
+      task.deadline = patch.deadline;
+    }
+    if (patch.scheduledAt !== undefined) {
+      task.scheduledAt = patch.scheduledAt;
+    }
+    if (patch.completedAt !== undefined) {
+      task.completedAt = patch.completedAt;
+    }
+    if (patch.blockedReason !== undefined) {
+      task.blockedReason = patch.blockedReason;
+    }
+    if (patch.notes !== undefined) {
+      task.notes = patch.notes;
+    }
+
+    const now = new Date().toISOString();
+    const nextActivityLog = clone(current.activityLog);
+    nextActivityLog.push({
+      type: "task_updated",
+      label: `${task.label} updated`,
+      details: patch.notes ?? patch.blockedReason ?? null,
+      createdAt: now
+    });
+
+    const record = await this.client.underContractCoordination.update({
+      where: {
+        id
+      },
+      data: {
+        taskRecordsJson: current.taskSummaries,
+        activityLogJson: nextActivityLog,
+        lastActionAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "under_contract_task_updated",
+      sessionId: current.sessionId ?? null,
+      payload: {
+        shortlistId: current.shortlistId ?? null,
+        offerPreparationId: current.offerPreparationId ?? null,
+        offerSubmissionId: current.offerSubmissionId,
+        underContractId: id,
+        propertyId: current.propertyId,
+        taskType,
+        status: task.status
+      }
+    });
+
+    return this.syncUnderContractRecord(record);
+  }
+
+  async updateUnderContractMilestone(
+    id: string,
+    milestoneType: CoordinationMilestoneType,
+    patch: {
+      status?: "PENDING" | "REACHED" | "BLOCKED";
+      occurredAt?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<UnderContractCoordination | null> {
+    const existing = await this.client.underContractCoordination.findUnique({
+      where: {
+        id
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const current = await this.syncUnderContractRecord(existing);
+    const milestone = current.milestoneSummaries.find((entry) => entry.milestoneType === milestoneType);
+    if (!milestone) {
+      return null;
+    }
+    if (patch.status !== undefined) {
+      milestone.status = patch.status;
+    }
+    if (patch.occurredAt !== undefined) {
+      milestone.occurredAt = patch.occurredAt;
+    }
+    if (patch.notes !== undefined) {
+      milestone.notes = patch.notes;
+    }
+
+    const now = new Date().toISOString();
+    const nextActivityLog = clone(current.activityLog);
+    nextActivityLog.push({
+      type: "milestone_reached",
+      label: `${milestone.label} updated`,
+      details: patch.notes ?? null,
+      createdAt: now
+    });
+
+    const record = await this.client.underContractCoordination.update({
+      where: {
+        id
+      },
+      data: {
+        milestoneRecordsJson: current.milestoneSummaries,
+        activityLogJson: nextActivityLog,
+        lastActionAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "under_contract_milestone_reached",
+      sessionId: current.sessionId ?? null,
+      payload: {
+        shortlistId: current.shortlistId ?? null,
+        offerPreparationId: current.offerPreparationId ?? null,
+        offerSubmissionId: current.offerSubmissionId,
+        underContractId: id,
+        propertyId: current.propertyId,
+        milestoneType,
+        status: milestone.status
+      }
+    });
+
+    return this.syncUnderContractRecord(record);
+  }
+
+  async getUnderContractCoordinationSummary(id: string): Promise<UnderContractCoordinationSummary | null> {
+    const record = await this.getUnderContractCoordination(id);
+    return record ? toUnderContractCoordinationSummary(record) : null;
+  }
+
+  async createClosingReadiness(
+    payload: ClosingReadinessInputs & {
+      sessionId?: string | null;
+      partnerId?: string | null;
+    }
+  ): Promise<ClosingReadiness | null> {
+    const underContractRecord = await this.client.underContractCoordination.findUnique({
+      where: {
+        id: payload.underContractCoordinationId
+      }
+    });
+    if (!underContractRecord) {
+      return null;
+    }
+
+    const underContract = await this.syncUnderContractRecord(underContractRecord);
+    if (underContract.overallCoordinationState !== "READY_FOR_CLOSING" || !underContract.readyForClosing) {
+      return null;
+    }
+
+    const existing = await this.client.closingReadiness.findFirst({
+      where: {
+        propertyId: payload.propertyId,
+        ...(payload.shortlistId ? { shortlistId: payload.shortlistId } : {})
+      }
+    });
+    if (existing) {
+      return this.syncClosingReadinessRecord(existing);
+    }
+
+    const offerSubmissionRecord = payload.offerSubmissionId
+      ? await this.client.offerSubmission.findUnique({
+          where: {
+            id: payload.offerSubmissionId
+          }
+        })
+      : underContract.offerSubmissionId
+        ? await this.client.offerSubmission.findUnique({
+            where: {
+              id: underContract.offerSubmissionId
+            }
+          })
+        : null;
+    const offerSubmission = offerSubmissionRecord
+      ? await this.syncOfferSubmissionRecord(offerSubmissionRecord)
+      : null;
+    const offerPreparationRecord = payload.offerPreparationId
+      ? await this.client.offerPreparation.findUnique({
+          where: {
+            id: payload.offerPreparationId
+          }
+        })
+      : underContract.offerPreparationId
+        ? await this.client.offerPreparation.findUnique({
+            where: {
+              id: underContract.offerPreparationId
+            }
+          })
+        : null;
+    const offerPreparation = offerPreparationRecord ? mapPrismaOfferPreparation(offerPreparationRecord) : null;
+    const financialReadinessRecord = payload.financialReadinessId
+      ? await this.client.financialReadiness.findUnique({
+          where: {
+            id: payload.financialReadinessId
+          }
+        })
+      : underContract.financialReadinessId
+        ? await this.client.financialReadiness.findUnique({
+            where: {
+              id: underContract.financialReadinessId
+            }
+          })
+        : null;
+    const financialReadiness = financialReadinessRecord
+      ? mapPrismaFinancialReadiness(financialReadinessRecord)
+      : null;
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateClosingReadiness({
+      now,
+      underContract,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness,
+      sessionId: payload.sessionId ?? underContract.sessionId ?? null,
+      partnerId: payload.partnerId ?? underContract.partnerId ?? null,
+      patch: payload
+    });
+    const activityLog: ClosingReadiness["activityLog"] = [
+      {
+        type: "record_created",
+        label: "Closing readiness started",
+        details: null,
+        createdAt: now
+      }
+    ];
+
+    const record = await this.client.closingReadiness.create({
+      data: {
+        sessionId: evaluation.sessionId ?? null,
+        partnerId: evaluation.partnerId ?? null,
+        propertyId: evaluation.propertyId,
+        propertyAddressLabel: evaluation.propertyAddressLabel,
+        shortlistId: evaluation.shortlistId ?? null,
+        financialReadinessId: evaluation.financialReadinessId ?? null,
+        offerPreparationId: evaluation.offerPreparationId ?? null,
+        offerSubmissionId: evaluation.offerSubmissionId ?? null,
+        underContractCoordinationId: evaluation.underContractCoordinationId,
+        targetClosingDate: new Date(evaluation.targetClosingDate),
+        closingAppointmentAt: evaluation.closingAppointmentAt ? new Date(evaluation.closingAppointmentAt) : null,
+        closingAppointmentLocation: evaluation.closingAppointmentLocation ?? null,
+        closingAppointmentNotes: evaluation.closingAppointmentNotes ?? null,
+        finalReviewDeadline: evaluation.finalReviewDeadline ? new Date(evaluation.finalReviewDeadline) : null,
+        finalFundsConfirmationDeadline: evaluation.finalFundsConfirmationDeadline
+          ? new Date(evaluation.finalFundsConfirmationDeadline)
+          : null,
+        finalFundsAmountConfirmed: evaluation.finalFundsAmountConfirmed ?? null,
+        closedAt: evaluation.closedAt ? new Date(evaluation.closedAt) : null,
+        notes: evaluation.notes ?? null,
+        internalActivityNote: evaluation.internalActivityNote ?? null,
+        closingSummaryJson: evaluation.closingSummary,
+        overallClosingReadinessState: evaluation.overallClosingReadinessState,
+        overallRiskLevel: evaluation.overallRiskLevel,
+        urgencyLevel: evaluation.urgencyLevel,
+        readyToClose: evaluation.readyToClose,
+        closed: evaluation.closed,
+        checklistItemsJson: evaluation.checklistItemSummaries,
+        milestoneRecordsJson: evaluation.milestoneSummaries,
+        missingItemsJson: evaluation.missingItems,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        activityLogJson: activityLog,
+        requiresImmediateAttention: evaluation.requiresImmediateAttention,
+        lastActionAt: evaluation.lastActionAt ? new Date(evaluation.lastActionAt) : null,
+        lastEvaluatedAt: new Date(evaluation.lastEvaluatedAt)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "closing_readiness_created",
+      sessionId: evaluation.sessionId ?? null,
+      payload: {
+        shortlistId: evaluation.shortlistId ?? null,
+        offerPreparationId: evaluation.offerPreparationId ?? null,
+        offerSubmissionId: evaluation.offerSubmissionId ?? null,
+        underContractId: evaluation.underContractCoordinationId,
+        closingReadinessId: record.id as string,
+        propertyId: evaluation.propertyId,
+        closingState: evaluation.overallClosingReadinessState
+      }
+    });
+
+    return mapPrismaClosingReadiness(record);
+  }
+
+  async listClosingReadiness(shortlistId: string): Promise<ClosingReadiness[]> {
+    const records = await this.client.closingReadiness.findMany({
+      where: {
+        shortlistId
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+    return Promise.all(records.map((record) => this.syncClosingReadinessRecord(record)));
+  }
+
+  async getClosingReadiness(id: string): Promise<ClosingReadiness | null> {
+    const record = await this.client.closingReadiness.findUnique({
+      where: {
+        id
+      }
+    });
+    return record ? this.syncClosingReadinessRecord(record) : null;
+  }
+
+  async getLatestClosingReadiness(payload: {
+    propertyId: string;
+    shortlistId?: string | null;
+    sessionId?: string | null;
+  }): Promise<ClosingReadiness | null> {
+    const record = await this.client.closingReadiness.findFirst({
+      where: {
+        propertyId: payload.propertyId,
+        ...(payload.shortlistId ? { shortlistId: payload.shortlistId } : {}),
+        ...(payload.sessionId ? { sessionId: payload.sessionId } : {})
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
+    });
+    return record ? this.syncClosingReadinessRecord(record) : null;
+  }
+
+  async updateClosingReadiness(
+    id: string,
+    patch: {
+      targetClosingDate?: string | null;
+      closingAppointmentAt?: string | null;
+      closingAppointmentLocation?: string | null;
+      closingAppointmentNotes?: string | null;
+      finalReviewDeadline?: string | null;
+      finalFundsConfirmationDeadline?: string | null;
+      finalFundsAmountConfirmed?: number | null;
+      notes?: string | null;
+      internalActivityNote?: string | null;
+    }
+  ): Promise<ClosingReadiness | null> {
+    const existing = await this.client.closingReadiness.findUnique({
+      where: { id }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const current = await this.syncClosingReadinessRecord(existing);
+    const underContractRecord = await this.client.underContractCoordination.findUnique({
+      where: {
+        id: current.underContractCoordinationId
+      }
+    });
+    if (!underContractRecord) {
+      return null;
+    }
+
+    const underContract = await this.syncUnderContractRecord(underContractRecord);
+    const offerSubmissionRecord = current.offerSubmissionId
+      ? await this.client.offerSubmission.findUnique({
+          where: {
+            id: current.offerSubmissionId
+          }
+        })
+      : null;
+    const offerSubmission = offerSubmissionRecord
+      ? await this.syncOfferSubmissionRecord(offerSubmissionRecord)
+      : null;
+    const offerPreparationRecord = current.offerPreparationId
+      ? await this.client.offerPreparation.findUnique({
+          where: {
+            id: current.offerPreparationId
+          }
+        })
+      : null;
+    const offerPreparation = offerPreparationRecord ? mapPrismaOfferPreparation(offerPreparationRecord) : null;
+    const financialReadinessRecord = current.financialReadinessId
+      ? await this.client.financialReadiness.findUnique({
+          where: {
+            id: current.financialReadinessId
+          }
+        })
+      : null;
+    const financialReadiness = financialReadinessRecord
+      ? mapPrismaFinancialReadiness(financialReadinessRecord)
+      : null;
+    const now = new Date().toISOString();
+    const evaluation = evaluateClosingReadiness({
+      now,
+      current,
+      underContract,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness,
+      patch
+    });
+    const nextActivityLog = clone(current.activityLog);
+    if (patch.internalActivityNote?.trim()) {
+      nextActivityLog.push({
+        type: "note_added",
+        label: "Closing note added",
+        details: patch.internalActivityNote.trim(),
+        createdAt: now
+      });
+    }
+
+    const record = await this.client.closingReadiness.update({
+      where: { id },
+      data: {
+        propertyAddressLabel: evaluation.propertyAddressLabel,
+        targetClosingDate: new Date(evaluation.targetClosingDate),
+        closingAppointmentAt: evaluation.closingAppointmentAt ? new Date(evaluation.closingAppointmentAt) : null,
+        closingAppointmentLocation: evaluation.closingAppointmentLocation ?? null,
+        closingAppointmentNotes: evaluation.closingAppointmentNotes ?? null,
+        finalReviewDeadline: evaluation.finalReviewDeadline ? new Date(evaluation.finalReviewDeadline) : null,
+        finalFundsConfirmationDeadline: evaluation.finalFundsConfirmationDeadline
+          ? new Date(evaluation.finalFundsConfirmationDeadline)
+          : null,
+        finalFundsAmountConfirmed: evaluation.finalFundsAmountConfirmed ?? null,
+        closedAt: evaluation.closedAt ? new Date(evaluation.closedAt) : null,
+        notes: evaluation.notes ?? null,
+        internalActivityNote: evaluation.internalActivityNote ?? null,
+        closingSummaryJson: evaluation.closingSummary,
+        overallClosingReadinessState: evaluation.overallClosingReadinessState,
+        overallRiskLevel: evaluation.overallRiskLevel,
+        urgencyLevel: evaluation.urgencyLevel,
+        readyToClose: evaluation.readyToClose,
+        closed: evaluation.closed,
+        checklistItemsJson: evaluation.checklistItemSummaries,
+        milestoneRecordsJson: evaluation.milestoneSummaries,
+        missingItemsJson: evaluation.missingItems,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        activityLogJson: nextActivityLog,
+        requiresImmediateAttention: evaluation.requiresImmediateAttention,
+        lastActionAt: evaluation.lastActionAt ? new Date(evaluation.lastActionAt) : null,
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    return this.syncClosingReadinessRecord(record);
+  }
+
+  async updateClosingChecklistItem(
+    id: string,
+    itemType: ClosingChecklistItemType,
+    patch: {
+      status?: ClosingChecklistItemState;
+      deadline?: string | null;
+      completedAt?: string | null;
+      blockedReason?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<ClosingReadiness | null> {
+    const existing = await this.client.closingReadiness.findUnique({ where: { id } });
+    if (!existing) {
+      return null;
+    }
+
+    const current = await this.syncClosingReadinessRecord(existing);
+    const item = current.checklistItemSummaries.find((entry) => entry.itemType === itemType);
+    if (!item) {
+      return null;
+    }
+    if (patch.status !== undefined) item.status = patch.status;
+    if (patch.deadline !== undefined) item.deadline = patch.deadline;
+    if (patch.completedAt !== undefined) item.completedAt = patch.completedAt;
+    if (patch.blockedReason !== undefined) item.blockedReason = patch.blockedReason;
+    if (patch.notes !== undefined) item.notes = patch.notes;
+
+    const now = new Date().toISOString();
+    const nextActivityLog = clone(current.activityLog);
+    nextActivityLog.push({
+      type: "checklist_updated",
+      label: `${item.label} updated`,
+      details: patch.notes ?? patch.blockedReason ?? null,
+      createdAt: now
+    });
+
+    const record = await this.client.closingReadiness.update({
+      where: { id },
+      data: {
+        checklistItemsJson: current.checklistItemSummaries,
+        activityLogJson: nextActivityLog,
+        lastActionAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "closing_checklist_updated",
+      sessionId: current.sessionId ?? null,
+      payload: {
+        shortlistId: current.shortlistId ?? null,
+        offerPreparationId: current.offerPreparationId ?? null,
+        offerSubmissionId: current.offerSubmissionId ?? null,
+        underContractId: current.underContractCoordinationId,
+        closingReadinessId: id,
+        propertyId: current.propertyId,
+        itemType,
+        status: item.status
+      }
+    });
+
+    return this.syncClosingReadinessRecord(record);
+  }
+
+  async updateClosingMilestone(
+    id: string,
+    milestoneType: ClosingMilestoneType,
+    patch: {
+      status?: "PENDING" | "REACHED" | "BLOCKED";
+      occurredAt?: string | null;
+      notes?: string | null;
+    }
+  ): Promise<ClosingReadiness | null> {
+    const existing = await this.client.closingReadiness.findUnique({ where: { id } });
+    if (!existing) {
+      return null;
+    }
+
+    const current = await this.syncClosingReadinessRecord(existing);
+    const milestone = current.milestoneSummaries.find((entry) => entry.milestoneType === milestoneType);
+    if (!milestone) {
+      return null;
+    }
+    if (patch.status !== undefined) milestone.status = patch.status;
+    if (patch.occurredAt !== undefined) milestone.occurredAt = patch.occurredAt;
+    if (patch.notes !== undefined) milestone.notes = patch.notes;
+
+    const now = new Date().toISOString();
+    const nextActivityLog = clone(current.activityLog);
+    nextActivityLog.push({
+      type: "milestone_reached",
+      label: `${milestone.label} updated`,
+      details: patch.notes ?? null,
+      createdAt: now
+    });
+
+    const record = await this.client.closingReadiness.update({
+      where: { id },
+      data: {
+        milestoneRecordsJson: current.milestoneSummaries,
+        activityLogJson: nextActivityLog,
+        lastActionAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "closing_milestone_reached",
+      sessionId: current.sessionId ?? null,
+      payload: {
+        shortlistId: current.shortlistId ?? null,
+        offerPreparationId: current.offerPreparationId ?? null,
+        offerSubmissionId: current.offerSubmissionId ?? null,
+        underContractId: current.underContractCoordinationId,
+        closingReadinessId: id,
+        propertyId: current.propertyId,
+        milestoneType,
+        status: milestone.status
+      }
+    });
+
+    return this.syncClosingReadinessRecord(record);
+  }
+
+  async markClosingReady(id: string): Promise<ClosingReadiness | null> {
+    const record = await this.getClosingReadiness(id);
+    if (!record) {
+      return null;
+    }
+    if (record.overallClosingReadinessState !== "READY_TO_CLOSE") {
+      return this.updateClosingReadiness(id, {});
+    }
+    return record;
+  }
+
+  async markClosingComplete(id: string, closedAt?: string | null): Promise<ClosingReadiness | null> {
+    const existing = await this.client.closingReadiness.findUnique({ where: { id } });
+    if (!existing) {
+      return null;
+    }
+    const current = await this.syncClosingReadinessRecord(existing);
+    const underContractRecord = await this.client.underContractCoordination.findUnique({
+      where: { id: current.underContractCoordinationId }
+    });
+    if (!underContractRecord) {
+      return null;
+    }
+    const underContract = await this.syncUnderContractRecord(underContractRecord);
+    const offerSubmissionRecord = current.offerSubmissionId
+      ? await this.client.offerSubmission.findUnique({ where: { id: current.offerSubmissionId } })
+      : null;
+    const offerSubmission = offerSubmissionRecord
+      ? await this.syncOfferSubmissionRecord(offerSubmissionRecord)
+      : null;
+    const offerPreparationRecord = current.offerPreparationId
+      ? await this.client.offerPreparation.findUnique({ where: { id: current.offerPreparationId } })
+      : null;
+    const offerPreparation = offerPreparationRecord ? mapPrismaOfferPreparation(offerPreparationRecord) : null;
+    const financialReadinessRecord = current.financialReadinessId
+      ? await this.client.financialReadiness.findUnique({ where: { id: current.financialReadinessId } })
+      : null;
+    const financialReadiness = financialReadinessRecord
+      ? mapPrismaFinancialReadiness(financialReadinessRecord)
+      : null;
+
+    const now = new Date().toISOString();
+    const evaluation = evaluateClosingReadiness({
+      now,
+      current,
+      underContract,
+      offerSubmission,
+      offerPreparation,
+      financialReadiness,
+      patch: {
+        closedAt: closedAt ?? now
+      }
+    });
+
+    const nextActivityLog = clone(current.activityLog);
+    nextActivityLog.push({
+      type: "closed",
+      label: "Closing marked complete",
+      details: null,
+      createdAt: now
+    });
+
+    const record = await this.client.closingReadiness.update({
+      where: { id },
+      data: {
+        closedAt: evaluation.closedAt ? new Date(evaluation.closedAt) : new Date(now),
+        closingSummaryJson: evaluation.closingSummary,
+        overallClosingReadinessState: evaluation.overallClosingReadinessState,
+        overallRiskLevel: evaluation.overallRiskLevel,
+        urgencyLevel: evaluation.urgencyLevel,
+        readyToClose: evaluation.readyToClose,
+        closed: evaluation.closed,
+        checklistItemsJson: evaluation.checklistItemSummaries,
+        milestoneRecordsJson: evaluation.milestoneSummaries,
+        missingItemsJson: evaluation.missingItems,
+        blockersJson: evaluation.blockers,
+        recommendation: evaluation.recommendation,
+        risk: evaluation.risk,
+        alternative: evaluation.alternative,
+        nextAction: evaluation.nextAction,
+        nextStepsJson: evaluation.nextSteps,
+        activityLogJson: nextActivityLog,
+        requiresImmediateAttention: evaluation.requiresImmediateAttention,
+        lastActionAt: new Date(now),
+        lastEvaluatedAt: new Date(now)
+      }
+    });
+
+    await this.recordValidationEvent({
+      eventName: "closing_completed",
+      sessionId: current.sessionId ?? null,
+      payload: {
+        shortlistId: current.shortlistId ?? null,
+        offerPreparationId: current.offerPreparationId ?? null,
+        offerSubmissionId: current.offerSubmissionId ?? null,
+        underContractId: current.underContractCoordinationId,
+        closingReadinessId: id,
+        propertyId: current.propertyId,
+        toState: evaluation.overallClosingReadinessState
+      }
+    });
+
+    return this.syncClosingReadinessRecord(record);
+  }
+
+  async getClosingReadinessSummary(id: string): Promise<ClosingReadinessSummary | null> {
+    const record = await this.getClosingReadiness(id);
+    return record ? toClosingReadinessSummary(record) : null;
   }
 
   async createShortlist(payload: {
@@ -5643,6 +10989,62 @@ export class PrismaSearchRepository implements SearchRepository {
       });
     }
 
+    const offerPreparation = await this.client.offerPreparation.findFirst({
+      where: {
+        shortlistId,
+        propertyId: existing.canonicalPropertyId as string
+      }
+    });
+    if (offerPreparation) {
+      await this.client.offerPreparation.delete?.({
+        where: {
+          id: offerPreparation.id as string
+        }
+      });
+    }
+
+    const offerSubmission = await this.client.offerSubmission.findFirst({
+      where: {
+        shortlistId,
+        propertyId: existing.canonicalPropertyId as string
+      }
+    });
+    if (offerSubmission) {
+      await this.client.offerSubmission.delete?.({
+        where: {
+          id: offerSubmission.id as string
+        }
+      });
+    }
+
+    const underContract = await this.client.underContractCoordination.findFirst({
+      where: {
+        shortlistId,
+        propertyId: existing.canonicalPropertyId as string
+      }
+    });
+    if (underContract) {
+      await this.client.underContractCoordination.delete?.({
+        where: {
+          id: underContract.id as string
+        }
+      });
+    }
+
+    const closingReadiness = await this.client.closingReadiness.findFirst({
+      where: {
+        shortlistId,
+        propertyId: existing.canonicalPropertyId as string
+      }
+    });
+    if (closingReadiness) {
+      await this.client.closingReadiness.delete?.({
+        where: {
+          id: closingReadiness.id as string
+        }
+      });
+    }
+
     await this.client.shortlistItem.delete({
       where: {
         id: itemId
@@ -5794,6 +11196,391 @@ export class PrismaSearchRepository implements SearchRepository {
     return (records ?? [])
       .map((record) => toWorkflowActivity(mapPrismaValidationEvent(record)))
       .filter((record): record is WorkflowActivityRecord => Boolean(record));
+  }
+
+  async createUnifiedActivity(payload: {
+    workflowId?: string | null;
+    sessionId?: string | null;
+    propertyId?: string | null;
+    propertyAddressLabel?: string | null;
+    shortlistId?: string | null;
+    moduleName: UnifiedActivityModuleName;
+    eventCategory: UnifiedActivityEventCategory;
+    subjectType: string;
+    subjectId: string;
+    title: string;
+    summary: string;
+    oldValueSnapshot?: Record<string, unknown> | null;
+    newValueSnapshot?: Record<string, unknown> | null;
+    triggerType: UnifiedActivityTriggerType;
+    triggerLabel: string;
+    actorType?: UnifiedActivityActorType;
+    actorId?: string | null;
+    relatedNotificationId?: string | null;
+    relatedExplanationId?: string | null;
+    createdAt?: string;
+  }): Promise<UnifiedActivityRecord> {
+    const record = await this.client.unifiedActivityLog.create({
+      data: {
+        workflowId: payload.workflowId ?? null,
+        sessionId: payload.sessionId ?? null,
+        propertyId: payload.propertyId ?? null,
+        propertyAddressLabel: payload.propertyAddressLabel ?? null,
+        shortlistId: payload.shortlistId ?? null,
+        moduleName: payload.moduleName,
+        eventCategory: payload.eventCategory,
+        subjectType: payload.subjectType,
+        subjectId: payload.subjectId,
+        title: payload.title,
+        summary: payload.summary,
+        oldValueSnapshotJson: payload.oldValueSnapshot ?? null,
+        newValueSnapshotJson: payload.newValueSnapshot ?? null,
+        triggerType: payload.triggerType,
+        triggerLabel: payload.triggerLabel,
+        actorType: payload.actorType ?? "SYSTEM",
+        actorId: payload.actorId ?? null,
+        relatedNotificationId: payload.relatedNotificationId ?? null,
+        relatedExplanationId: payload.relatedExplanationId ?? null,
+        ...(payload.createdAt ? { createdAt: new Date(payload.createdAt) } : {})
+      }
+    });
+    return mapPrismaUnifiedActivityRecord(record);
+  }
+
+  async listUnifiedActivity(filters?: {
+    sessionId?: string | null;
+    propertyId?: string | null;
+    shortlistId?: string | null;
+    moduleName?: UnifiedActivityModuleName;
+    eventCategories?: UnifiedActivityEventCategory[];
+    subjectType?: string;
+    subjectId?: string;
+    limit?: number;
+  }): Promise<UnifiedActivityRecord[]> {
+    const records = await this.client.unifiedActivityLog.findMany({
+      where: {
+        ...(filters?.sessionId !== undefined ? { sessionId: filters.sessionId ?? null } : {}),
+        ...(filters?.propertyId !== undefined ? { propertyId: filters.propertyId ?? null } : {}),
+        ...(filters?.shortlistId !== undefined ? { shortlistId: filters.shortlistId ?? null } : {}),
+        ...(filters?.moduleName ? { moduleName: filters.moduleName } : {}),
+        ...(filters?.subjectType ? { subjectType: filters.subjectType } : {}),
+        ...(filters?.subjectId ? { subjectId: filters.subjectId } : {}),
+        ...(filters?.eventCategories?.length ? { eventCategory: { in: filters.eventCategories } } : {})
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      take: filters?.limit
+    });
+
+    return records.map((record) => mapPrismaUnifiedActivityRecord(record));
+  }
+
+  async createWorkflowNotification(payload: {
+    workflowId?: string | null;
+    sessionId?: string | null;
+    propertyId?: string | null;
+    propertyAddressLabel?: string | null;
+    shortlistId?: string | null;
+    moduleName: NotificationModuleName;
+    alertCategory: AlertCategory;
+    severity: NotificationSeverity;
+    status?: NotificationStatus;
+    triggeringRuleLabel: string;
+    relatedSubjectType: string;
+    relatedSubjectId: string;
+    title: string;
+    message: string;
+    actionLabel?: string | null;
+    actionTarget?: NotificationActionTarget | null;
+    dueAt?: string | null;
+    explanationSubjectType?: string | null;
+    explanationSubjectId?: string | null;
+  }): Promise<WorkflowNotification> {
+    const record = await this.client.workflowNotification.create({
+      data: {
+        workflowId: payload.workflowId ?? null,
+        sessionId: payload.sessionId ?? null,
+        propertyId: payload.propertyId ?? null,
+        propertyAddressLabel: payload.propertyAddressLabel ?? null,
+        shortlistId: payload.shortlistId ?? null,
+        moduleName: payload.moduleName,
+        alertCategory: payload.alertCategory,
+        severity: payload.severity,
+        status: payload.status ?? "UNREAD",
+        triggeringRuleLabel: payload.triggeringRuleLabel,
+        relatedSubjectType: payload.relatedSubjectType,
+        relatedSubjectId: payload.relatedSubjectId,
+        title: payload.title,
+        message: payload.message,
+        actionLabel: payload.actionLabel ?? null,
+        actionTargetJson: payload.actionTarget ?? null,
+        dueAt: payload.dueAt ? new Date(payload.dueAt) : null,
+        explanationSubjectType: payload.explanationSubjectType ?? null,
+        explanationSubjectId: payload.explanationSubjectId ?? null
+      }
+    });
+
+    await this.client.workflowNotificationHistoryEvent.create({
+      data: {
+        notificationId: record.id as string,
+        eventType: "CREATED",
+        previousValue: null,
+        nextValue: (record.status as string) ?? "UNREAD"
+      }
+    });
+    await this.createUnifiedActivity({
+      workflowId: (record.workflowId as string | null) ?? null,
+      sessionId: (record.sessionId as string | null) ?? null,
+      propertyId: (record.propertyId as string | null) ?? null,
+      propertyAddressLabel: (record.propertyAddressLabel as string | null) ?? null,
+      shortlistId: (record.shortlistId as string | null) ?? null,
+      moduleName: "notification_alerting",
+      eventCategory: "NOTIFICATION_CREATED",
+      subjectType: "workflow_notification",
+      subjectId: record.id as string,
+      title: record.title as string,
+      summary: record.message as string,
+      newValueSnapshot: {
+        moduleName: record.moduleName as string,
+        alertCategory: record.alertCategory as string,
+        severity: record.severity as string,
+        status: record.status as string,
+        dueAt: record.dueAt ? (record.dueAt as Date).toISOString() : null
+      },
+      triggerType: payload.alertCategory === "DEADLINE_ALERT" ? "DEADLINE_RULE" : "SYSTEM_RULE",
+      triggerLabel: payload.triggeringRuleLabel,
+      actorType: "SYSTEM",
+      relatedNotificationId: record.id as string
+    });
+    if (payload.alertCategory === "DEADLINE_ALERT") {
+      await this.createUnifiedActivity({
+        workflowId: (record.workflowId as string | null) ?? null,
+        sessionId: (record.sessionId as string | null) ?? null,
+        propertyId: (record.propertyId as string | null) ?? null,
+        propertyAddressLabel: (record.propertyAddressLabel as string | null) ?? null,
+        shortlistId: (record.shortlistId as string | null) ?? null,
+        moduleName:
+          payload.moduleName === "transaction_command_center" ? "transaction_command_center" : payload.moduleName,
+        eventCategory: deadlineEventCategoryFromDueAt(payload.dueAt ?? null),
+        subjectType: payload.relatedSubjectType,
+        subjectId: payload.relatedSubjectId,
+        title: payload.title,
+        summary: payload.message,
+        newValueSnapshot: {
+          dueAt: payload.dueAt ?? null,
+          severity: payload.severity
+        },
+        triggerType: "DEADLINE_RULE",
+        triggerLabel: payload.triggeringRuleLabel,
+        actorType: "SYSTEM",
+        relatedNotificationId: record.id as string
+      });
+    }
+    if (payload.alertCategory === "MILESTONE_ALERT") {
+      await this.createUnifiedActivity({
+        workflowId: (record.workflowId as string | null) ?? null,
+        sessionId: (record.sessionId as string | null) ?? null,
+        propertyId: (record.propertyId as string | null) ?? null,
+        propertyAddressLabel: (record.propertyAddressLabel as string | null) ?? null,
+        shortlistId: (record.shortlistId as string | null) ?? null,
+        moduleName:
+          payload.moduleName === "transaction_command_center" ? "transaction_command_center" : payload.moduleName,
+        eventCategory: "MILESTONE_REACHED",
+        subjectType: payload.relatedSubjectType,
+        subjectId: payload.relatedSubjectId,
+        title: payload.title,
+        summary: payload.message,
+        newValueSnapshot: {
+          severity: payload.severity
+        },
+        triggerType: "STATUS_TRANSITION",
+        triggerLabel: payload.triggeringRuleLabel,
+        actorType: "SYSTEM",
+        relatedNotificationId: record.id as string
+      });
+    }
+
+    return mapPrismaWorkflowNotification(record);
+  }
+
+  async getWorkflowNotification(id: string): Promise<WorkflowNotification | null> {
+    const record = await this.client.workflowNotification.findUnique({
+      where: {
+        id
+      }
+    });
+
+    return record ? mapPrismaWorkflowNotification(record) : null;
+  }
+
+  async listWorkflowNotifications(filters?: {
+    sessionId?: string | null;
+    propertyId?: string | null;
+    shortlistId?: string | null;
+    statuses?: NotificationStatus[];
+    limit?: number;
+  }): Promise<WorkflowNotification[]> {
+    const records = await this.client.workflowNotification.findMany({
+      where: {
+        ...(filters?.sessionId !== undefined ? { sessionId: filters.sessionId ?? null } : {}),
+        ...(filters?.propertyId !== undefined ? { propertyId: filters.propertyId ?? null } : {}),
+        ...(filters?.shortlistId !== undefined ? { shortlistId: filters.shortlistId ?? null } : {}),
+        ...(filters?.statuses ? { status: { in: filters.statuses } } : {})
+      },
+      orderBy: {
+        updatedAt: "desc"
+      },
+      take: filters?.limit
+    });
+
+    return records.map((record) => mapPrismaWorkflowNotification(record));
+  }
+
+  async updateWorkflowNotification(
+    id: string,
+    patch: {
+      severity?: NotificationSeverity;
+      status?: NotificationStatus;
+      title?: string;
+      message?: string;
+      actionLabel?: string | null;
+      actionTarget?: NotificationActionTarget | null;
+      dueAt?: string | null;
+      readAt?: string | null;
+      dismissedAt?: string | null;
+      resolvedAt?: string | null;
+      explanationSubjectType?: string | null;
+      explanationSubjectId?: string | null;
+    }
+  ): Promise<WorkflowNotification | null> {
+    const existing = await this.client.workflowNotification.findUnique({
+      where: {
+        id
+      }
+    });
+
+    if (!existing) {
+      return null;
+    }
+
+    const updated = await this.client.workflowNotification.update({
+      where: {
+        id
+      },
+      data: {
+        ...(patch.severity ? { severity: patch.severity } : {}),
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.message !== undefined ? { message: patch.message } : {}),
+        ...(patch.actionLabel !== undefined ? { actionLabel: patch.actionLabel } : {}),
+        ...(patch.actionTarget !== undefined ? { actionTargetJson: patch.actionTarget } : {}),
+        ...(patch.dueAt !== undefined ? { dueAt: patch.dueAt ? new Date(patch.dueAt) : null } : {}),
+        ...(patch.readAt !== undefined ? { readAt: patch.readAt ? new Date(patch.readAt) : null } : {}),
+        ...(patch.dismissedAt !== undefined
+          ? { dismissedAt: patch.dismissedAt ? new Date(patch.dismissedAt) : null }
+          : {}),
+        ...(patch.resolvedAt !== undefined
+          ? { resolvedAt: patch.resolvedAt ? new Date(patch.resolvedAt) : null }
+          : {}),
+        ...(patch.explanationSubjectType !== undefined
+          ? { explanationSubjectType: patch.explanationSubjectType }
+          : {}),
+        ...(patch.explanationSubjectId !== undefined
+          ? { explanationSubjectId: patch.explanationSubjectId }
+          : {})
+      }
+    });
+
+    if (patch.status && patch.status !== (existing.status as NotificationStatus)) {
+      const eventType: WorkflowNotificationHistoryEvent["eventType"] =
+        patch.status === "READ"
+          ? "READ"
+          : patch.status === "DISMISSED"
+            ? "DISMISSED"
+            : patch.status === "RESOLVED"
+              ? "RESOLVED"
+              : "READ";
+      await this.client.workflowNotificationHistoryEvent.create({
+        data: {
+          notificationId: id,
+          eventType,
+          previousValue: (existing.status as string) ?? null,
+          nextValue: patch.status
+        }
+      });
+      const activityCategory: UnifiedActivityEventCategory =
+        patch.status === "READ"
+          ? "NOTIFICATION_READ"
+          : patch.status === "DISMISSED"
+            ? "NOTIFICATION_DISMISSED"
+            : "NOTIFICATION_RESOLVED";
+      await this.createUnifiedActivity({
+        workflowId: (existing.workflowId as string | null) ?? null,
+        sessionId: (existing.sessionId as string | null) ?? null,
+        propertyId: (existing.propertyId as string | null) ?? null,
+        propertyAddressLabel: (existing.propertyAddressLabel as string | null) ?? null,
+        shortlistId: (existing.shortlistId as string | null) ?? null,
+        moduleName: "notification_alerting",
+        eventCategory: activityCategory,
+        subjectType: "workflow_notification",
+        subjectId: id,
+        title: (existing.title as string) ?? "Notification updated",
+        summary:
+          activityCategory === "NOTIFICATION_READ"
+            ? "Notification marked read."
+            : activityCategory === "NOTIFICATION_DISMISSED"
+              ? "Notification dismissed."
+              : "Notification resolved.",
+        oldValueSnapshot: { status: (existing.status as string | null) ?? null },
+        newValueSnapshot: { status: patch.status },
+        triggerType: "USER_ACTION",
+        triggerLabel: eventType.toLowerCase(),
+        actorType: patch.status === "RESOLVED" ? "SYSTEM" : "USER",
+        relatedNotificationId: id
+      });
+    }
+
+    if (patch.severity && patch.severity !== (existing.severity as NotificationSeverity)) {
+      await this.client.workflowNotificationHistoryEvent.create({
+        data: {
+          notificationId: id,
+          eventType: "SEVERITY_CHANGED",
+          previousValue: (existing.severity as string) ?? null,
+          nextValue: patch.severity
+        }
+      });
+    }
+
+    return mapPrismaWorkflowNotification(updated);
+  }
+
+  async listWorkflowNotificationHistory(filters?: {
+    sessionId?: string | null;
+    propertyId?: string | null;
+    shortlistId?: string | null;
+    notificationId?: string;
+    limit?: number;
+  }): Promise<WorkflowNotificationHistoryEvent[]> {
+    const records = await this.client.workflowNotificationHistoryEvent.findMany({
+      where: {
+        ...(filters?.notificationId
+          ? { notificationId: filters.notificationId }
+          : {
+              notification: {
+                ...(filters?.sessionId !== undefined ? { sessionId: filters.sessionId ?? null } : {}),
+                ...(filters?.propertyId !== undefined ? { propertyId: filters.propertyId ?? null } : {}),
+                ...(filters?.shortlistId !== undefined ? { shortlistId: filters.shortlistId ?? null } : {})
+              }
+            })
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      take: filters?.limit
+    });
+
+    return records.map((record) => mapPrismaWorkflowNotificationHistoryEvent(record));
   }
 
   async createSharedSnapshot(payload: {
@@ -7464,3 +13251,14 @@ export async function createSearchRepository(databaseUrl?: string): Promise<Sear
 
   return persistenceLayer.searchRepository;
 }
+
+export { buildBuyerTransactionCommandCenter } from "./transaction-command-center";
+export {
+  buildClosingReadinessExplanations,
+  buildFinancialReadinessExplanations,
+  buildOfferPreparationExplanations,
+  buildOfferSubmissionExplanations,
+  buildTransactionCommandCenterExplanations,
+  buildUnderContractExplanations
+} from "./explanations";
+export { buildWorkflowNotificationCandidates, planWorkflowNotificationSync } from "./notifications";

@@ -67,5 +67,6 @@ describe("FinancialReadinessPanel", () => {
     expect(markup).toContain("Pre-approval is still missing.");
     expect(markup).toContain("Get pre-approval");
     expect(markup).toContain("Update financial readiness");
+    expect(markup).toContain("Why this state?");
   });
 });
