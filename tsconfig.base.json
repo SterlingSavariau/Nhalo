@@ -11,6 +11,9 @@
     "allowSyntheticDefaultImports": true,
     "baseUrl": ".",
     "paths": {
+      "@/*": [
+        "apps/web/src/*"
+      ],
       "@nhalo/config": [
         "packages/config/src/index.ts"
       ],

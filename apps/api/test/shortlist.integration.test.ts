@@ -24,6 +24,12 @@ const capturedHome = {
   canonicalPropertyId: "canonical-123-main",
   distanceMiles: 2.1,
   insideRequestedRadius: true,
+  listingStatus: "active",
+  daysOnMarket: 5,
+  pricePerSqft: 183,
+  medianPricePerSqft: 190,
+  comparableSampleSize: 6,
+  comparableStrategyUsed: "local_radius_fallback",
   qualityFlags: [],
   strengths: ["Strong neighborhood safety"],
   risks: ["Moderate price pressure"],
@@ -215,6 +221,122 @@ describe("shortlist workflow", () => {
     expect(payload.noteDeleteCount).toBe(1);
     expect(payload.reviewStateChangeCount).toBe(1);
     expect(payload.shortlistViewCount).toBeGreaterThan(0);
+  });
+
+  it("marks a selected choice, exposes backups, and clears the summary after dropping the primary item", async () => {
+    const createShortlistResponse = await app.inject({
+      method: "POST",
+      url: "/shortlists",
+      headers: {
+        "x-nhalo-session-id": sessionId
+      },
+      payload: {
+        title: "Selected choice shortlist"
+      }
+    });
+    expect(createShortlistResponse.statusCode).toBe(201);
+    const shortlist = createShortlistResponse.json();
+
+    const primaryHome = {
+      ...capturedHome,
+      id: "home-primary",
+      canonicalPropertyId: "canonical-choice-primary",
+      address: "456 Choice Ave"
+    };
+    const backupHome = {
+      ...capturedHome,
+      id: "home-backup",
+      canonicalPropertyId: "canonical-choice-backup",
+      address: "789 Backup Blvd"
+    };
+
+    const firstItemResponse = await app.inject({
+      method: "POST",
+      url: `/shortlists/${shortlist.id}/items`,
+      payload: {
+        canonicalPropertyId: primaryHome.canonicalPropertyId,
+        capturedHome: primaryHome
+      }
+    });
+    expect(firstItemResponse.statusCode).toBe(201);
+    const firstItem = firstItemResponse.json();
+
+    const secondItemResponse = await app.inject({
+      method: "POST",
+      url: `/shortlists/${shortlist.id}/items`,
+      payload: {
+        canonicalPropertyId: backupHome.canonicalPropertyId,
+        capturedHome: backupHome
+      }
+    });
+    expect(secondItemResponse.statusCode).toBe(201);
+    const secondItem = secondItemResponse.json();
+
+    const selectPrimaryResponse = await app.inject({
+      method: "POST",
+      url: `/shortlists/${shortlist.id}/items/${firstItem.id}/select`,
+      payload: {
+        decisionConfidence: "high",
+        decisionRationale: "Best fit after shortlist comparison.",
+        lastDecisionReviewedAt: "2026-04-03T13:00:00.000Z"
+      }
+    });
+    expect(selectPrimaryResponse.statusCode).toBe(200);
+    expect(selectPrimaryResponse.json().selectedItem.choiceStatus).toBe("selected");
+
+    const reorderResponse = await app.inject({
+      method: "POST",
+      url: `/shortlists/${shortlist.id}/items/reorder`,
+      payload: {
+        orderedBackupItemIds: [secondItem.id]
+      }
+    });
+    expect(reorderResponse.statusCode).toBe(200);
+    expect(reorderResponse.json().items[1].choiceStatus).toBe("backup");
+
+    const selectedChoiceResponse = await app.inject({
+      method: "GET",
+      url: `/shortlists/${shortlist.id}/selected-choice`
+    });
+    expect(selectedChoiceResponse.statusCode).toBe(200);
+    expect(selectedChoiceResponse.json().selectedItem.id).toBe(firstItem.id);
+    expect(selectedChoiceResponse.json().backups).toHaveLength(1);
+    expect(selectedChoiceResponse.json().backups[0].id).toBe(secondItem.id);
+
+    const summaryResponse = await app.inject({
+      method: "GET",
+      url: `/shortlists/${shortlist.id}/selected-choice/summary`
+    });
+    expect(summaryResponse.statusCode).toBe(200);
+    expect(summaryResponse.json().hasSelectedChoice).toBe(true);
+    expect(summaryResponse.json().selectedItemId).toBe(firstItem.id);
+    expect(summaryResponse.json().offerStrategy).toMatchObject({
+      offerPosture: "not_ready",
+      recommendedNextOfferAction: "complete_financial_readiness"
+    });
+    expect(summaryResponse.json().offerStrategy.marketContext.listingStatus).toBe("active");
+    expect(summaryResponse.json().offerStrategy.marketContext.daysOnMarket).toBe(5);
+
+    const dropResponse = await app.inject({
+      method: "POST",
+      url: `/shortlists/${shortlist.id}/items/${firstItem.id}/drop`,
+      payload: {
+        droppedReason: "other",
+        decisionRationale: "Buyer moved away from this choice."
+      }
+    });
+    expect(dropResponse.statusCode).toBe(200);
+    expect(dropResponse.json().item.choiceStatus).toBe("dropped");
+    expect(dropResponse.json().summary.hasSelectedChoice).toBe(false);
+
+    const postDropSummaryResponse = await app.inject({
+      method: "GET",
+      url: `/shortlists/${shortlist.id}/selected-choice/summary`
+    });
+    expect(postDropSummaryResponse.statusCode).toBe(200);
+    expect(postDropSummaryResponse.json().hasSelectedChoice).toBe(false);
+    expect(postDropSummaryResponse.json().selectedItemId).toBe(null);
+    expect(postDropSummaryResponse.json().offerStrategy).toBe(null);
   });
 
   it("creates shared shortlist links, supports collaboration comments and reviewer decisions, and records metrics", async () => {

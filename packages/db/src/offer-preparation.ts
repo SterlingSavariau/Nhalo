@@ -10,8 +10,11 @@ import type {
   OfferPreparationInputs,
   OfferPreparationMissingItem,
   OfferPreparationRiskLevel,
+  OfferPreparationStrategyDefaultsProvenance,
+  OfferPreparationStrategySuggestedField,
   OfferPreparationState,
-  OfferPreparationSummary
+  OfferPreparationSummary,
+  SelectedChoiceOfferStrategy
 } from "@nhalo/types";
 
 type OfferPreparationEvaluationInput = {
@@ -44,6 +47,95 @@ const REQUIRED_FIELDS: Array<keyof OfferPreparationInputs> = [
   "appraisalContingency",
   "closingTimelineDays"
 ];
+
+function isStrategyDefaultable(strategy: SelectedChoiceOfferStrategy | null): boolean {
+  if (!strategy) {
+    return false;
+  }
+
+  if (strategy.strategyConfidence === "low") {
+    return false;
+  }
+
+  return (
+    strategy.offerPosture === "prepare_disciplined_offer" ||
+    strategy.offerPosture === "prepare_competitive_offer"
+  );
+}
+
+export function deriveOfferPreparationStrategyDefaults(
+  strategy: SelectedChoiceOfferStrategy | null
+): Partial<Pick<OfferPreparationInputs, "offerPrice" | "closingTimelineDays">> {
+  if (!isStrategyDefaultable(strategy)) {
+    return {};
+  }
+
+  return {
+    offerPrice: strategy?.pricePosition.recommendedOfferPrice ?? null,
+    closingTimelineDays:
+      strategy?.offerPosture === "prepare_competitive_offer"
+        ? ASSUMPTIONS.aggressiveClosingTimelineDays
+        : 30
+  };
+}
+
+export function applyOfferPreparationStrategyDefaults(args: {
+  payload: Partial<OfferPreparationInputs>;
+  strategy: SelectedChoiceOfferStrategy | null;
+  selectedItemId: string | null;
+  shortlistId: string | null;
+  propertyId: string;
+  now: string;
+}): {
+  patch: Partial<OfferPreparationInputs>;
+  provenance: OfferPreparationStrategyDefaultsProvenance | null;
+} {
+  const suggestions = deriveOfferPreparationStrategyDefaults(args.strategy);
+  const appliedFieldKeys: OfferPreparationStrategySuggestedField[] = [];
+  const patch: Partial<OfferPreparationInputs> = {
+    ...args.payload
+  };
+
+  if (
+    suggestions.offerPrice !== undefined &&
+    suggestions.offerPrice !== null &&
+    (patch.offerPrice === undefined || patch.offerPrice === null)
+  ) {
+    patch.offerPrice = suggestions.offerPrice;
+    appliedFieldKeys.push("offerPrice");
+  }
+
+  if (
+    suggestions.closingTimelineDays !== undefined &&
+    suggestions.closingTimelineDays !== null &&
+    (patch.closingTimelineDays === undefined || patch.closingTimelineDays === null)
+  ) {
+    patch.closingTimelineDays = suggestions.closingTimelineDays;
+    appliedFieldKeys.push("closingTimelineDays");
+  }
+
+  if (!args.strategy || appliedFieldKeys.length === 0) {
+    return {
+      patch,
+      provenance: null
+    };
+  }
+
+  return {
+    patch,
+    provenance: {
+      appliedAt: args.now,
+      appliedFieldKeys,
+      sourceSelectedItemId: args.selectedItemId,
+      sourceShortlistId: args.shortlistId,
+      sourcePropertyId: args.propertyId,
+      sourceStrategyConfidence: args.strategy.strategyConfidence,
+      sourceOfferPosture: args.strategy.offerPosture,
+      sourceRecommendedNextOfferAction: args.strategy.recommendedNextOfferAction,
+      sourceLastEvaluatedAt: args.strategy.lastEvaluatedAt
+    }
+  };
+}
 
 function countPresent(inputs: OfferPreparationInputs): number {
   return REQUIRED_FIELDS.filter((field) => {
@@ -600,6 +692,7 @@ export function evaluateOfferPreparation(
     sessionId: input.sessionId ?? current?.sessionId ?? null,
     partnerId: input.partnerId ?? current?.partnerId ?? null,
     ...normalizedInputs,
+    strategyDefaultsProvenance: current?.strategyDefaultsProvenance ?? null,
     offerSummary: {
       propertyId: normalizedInputs.propertyId,
       propertyAddressLabel: normalizedInputs.propertyAddressLabel,

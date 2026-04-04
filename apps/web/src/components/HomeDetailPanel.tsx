@@ -9,6 +9,8 @@ import type {
   OfferReadiness,
   UnderContractCoordination,
   ResultNote,
+  SelectedChoiceConciergeSummary,
+  ShortlistItem,
   UnifiedActivityRecord,
   WorkflowNotification,
   ScoredHome
@@ -23,11 +25,16 @@ import { OfferSubmissionCard } from "./OfferSubmissionCard";
 import { ClosingReadinessCard } from "./ClosingReadinessCard";
 import { UnderContractCoordinationCard } from "./UnderContractCoordinationCard";
 import { UnifiedActivityFeedPanel } from "./UnifiedActivityFeedPanel";
+import { SelectedChoiceSummaryCard } from "./SelectedChoiceSummaryCard";
+import { DecisionRationaleEditor } from "./DecisionRationaleEditor";
+import { OfferStrategyCard } from "./OfferStrategyCard";
 
 interface HomeDetailPanelProps {
   home: ScoredHome | null;
   allHomes: ScoredHome[];
   note?: ResultNote | null;
+  shortlistItem?: ShortlistItem | null;
+  selectedChoiceSummary?: SelectedChoiceConciergeSummary | null;
   financialReadiness?: FinancialReadiness | null;
   offerPreparation?: OfferPreparation | null;
   offerSubmission?: OfferSubmission | null;
@@ -41,6 +48,18 @@ interface HomeDetailPanelProps {
   negotiationEvents?: NegotiationEvent[];
   noteEnabled?: boolean;
   onClose(): void;
+  onUpdateShortlistDecision?(
+    shortlistId: string,
+    itemId: string,
+    patch: {
+      decisionRationale?: string | null;
+      decisionConfidence?: ShortlistItem["decisionConfidence"];
+      lastDecisionReviewedAt?: string | null;
+    }
+  ): void;
+  onSelectChoice?(shortlistId: string, itemId: string): void;
+  onDropChoice?(shortlistId: string, itemId: string): void;
+  onMoveBackup?(shortlistId: string, itemId: string, direction: "up" | "down"): void;
   onSaveNote?(body: string): void;
   onDeleteNote?(): void;
   onViewAudit(homeId: string): void;
@@ -257,6 +276,8 @@ export function HomeDetailPanel({
   home,
   allHomes,
   note,
+  shortlistItem,
+  selectedChoiceSummary = null,
   financialReadiness,
   offerPreparation,
   offerSubmission,
@@ -270,6 +291,10 @@ export function HomeDetailPanel({
   negotiationEvents = [],
   noteEnabled,
   onClose,
+  onUpdateShortlistDecision,
+  onSelectChoice,
+  onDropChoice,
+  onMoveBackup,
   onSaveNote,
   onDeleteNote,
   onViewAudit,
@@ -305,6 +330,39 @@ export function HomeDetailPanel({
 
   const labels = buildDecisionLabels(home, allHomes);
   const tradeoff = buildTradeoffSummary(home);
+  const shortlistStatusLabel =
+    shortlistItem?.choiceStatus === "selected"
+      ? "Selected choice"
+      : shortlistItem?.choiceStatus === "backup"
+        ? `Backup${shortlistItem.selectionRank ? ` #${shortlistItem.selectionRank - 1}` : ""}`
+        : shortlistItem?.choiceStatus === "active_pursuit"
+          ? "Active pursuit"
+          : shortlistItem?.choiceStatus === "under_contract"
+            ? "Under contract"
+            : shortlistItem?.choiceStatus === "closed"
+              ? "Closed"
+              : shortlistItem?.choiceStatus === "dropped"
+                ? "Dropped"
+                : shortlistItem?.choiceStatus === "replaced"
+                  ? "Replaced"
+                  : null;
+  const selectedChoicePropertyId = selectedChoiceSummary?.property?.canonicalPropertyId ?? null;
+  const currentPropertyId = home.canonicalPropertyId ?? home.id;
+  const shouldShowSelectedChoiceSummary =
+    selectedChoiceSummary !== null &&
+    (selectedChoicePropertyId === currentPropertyId || Boolean(shortlistItem));
+  const canPromoteChoice =
+    shortlistItem?.choiceStatus === "candidate" || shortlistItem?.choiceStatus === "backup";
+  const canDropChoice =
+    Boolean(shortlistItem) &&
+    shortlistItem.choiceStatus !== "closed" &&
+    (shortlistItem.choiceStatus === "selected" || shortlistItem.choiceStatus === "backup");
+  const canMoveBackupUp =
+    shortlistItem?.choiceStatus === "backup" && (shortlistItem.selectionRank ?? 0) > 2;
+  const canMoveBackupDown =
+    shortlistItem?.choiceStatus === "backup" &&
+    Boolean(selectedChoiceSummary) &&
+    (shortlistItem.selectionRank ?? 0) - 1 < selectedChoiceSummary.decision.backupCount;
 
   return (
     <aside className="detail-panel">
@@ -327,7 +385,77 @@ export function HomeDetailPanel({
             {label}
           </span>
         ))}
+        {shortlistStatusLabel ? <span className="chip active">{shortlistStatusLabel}</span> : null}
       </div>
+
+      {shouldShowSelectedChoiceSummary ? (
+        <>
+          <SelectedChoiceSummaryCard
+            compact={selectedChoicePropertyId !== currentPropertyId}
+            summary={selectedChoiceSummary}
+            title={
+              selectedChoicePropertyId === currentPropertyId
+                ? "Selected choice concierge"
+                : "Current selected choice"
+            }
+          />
+          <OfferStrategyCard
+            compact={selectedChoicePropertyId !== currentPropertyId}
+            strategy={selectedChoiceSummary?.offerStrategy ?? null}
+          />
+        </>
+      ) : shortlistItem ? (
+        <div className="callout info">
+          <strong>{shortlistStatusLabel ?? "Shortlisted"}</strong>
+          <p className="muted">
+            {shortlistItem.decisionRationale?.trim()
+              ? shortlistItem.decisionRationale
+              : shortlistItem.choiceStatus === "selected"
+                ? "This home is the current primary decision track."
+                : shortlistItem.choiceStatus === "backup"
+                  ? "This home is being kept as a fallback option."
+                  : "This home is stored in the shortlist decision set."}
+          </p>
+          {shortlistItem.decisionConfidence ? (
+            <p className="muted">Decision confidence: {shortlistItem.decisionConfidence}</p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {shortlistItem ? (
+        <>
+          {(shortlistItem.choiceStatus === "selected" || shortlistItem.choiceStatus === "backup") ? (
+            <DecisionRationaleEditor
+              compact={shortlistItem.choiceStatus === "backup"}
+              item={shortlistItem}
+              onSave={(patch) => onUpdateShortlistDecision?.(shortlistItem.shortlistId, shortlistItem.id, patch)}
+            />
+          ) : null}
+
+          <div className="activity-actions">
+            {canPromoteChoice && onSelectChoice ? (
+              <button className="chip" onClick={() => onSelectChoice(shortlistItem.shortlistId, shortlistItem.id)} type="button">
+                Set as selected choice
+              </button>
+            ) : null}
+            {canMoveBackupUp && onMoveBackup ? (
+              <button className="chip" onClick={() => onMoveBackup(shortlistItem.shortlistId, shortlistItem.id, "up")} type="button">
+                Move up backup
+              </button>
+            ) : null}
+            {canMoveBackupDown && onMoveBackup ? (
+              <button className="chip" onClick={() => onMoveBackup(shortlistItem.shortlistId, shortlistItem.id, "down")} type="button">
+                Move down backup
+              </button>
+            ) : null}
+            {canDropChoice && onDropChoice ? (
+              <button className="chip" onClick={() => onDropChoice(shortlistItem.shortlistId, shortlistItem.id)} type="button">
+                Drop choice
+              </button>
+            ) : null}
+          </div>
+        </>
+      ) : null}
 
       <div className="summary-grid">
         <div className="summary-block">
@@ -414,6 +542,11 @@ export function HomeDetailPanel({
           notifications={notifications.filter((entry) => entry.moduleName === "offer_preparation")}
           offerPreparation={offerPreparation}
           offerReadiness={offerReadiness}
+          offerStrategy={
+            selectedChoicePropertyId === (home.canonicalPropertyId ?? home.id)
+              ? selectedChoiceSummary?.offerStrategy ?? null
+              : null
+          }
           onCreate={onCreateOfferPreparation}
           onUpdate={onUpdateOfferPreparation}
           propertyAddressLabel={home.address}
@@ -515,6 +648,17 @@ export function HomeDetailPanel({
             sourceSearchDefinitionId: null,
             capturedHome: home,
             reviewState: "undecided",
+            choiceStatus: "candidate",
+            selectionRank: null,
+            decisionConfidence: null,
+            decisionRationale: null,
+            decisionRisks: [],
+            lastDecisionReviewedAt: null,
+            selectedAt: null,
+            statusChangedAt:
+              negotiation?.updatedAt ?? offerReadiness?.updatedAt ?? new Date().toISOString(),
+            replacedByShortlistItemId: null,
+            droppedReason: null,
             addedAt: negotiation?.createdAt ?? offerReadiness?.createdAt ?? new Date().toISOString(),
             updatedAt: negotiation?.updatedAt ?? offerReadiness?.updatedAt ?? new Date().toISOString()
           }}

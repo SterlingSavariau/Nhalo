@@ -1,6 +1,12 @@
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+import { loadEnvFile } from "node:process";
 import { ConfigError, getConfig } from "@nhalo/config";
 import { buildApp } from "./app";
 import { createLogger } from "./logger";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+loadEnvFile(resolve(__dirname, "../../../.env"));
 
 const config = getConfig();
 const logger = createLogger({ level: config.logLevel });

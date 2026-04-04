@@ -13,6 +13,7 @@ import { randomBytes } from "node:crypto";
 import type {
   AlertCategory,
   AffordabilityClassification,
+  ChoiceStatus,
   ClosingChecklistItemState,
   ClosingChecklistItemType,
   ClosingMilestoneType,
@@ -25,17 +26,22 @@ import type {
   DataQualityEvent,
   DataQualityStatus,
   DataQualitySummary,
+  DecisionConfidence,
+  DecisionStage,
+  DroppedReason,
   EffectiveCapabilities,
   FeedbackRecord,
   FinancialReadiness,
   FinancialReadinessInputs,
   FinancialReadinessState,
   FinancialReadinessSummary,
+  ListingDataSource,
   GeocodeCacheRecord,
   GeocodeCacheRepository,
   HistoricalComparisonPayload,
   ListingCacheRecord,
   ListingCacheRepository,
+  ListingStatus,
   NegotiationEvent,
   NegotiationEventType,
   NegotiationRecord,
@@ -111,6 +117,14 @@ import type {
   SearchSnapshotRecord,
   SearchPersistenceInput,
   SearchRepository,
+  SelectedChoiceOfferStrategy,
+  SelectedChoiceConciergeSummary,
+  SelectedChoiceView,
+  OfferPosture,
+  OfferStrategyConfidence,
+  OfferUrgencyLevel,
+  ConcessionStrategy,
+  RecommendedNextOfferAction,
   SharedSnapshotRecord,
   SharedSnapshotView,
   PreApprovalStatus,
@@ -136,6 +150,7 @@ import {
   toOfferReadinessRecommendation
 } from "./offer-readiness";
 import {
+  applyOfferPreparationStrategyDefaults,
   evaluateOfferPreparation,
   toOfferPreparationSummary
 } from "./offer-preparation";
@@ -148,6 +163,7 @@ import {
   toUnderContractCoordinationSummary
 } from "./under-contract";
 import { evaluateNegotiation, toNegotiationSummary } from "./negotiation";
+import { buildBuyerTransactionCommandCenter } from "./transaction-command-center";
 
 function randomToken(length = 32): string {
   let token = "";
@@ -179,6 +195,674 @@ function olderThanDays(timestamp: string, days: number): boolean {
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+const PRIMARY_CHOICE_STATUSES = new Set<ChoiceStatus>([
+  "selected",
+  "active_pursuit",
+  "under_contract",
+  "closed"
+]);
+
+const TERMINAL_CHOICE_STATUSES = new Set<ChoiceStatus>(["closed", "dropped", "replaced"]);
+
+function normalizeDecisionRisks(value: string[] | null | undefined): string[] {
+  return [...new Set((value ?? []).map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
+}
+
+function parseDecisionRisksJson(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return normalizeDecisionRisks(value.filter((entry): entry is string => typeof entry === "string"));
+}
+
+function normalizeShortlistItemChoice(item: ShortlistItem): ShortlistItem {
+  return {
+    ...item,
+    choiceStatus: item.choiceStatus ?? "candidate",
+    selectionRank: item.selectionRank ?? null,
+    decisionConfidence: item.decisionConfidence ?? null,
+    decisionRationale: item.decisionRationale ?? null,
+    decisionRisks: normalizeDecisionRisks(item.decisionRisks),
+    lastDecisionReviewedAt: item.lastDecisionReviewedAt ?? null,
+    selectedAt: item.selectedAt ?? null,
+    statusChangedAt: item.statusChangedAt ?? item.updatedAt,
+    replacedByShortlistItemId: item.replacedByShortlistItemId ?? null,
+    droppedReason: item.droppedReason ?? null
+  };
+}
+
+function isTerminalChoiceStatus(value: ChoiceStatus): boolean {
+  return TERMINAL_CHOICE_STATUSES.has(value);
+}
+
+function isPrimaryLifecycleChoiceStatus(value: ChoiceStatus): boolean {
+  return PRIMARY_CHOICE_STATUSES.has(value);
+}
+
+function deriveDecisionStage(value: ChoiceStatus): DecisionStage {
+  switch (value) {
+    case "candidate":
+    case "backup":
+      return "considering";
+    case "selected":
+      return "selected_choice";
+    case "active_pursuit":
+      return "offer_pursuit";
+    case "under_contract":
+      return "contract_to_close";
+    case "closed":
+    case "dropped":
+    case "replaced":
+      return "finished";
+  }
+}
+
+function choiceStatusPriority(value: ChoiceStatus): number {
+  switch (value) {
+    case "closed":
+      return 0;
+    case "under_contract":
+      return 1;
+    case "active_pursuit":
+      return 2;
+    case "selected":
+      return 3;
+    case "backup":
+      return 4;
+    case "candidate":
+      return 5;
+    case "dropped":
+      return 6;
+    case "replaced":
+      return 7;
+  }
+}
+
+function shortlistItemOrder(left: ShortlistItem, right: ShortlistItem): number {
+  const leftPriority = choiceStatusPriority(left.choiceStatus);
+  const rightPriority = choiceStatusPriority(right.choiceStatus);
+  if (leftPriority !== rightPriority) {
+    return leftPriority - rightPriority;
+  }
+  if ((left.selectionRank ?? Number.POSITIVE_INFINITY) !== (right.selectionRank ?? Number.POSITIVE_INFINITY)) {
+    return (left.selectionRank ?? Number.POSITIVE_INFINITY) - (right.selectionRank ?? Number.POSITIVE_INFINITY);
+  }
+  return right.updatedAt.localeCompare(left.updatedAt);
+}
+
+function resolvePrimaryChoiceOwner(items: ShortlistItem[]): ShortlistItem | null {
+  const candidates = items.filter((item) => isPrimaryLifecycleChoiceStatus(item.choiceStatus));
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  return [...candidates].sort((left, right) => {
+    const priorityDelta = choiceStatusPriority(left.choiceStatus) - choiceStatusPriority(right.choiceStatus);
+    if (priorityDelta !== 0) {
+      return priorityDelta;
+    }
+    return right.statusChangedAt.localeCompare(left.statusChangedAt);
+  })[0] ?? null;
+}
+
+function buildSelectedChoiceView(shortlistId: string, items: ShortlistItem[]): SelectedChoiceView {
+  const normalized = items.map((item) => normalizeShortlistItemChoice(item));
+  const selectedItem =
+    normalized.find((item) => item.choiceStatus === "selected" && item.selectionRank === 1) ?? null;
+
+  return {
+    shortlistId,
+    selectedItem,
+    backups: normalized
+      .filter((item) => item.choiceStatus === "backup")
+      .sort((left, right) =>
+        (left.selectionRank ?? Number.POSITIVE_INFINITY) - (right.selectionRank ?? Number.POSITIVE_INFINITY)
+      ),
+    candidates: normalized
+      .filter((item) => item.choiceStatus === "candidate")
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    terminalItems: normalized
+      .filter((item) => isTerminalChoiceStatus(item.choiceStatus))
+      .sort((left, right) => right.statusChangedAt.localeCompare(left.statusChangedAt))
+  };
+}
+
+function normalizeBackupRanks(items: ShortlistItem[]): ShortlistItem[] {
+  const orderedBackups = items
+    .filter((item) => item.choiceStatus === "backup")
+    .sort((left, right) => {
+      if ((left.selectionRank ?? Number.POSITIVE_INFINITY) !== (right.selectionRank ?? Number.POSITIVE_INFINITY)) {
+        return (left.selectionRank ?? Number.POSITIVE_INFINITY) - (right.selectionRank ?? Number.POSITIVE_INFINITY);
+      }
+      return right.updatedAt.localeCompare(left.updatedAt);
+    });
+
+  orderedBackups.forEach((item, index) => {
+    item.selectionRank = index + 2;
+  });
+
+  return items;
+}
+
+function activeWorkflowNotifications(
+  notifications: WorkflowNotification[]
+): WorkflowNotification[] {
+  return notifications.filter(
+    (entry) => entry.status !== "DISMISSED" && entry.status !== "RESOLVED"
+  );
+}
+
+function pushUnique(target: string[], value: string | null | undefined): void {
+  if (!value || value.trim().length === 0 || target.includes(value)) {
+    return;
+  }
+
+  target.push(value);
+}
+
+function classifyVersusList(
+  listPrice: number | null,
+  recommendedOfferPrice: number | null
+): SelectedChoiceOfferStrategy["pricePosition"]["versusList"] {
+  if (!listPrice || !recommendedOfferPrice) {
+    return "unknown";
+  }
+
+  const ratio = recommendedOfferPrice / Math.max(listPrice, 1);
+  if (ratio > 1.01) {
+    return "above_list";
+  }
+  if (ratio < 0.99) {
+    return "below_list";
+  }
+  return "at_list";
+}
+
+function classifyVersusMarket(
+  pricePerSqft: number | null,
+  medianPricePerSqft: number | null
+): SelectedChoiceOfferStrategy["pricePosition"]["versusMarket"] {
+  if (!pricePerSqft || !medianPricePerSqft) {
+    return "unknown";
+  }
+
+  const ratio = pricePerSqft / Math.max(medianPricePerSqft, 1);
+  if (ratio <= 0.95) {
+    return "discount_to_market";
+  }
+  if (ratio >= 1.05) {
+    return "premium_to_market";
+  }
+  return "near_market";
+}
+
+function deriveSelectedChoiceOfferStrategy(args: {
+  primaryOwner: ShortlistItem | null;
+  financialReadiness: FinancialReadiness | null;
+  offerReadiness: OfferReadiness | null;
+}): SelectedChoiceOfferStrategy | null {
+  const primaryOwner = args.primaryOwner;
+  if (!primaryOwner || !["selected", "active_pursuit"].includes(primaryOwner.choiceStatus)) {
+    return null;
+  }
+
+  const home = primaryOwner.capturedHome;
+  const listingStatus = home.listingStatus ?? null;
+  const daysOnMarket =
+    typeof home.daysOnMarket === "number" && Number.isFinite(home.daysOnMarket)
+      ? Math.max(0, Math.round(home.daysOnMarket))
+      : null;
+  const listPrice = typeof home.price === "number" && Number.isFinite(home.price) ? home.price : null;
+  const recommendedOfferPrice = args.offerReadiness?.recommendedOfferPrice ?? null;
+  const pricePerSqft =
+    typeof home.pricePerSqft === "number" && home.pricePerSqft > 0 ? home.pricePerSqft : null;
+  const medianPricePerSqft =
+    typeof home.medianPricePerSqft === "number" && home.medianPricePerSqft > 0
+      ? home.medianPricePerSqft
+      : null;
+  const comparableSampleSize =
+    typeof home.comparableSampleSize === "number" && Number.isFinite(home.comparableSampleSize)
+      ? home.comparableSampleSize
+      : null;
+  const comparableStrategyUsed = home.comparableStrategyUsed ?? null;
+  const overallConfidence = home.scores.overallConfidence ?? null;
+  const listingDataSource = home.provenance?.listingDataSource ?? home.listingDataSource ?? null;
+  const limitedComparables = Boolean(home.qualityFlags?.includes("limitedComparables"));
+  const listingKnown = listingStatus !== null;
+  const domKnown = daysOnMarket !== null;
+  const listingFreshnessWeak =
+    listingDataSource === "stale_cached_live" || listingDataSource === "mock";
+  const confidenceWeak = overallConfidence === "low" || overallConfidence === "none";
+  const financialReady = args.financialReadiness?.readinessState === "READY";
+  const offerReadiness = args.offerReadiness;
+  const offerReady = offerReadiness?.status === "READY";
+  const offerBlocked = offerReadiness?.status === "BLOCKED";
+
+  let strategyConfidence: OfferStrategyConfidence = "medium";
+  if (
+    financialReady &&
+    offerReady &&
+    listingKnown &&
+    domKnown &&
+    !listingFreshnessWeak &&
+    !limitedComparables &&
+    !confidenceWeak
+  ) {
+    strategyConfidence = "high";
+  } else if (
+    !offerReadiness ||
+    (!listingKnown && !domKnown) ||
+    listingFreshnessWeak ||
+    confidenceWeak
+  ) {
+    strategyConfidence = "low";
+  }
+
+  let urgencyLevel: OfferUrgencyLevel = "low";
+  if (
+    listingStatus === "pending" ||
+    listingStatus === "contingent" ||
+    listingStatus === "sold" ||
+    listingStatus === "off_market" ||
+    !financialReady ||
+    offerBlocked
+  ) {
+    urgencyLevel = "blocked";
+  } else if (
+    listingStatus === "active" &&
+    daysOnMarket !== null &&
+    daysOnMarket <= 7 &&
+    offerReady &&
+    strategyConfidence !== "low"
+  ) {
+    urgencyLevel = "high";
+  } else if (
+    listingStatus === "active" &&
+    ((daysOnMarket !== null && daysOnMarket <= 21) || (daysOnMarket === null && offerReady))
+  ) {
+    urgencyLevel = "medium";
+  }
+
+  let offerPosture: OfferPosture;
+  if (
+    listingStatus === "pending" ||
+    listingStatus === "contingent" ||
+    listingStatus === "sold" ||
+    listingStatus === "off_market"
+  ) {
+    offerPosture = "do_not_advance";
+  } else if (!financialReady || !offerReadiness || !offerReady) {
+    offerPosture = "not_ready";
+  } else if (
+    strategyConfidence === "low" ||
+    !listingKnown ||
+    !domKnown ||
+    confidenceWeak ||
+    listingFreshnessWeak
+  ) {
+    offerPosture = "verify_before_offering";
+  } else if (
+    listingStatus === "active" &&
+    urgencyLevel === "high" &&
+    (strategyConfidence === "high" || strategyConfidence === "medium")
+  ) {
+    offerPosture = "prepare_competitive_offer";
+  } else if (listingStatus === "coming_soon" || (daysOnMarket !== null && daysOnMarket > 30)) {
+    offerPosture = "hold_and_monitor";
+  } else {
+    offerPosture = "prepare_disciplined_offer";
+  }
+
+  let concessionStrategy: ConcessionStrategy;
+  if (strategyConfidence === "low") {
+    concessionStrategy = "defer_until_more_certain";
+  } else if (offerPosture === "prepare_competitive_offer") {
+    concessionStrategy = "keep_terms_clean";
+  } else if (offerPosture === "prepare_disciplined_offer") {
+    concessionStrategy = "limit_concession_requests";
+  } else {
+    concessionStrategy = "case_by_case";
+  }
+
+  let recommendedNextOfferAction: RecommendedNextOfferAction;
+  if (offerPosture === "do_not_advance") {
+    recommendedNextOfferAction = "do_not_advance";
+  } else if (!financialReady) {
+    recommendedNextOfferAction = "complete_financial_readiness";
+  } else if (!offerReadiness || !offerReady) {
+    recommendedNextOfferAction = "complete_offer_readiness";
+  } else if (offerPosture === "verify_before_offering") {
+    recommendedNextOfferAction = "review_market_inputs";
+  } else if (offerPosture === "hold_and_monitor") {
+    recommendedNextOfferAction = "hold_and_monitor";
+  } else if (offerPosture === "prepare_competitive_offer") {
+    recommendedNextOfferAction = "draft_competitive_offer";
+  } else {
+    recommendedNextOfferAction = "draft_disciplined_offer";
+  }
+
+  const marketRisks: string[] = [];
+  const strategyRationale: string[] = [];
+
+  if (!listingKnown) {
+    pushUnique(marketRisks, "Current listing status is unavailable in the stored result.");
+  }
+  if (!domKnown) {
+    pushUnique(marketRisks, "Days on market are unavailable in the stored result.");
+  }
+  if (limitedComparables) {
+    pushUnique(marketRisks, "Comparable homes nearby were limited.");
+  }
+  if (listingFreshnessWeak) {
+    pushUnique(marketRisks, "Listing data freshness is reduced, so market posture is provisional.");
+  }
+  if (confidenceWeak) {
+    pushUnique(marketRisks, "Overall confidence is reduced for this property.");
+  }
+  if (!financialReady) {
+    pushUnique(marketRisks, "Financial readiness is not yet ready for offer advancement.");
+  }
+  if (offerReadiness?.blockingIssues.length) {
+    pushUnique(marketRisks, offerReadiness.blockingIssues[0]);
+  }
+  if (
+    listingStatus === "pending" ||
+    listingStatus === "contingent" ||
+    listingStatus === "sold" ||
+    listingStatus === "off_market"
+  ) {
+    pushUnique(
+      marketRisks,
+      `Listing is currently ${listingStatus.replaceAll("_", " ")}, so an offer should not advance.`
+    );
+  }
+
+  switch (offerPosture) {
+    case "do_not_advance":
+      pushUnique(strategyRationale, "The listing is no longer in a state that supports offer advancement.");
+      break;
+    case "not_ready":
+      pushUnique(strategyRationale, "Buyer readiness must be completed before drafting an offer.");
+      break;
+    case "verify_before_offering":
+      pushUnique(strategyRationale, "Stored market inputs are incomplete or weak, so the strategy should stay provisional.");
+      break;
+    case "prepare_competitive_offer":
+      pushUnique(strategyRationale, "The home is active, buyer readiness is strong, and the market posture supports moving quickly.");
+      break;
+    case "hold_and_monitor":
+      pushUnique(strategyRationale, "Current listing timing does not justify immediate offer drafting.");
+      break;
+    default:
+      pushUnique(strategyRationale, "Buyer readiness supports moving forward with a disciplined offer posture.");
+      break;
+  }
+
+  if (recommendedOfferPrice !== null && listPrice !== null) {
+    const versusList = classifyVersusList(listPrice, recommendedOfferPrice);
+    if (versusList === "above_list") {
+      pushUnique(strategyRationale, "The current recommendation sits above list price, which supports a more competitive stance.");
+    } else if (versusList === "below_list") {
+      pushUnique(strategyRationale, "The current recommendation remains below list price, which supports disciplined drafting.");
+    }
+  }
+
+  if (daysOnMarket !== null) {
+    if (daysOnMarket <= 7) {
+      pushUnique(strategyRationale, "The listing is fresh enough that delay may reduce leverage.");
+    } else if (daysOnMarket > 30) {
+      pushUnique(strategyRationale, "The listing has been on market longer, which weakens urgency.");
+    }
+  }
+
+  return {
+    strategyConfidence,
+    offerPosture,
+    urgencyLevel,
+    concessionStrategy,
+    recommendedNextOfferAction,
+    pricePosition: {
+      listPrice,
+      recommendedOfferPrice,
+      pricePerSqft,
+      medianPricePerSqft,
+      versusList: classifyVersusList(listPrice, recommendedOfferPrice),
+      versusMarket: classifyVersusMarket(pricePerSqft, medianPricePerSqft)
+    },
+    marketContext: {
+      listingStatus,
+      daysOnMarket,
+      comparableSampleSize,
+      comparableStrategyUsed,
+      overallConfidence,
+      listingDataSource,
+      limitedComparables
+    },
+    marketRisks: marketRisks.slice(0, 4),
+    strategyRationale: strategyRationale.slice(0, 4),
+    lastEvaluatedAt:
+      offerReadiness?.lastEvaluatedAt ??
+      args.financialReadiness?.lastEvaluatedAt ??
+      primaryOwner.updatedAt
+  };
+}
+
+function buildSelectedChoiceConciergeSummary(args: {
+  shortlistId: string;
+  items: ShortlistItem[];
+  financialReadiness: FinancialReadiness | null;
+  offerReadiness: OfferReadiness | null;
+  offerPreparation: OfferPreparation | null;
+  offerSubmission: OfferSubmission | null;
+  negotiation: NegotiationRecord | null;
+  underContract: UnderContractCoordination | null;
+  closingReadiness: ClosingReadiness | null;
+  workflowNotifications: WorkflowNotification[];
+  workflowActivity?: WorkflowActivityRecord[];
+}): SelectedChoiceConciergeSummary {
+  const items = args.items.map((item) => normalizeShortlistItemChoice(item));
+  const primaryOwner = resolvePrimaryChoiceOwner(items);
+  const view = buildSelectedChoiceView(args.shortlistId, items);
+  const notifications = activeWorkflowNotifications(args.workflowNotifications);
+  const offerStrategy = deriveSelectedChoiceOfferStrategy({
+    primaryOwner,
+    financialReadiness: args.financialReadiness,
+    offerReadiness: args.offerReadiness
+  });
+
+  const commandCenter =
+    primaryOwner && (args.financialReadiness || args.offerPreparation || args.offerSubmission || args.underContract || args.closingReadiness)
+      ? buildBuyerTransactionCommandCenter({
+          propertyId: primaryOwner.canonicalPropertyId,
+          propertyAddressLabel: primaryOwner.capturedHome.address,
+          sessionId: args.financialReadiness?.sessionId ?? null,
+          shortlistId: args.shortlistId,
+          financialReadiness: args.financialReadiness,
+          offerPreparation: args.offerPreparation,
+          offerSubmission: args.offerSubmission,
+          underContract: args.underContract,
+          closingReadiness: args.closingReadiness,
+          workflowActivity: args.workflowActivity ?? []
+        })
+      : null;
+
+  const sourceModule = commandCenter
+    ? "transaction_command_center"
+    : args.closingReadiness
+      ? "closing_readiness"
+      : args.underContract
+        ? "under_contract"
+        : args.offerSubmission
+          ? "offer_submission"
+          : args.negotiation
+            ? "negotiation"
+            : args.offerPreparation
+              ? "offer_preparation"
+              : args.offerReadiness
+                ? "offer_readiness"
+                : args.financialReadiness
+                  ? "financial_readiness"
+                  : "selected_choice";
+
+  const blockers = commandCenter
+    ? commandCenter.activeBlockers.map((entry) => entry.message)
+    : args.closingReadiness
+      ? args.closingReadiness.blockers.map((entry) => entry.message)
+      : args.underContract
+        ? args.underContract.blockers.map((entry) => entry.message)
+        : args.offerSubmission
+          ? args.offerSubmission.blockers.map((entry) => entry.message)
+          : args.offerPreparation
+            ? args.offerPreparation.blockers.map((entry) => entry.message)
+            : args.financialReadiness
+              ? args.financialReadiness.blockers.map((entry) => entry.message)
+              : [];
+
+  const topRisks = commandCenter
+    ? commandCenter.topRisks.map((entry) => entry.message)
+    : args.negotiation
+      ? args.negotiation.guidance.flags
+      : [
+          ...(args.closingReadiness ? [args.closingReadiness.risk] : []),
+          ...(args.underContract ? [args.underContract.risk] : []),
+          ...(args.offerSubmission ? [args.offerSubmission.risk] : []),
+          ...(args.offerPreparation ? [args.offerPreparation.risk] : []),
+          ...(args.financialReadiness ? [args.financialReadiness.risk] : []),
+          ...(primaryOwner?.decisionRisks ?? [])
+        ].filter((entry) => entry.trim().length > 0);
+
+  const nextAction = commandCenter?.nextAction
+    ?? args.closingReadiness?.nextAction
+    ?? args.underContract?.nextAction
+    ?? args.offerSubmission?.nextAction
+    ?? args.offerPreparation?.nextAction
+    ?? args.offerReadiness?.nextSteps[0]
+    ?? args.financialReadiness?.nextAction
+    ?? (view.backups[0]
+      ? `Select ${view.backups[0].capturedHome.address} as the primary home or choose another shortlist item.`
+      : "Select a primary home from the shortlist.");
+
+  const nextSteps = commandCenter?.nextSteps
+    ?? args.closingReadiness?.nextSteps
+    ?? args.underContract?.nextSteps
+    ?? args.offerSubmission?.nextSteps
+    ?? args.offerPreparation?.nextSteps
+    ?? args.offerReadiness?.nextSteps
+    ?? args.financialReadiness?.nextSteps
+    ?? (view.backups[0]
+      ? [`Review ${view.backups[0].capturedHome.address} as the top backup option.`]
+      : ["Pick a shortlisted home to become the selected choice."]);
+
+  const recommendationSummary = commandCenter
+    ? `${commandCenter.currentStage.replaceAll("_", " ").toLowerCase()} is the active stage. ${commandCenter.nextAction}`
+    : args.closingReadiness?.recommendation
+      ?? args.underContract?.recommendation
+      ?? args.offerSubmission?.recommendation
+      ?? args.offerPreparation?.recommendation
+      ?? (args.negotiation ? args.negotiation.guidance.headline : null)
+      ?? (args.offerReadiness
+        ? `Offer readiness score is ${args.offerReadiness.readinessScore} with a recommended offer of ${args.offerReadiness.recommendedOfferPrice.toLocaleString("en-US", {
+            style: "currency",
+            currency: "USD",
+            maximumFractionDigits: 0
+          })}.`
+        : null)
+      ?? args.financialReadiness?.recommendation
+      ?? primaryOwner?.decisionRationale
+      ?? (primaryOwner
+        ? primaryOwner.capturedHome.explainability?.headline ?? primaryOwner.capturedHome.explanation
+        : "No selected choice is active yet.");
+
+  const headline = primaryOwner
+    ? `${primaryOwner.capturedHome.address} is the current selected-choice track.`
+    : view.backups[0]
+      ? `No selected choice is active. ${view.backups[0].capturedHome.address} is the top backup.`
+      : "No selected choice is active yet.";
+
+  return {
+    shortlistId: args.shortlistId,
+    selectedItemId: primaryOwner?.id ?? null,
+    hasSelectedChoice: Boolean(primaryOwner),
+    choiceStatus: primaryOwner?.choiceStatus ?? "none",
+    decisionStage: primaryOwner ? deriveDecisionStage(primaryOwner.choiceStatus) : "none",
+    property: primaryOwner
+      ? {
+          shortlistItemId: primaryOwner.id,
+          canonicalPropertyId: primaryOwner.canonicalPropertyId,
+          address: primaryOwner.capturedHome.address,
+          city: primaryOwner.capturedHome.city,
+          state: primaryOwner.capturedHome.state,
+          price: primaryOwner.capturedHome.price,
+          nhaloScore: primaryOwner.capturedHome.scores.nhalo,
+          overallConfidence: primaryOwner.capturedHome.scores.overallConfidence,
+          capturedHome: clone(primaryOwner.capturedHome)
+        }
+      : null,
+    decision: {
+      selectionRank: primaryOwner?.selectionRank ?? null,
+      backupCount: view.backups.length,
+      decisionConfidence: primaryOwner?.decisionConfidence ?? null,
+      decisionRationale: primaryOwner?.decisionRationale ?? null,
+      decisionRisks: clone(primaryOwner?.decisionRisks ?? []),
+      lastDecisionReviewedAt: primaryOwner?.lastDecisionReviewedAt ?? null,
+      selectedAt: primaryOwner?.selectedAt ?? null,
+      statusChangedAt: primaryOwner?.statusChangedAt ?? null,
+      droppedReason: primaryOwner?.droppedReason ?? null,
+      replacedByShortlistItemId: primaryOwner?.replacedByShortlistItemId ?? null
+    },
+    readiness: {
+      financialReadinessId: args.financialReadiness?.id ?? null,
+      financialReadinessState: args.financialReadiness?.readinessState ?? null,
+      affordabilityClassification: args.financialReadiness?.affordabilityClassification ?? null,
+      offerReadinessId: args.offerReadiness?.id ?? null,
+      offerReadinessStatus: args.offerReadiness?.status ?? null,
+      offerReadinessScore: args.offerReadiness?.readinessScore ?? null,
+      recommendedOfferPrice: args.offerReadiness?.recommendedOfferPrice ?? null,
+      offerRecommendationConfidence: args.offerReadiness?.confidence ?? null
+    },
+    workflow: {
+      offerPreparationId: args.offerPreparation?.id ?? null,
+      offerPreparationState: args.offerPreparation?.offerState ?? null,
+      offerSubmissionId: args.offerSubmission?.id ?? null,
+      offerSubmissionState: args.offerSubmission?.submissionState ?? null,
+      negotiationId: args.negotiation?.id ?? null,
+      negotiationStatus: args.negotiation?.status ?? null,
+      underContractCoordinationId: args.underContract?.id ?? null,
+      underContractState: args.underContract?.overallCoordinationState ?? null,
+      closingReadinessId: args.closingReadiness?.id ?? null,
+      closingReadinessState: args.closingReadiness?.overallClosingReadinessState ?? null,
+      transactionCommandCenter: commandCenter
+    },
+    alerts: {
+      unreadCount: notifications.filter((entry) => entry.status === "UNREAD").length,
+      criticalCount: notifications.filter((entry) => entry.severity === "CRITICAL").length,
+      warningCount: notifications.filter((entry) => entry.severity === "WARNING").length,
+      notifications: clone(notifications)
+    },
+    offerStrategy,
+    concierge: {
+      headline,
+      recommendationSummary,
+      nextAction,
+      nextSteps: clone(nextSteps),
+      topRisks: [...new Set(topRisks.filter((entry) => entry.trim().length > 0))],
+      blockers: [...new Set(blockers.filter((entry) => entry.trim().length > 0))],
+      sourceModule,
+      lastUpdatedAt:
+        commandCenter?.lastUpdatedAt
+        ?? args.closingReadiness?.updatedAt
+        ?? args.underContract?.updatedAt
+        ?? args.offerSubmission?.updatedAt
+        ?? args.negotiation?.updatedAt
+        ?? args.offerPreparation?.updatedAt
+        ?? args.offerReadiness?.updatedAt
+        ?? args.financialReadiness?.updatedAt
+        ?? primaryOwner?.updatedAt
+        ?? null
+    }
+  };
 }
 
 function blockerCodes(value: Array<{ code: string }> | null | undefined): string[] {
@@ -1053,11 +1737,14 @@ function mapStoredShortlist(
 }
 
 function mapStoredShortlistItem(item: StoredShortlistItem): ShortlistItem {
-  return clone(item);
+  return clone(normalizeShortlistItemChoice(item));
 }
 
 function mapStoredOfferPreparation(record: StoredOfferPreparation): OfferPreparation {
-  return clone(record);
+  return clone({
+    ...record,
+    strategyDefaultsProvenance: record.strategyDefaultsProvenance ?? null
+  });
 }
 
 function mapStoredOfferSubmission(record: StoredOfferSubmission): OfferSubmission {
@@ -1151,6 +1838,12 @@ function workflowEventNames(): WorkflowActivityRecord["eventType"][] {
     "shortlist_deleted",
     "shortlist_item_added",
     "shortlist_item_removed",
+    "selected_choice_marked",
+    "selected_choice_replaced",
+    "selected_choice_dropped",
+    "selected_choice_backup_reordered",
+    "selected_choice_rationale_updated",
+    "selected_choice_reviewed",
     "offer_readiness_created",
     "offer_readiness_updated",
     "offer_status_changed",
@@ -1967,6 +2660,16 @@ export class InMemorySearchRepository implements SearchRepository {
       sourceSearchDefinitionId: payload.sourceSearchDefinitionId ?? null,
       capturedHome: clone(payload.capturedHome),
       reviewState: payload.reviewState ?? "undecided",
+      choiceStatus: "candidate",
+      selectionRank: null,
+      decisionConfidence: null,
+      decisionRationale: null,
+      decisionRisks: [],
+      lastDecisionReviewedAt: null,
+      selectedAt: null,
+      statusChangedAt: now,
+      replacedByShortlistItemId: null,
+      droppedReason: null,
       addedAt: now,
       updatedAt: now
     };
@@ -1991,7 +2694,7 @@ export class InMemorySearchRepository implements SearchRepository {
   async listShortlistItems(shortlistId: string): Promise<ShortlistItem[]> {
     return this.shortlistItems
       .filter((entry) => entry.shortlistId === shortlistId)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .sort(shortlistItemOrder)
       .map((entry) => mapStoredShortlistItem(entry));
   }
 
@@ -2232,6 +2935,13 @@ export class InMemorySearchRepository implements SearchRepository {
       return mapStoredOfferPreparation(existing);
     }
 
+    const selectedChoiceSummary = payload.shortlistId
+      ? await this.getSelectedChoiceSummary(payload.shortlistId)
+      : null;
+    const activeOfferStrategy =
+      selectedChoiceSummary?.property?.canonicalPropertyId === payload.propertyId
+        ? selectedChoiceSummary.offerStrategy
+        : null;
     const recommendedOfferPrice =
       payload.offerReadinessId
         ? this.offerReadinessRecords.find((entry) => entry.id === payload.offerReadinessId)
@@ -2242,18 +2952,27 @@ export class InMemorySearchRepository implements SearchRepository {
               (payload.shortlistId ? entry.shortlistId === payload.shortlistId : true)
           )?.recommendedOfferPrice ?? null;
     const now = new Date().toISOString();
+    const strategyApplication = applyOfferPreparationStrategyDefaults({
+      payload,
+      strategy: activeOfferStrategy,
+      selectedItemId: selectedChoiceSummary?.selectedItemId ?? null,
+      shortlistId: payload.shortlistId ?? null,
+      propertyId: payload.propertyId,
+      now
+    });
     const evaluation = evaluateOfferPreparation({
       now,
       financialReadiness,
       recommendedOfferPrice,
       sessionId: payload.sessionId ?? financialReadiness.sessionId ?? null,
       partnerId: payload.partnerId ?? financialReadiness.partnerId ?? null,
-      patch: payload
+      patch: strategyApplication.patch
     });
 
     const record: OfferPreparation = {
       id: createId("offer-preparation"),
       ...evaluation,
+      strategyDefaultsProvenance: strategyApplication.provenance,
       createdAt: now,
       updatedAt: now
     };
@@ -2267,7 +2986,8 @@ export class InMemorySearchRepository implements SearchRepository {
         offerPreparationId: record.id,
         propertyId: record.propertyId,
         shortlistId: record.shortlistId ?? null,
-        offerState: record.offerState
+        offerState: record.offerState,
+        strategyDefaultsAppliedFields: record.strategyDefaultsProvenance?.appliedFieldKeys ?? []
       },
       createdAt: now
     });
@@ -4528,6 +5248,10 @@ export class InMemorySearchRepository implements SearchRepository {
     itemId: string,
     patch: {
       reviewState?: ReviewState;
+      decisionConfidence?: DecisionConfidence | null;
+      decisionRationale?: string | null;
+      decisionRisks?: string[];
+      lastDecisionReviewedAt?: string | null;
     }
   ): Promise<ShortlistItem | null> {
     const item = this.shortlistItems.find(
@@ -4537,23 +5261,402 @@ export class InMemorySearchRepository implements SearchRepository {
       return null;
     }
 
+    const previousReviewState = item.reviewState;
+    const previousDecisionSnapshot = JSON.stringify({
+      decisionConfidence: item.decisionConfidence ?? null,
+      decisionRationale: item.decisionRationale ?? null,
+      decisionRisks: normalizeDecisionRisks(item.decisionRisks),
+      lastDecisionReviewedAt: item.lastDecisionReviewedAt ?? null
+    });
+
     if (patch.reviewState !== undefined) {
       item.reviewState = patch.reviewState;
     }
+
+    if (patch.decisionConfidence !== undefined) {
+      item.decisionConfidence = patch.decisionConfidence;
+    }
+    if (patch.decisionRationale !== undefined) {
+      item.decisionRationale = patch.decisionRationale;
+    }
+    if (patch.decisionRisks !== undefined) {
+      item.decisionRisks = normalizeDecisionRisks(patch.decisionRisks);
+    }
+    if (patch.lastDecisionReviewedAt !== undefined) {
+      item.lastDecisionReviewedAt = patch.lastDecisionReviewedAt;
+    }
+
     item.updatedAt = new Date().toISOString();
-    this.validationEvents.push({
-      id: createId("workflow"),
-      eventName: "review_state_changed",
-      sessionId: this.shortlists.find((entry) => entry.id === shortlistId)?.sessionId ?? null,
-      payload: {
-        shortlistId,
-        shortlistItemId: item.id,
-        reviewState: item.reviewState
-      },
-      createdAt: item.updatedAt
+    const sessionId = this.shortlists.find((entry) => entry.id === shortlistId)?.sessionId ?? null;
+
+    if (previousReviewState !== item.reviewState) {
+      this.validationEvents.push({
+        id: createId("workflow"),
+        eventName: "review_state_changed",
+        sessionId,
+        payload: {
+          shortlistId,
+          shortlistItemId: item.id,
+          reviewState: item.reviewState
+        },
+        createdAt: item.updatedAt
+      });
+    }
+
+    const nextDecisionSnapshot = JSON.stringify({
+      decisionConfidence: item.decisionConfidence ?? null,
+      decisionRationale: item.decisionRationale ?? null,
+      decisionRisks: normalizeDecisionRisks(item.decisionRisks),
+      lastDecisionReviewedAt: item.lastDecisionReviewedAt ?? null
     });
 
+    if (previousDecisionSnapshot !== nextDecisionSnapshot) {
+      this.validationEvents.push({
+        id: createId("workflow"),
+        eventName: "selected_choice_rationale_updated",
+        sessionId,
+        payload: {
+          shortlistId,
+          shortlistItemId: item.id,
+          choiceStatus: item.choiceStatus,
+          decisionConfidence: item.decisionConfidence ?? null
+        },
+        createdAt: item.updatedAt
+      });
+    }
+
+    if (patch.lastDecisionReviewedAt !== undefined) {
+      this.validationEvents.push({
+        id: createId("workflow"),
+        eventName: "selected_choice_reviewed",
+        sessionId,
+        payload: {
+          shortlistId,
+          shortlistItemId: item.id,
+          reviewedAt: item.lastDecisionReviewedAt
+        },
+        createdAt: item.updatedAt
+      });
+    }
+
     return mapStoredShortlistItem(item);
+  }
+
+  async selectShortlistItem(payload: {
+    shortlistId: string;
+    itemId: string;
+    replaceMode?: "backup" | "replaced" | "dropped";
+    decisionConfidence?: DecisionConfidence | null;
+    decisionRationale?: string | null;
+    decisionRisks?: string[];
+    lastDecisionReviewedAt?: string | null;
+  }): Promise<{
+    selectedItem: ShortlistItem;
+    previousPrimaryItem: ShortlistItem | null;
+  } | null> {
+    const shortlist = this.shortlists.find((entry) => entry.id === payload.shortlistId) ?? null;
+    if (!shortlist) {
+      return null;
+    }
+
+    const items = this.shortlistItems.filter((entry) => entry.shortlistId === payload.shortlistId);
+    const target = items.find((entry) => entry.id === payload.itemId);
+    if (!target || isTerminalChoiceStatus(target.choiceStatus) || target.choiceStatus === "under_contract" || target.choiceStatus === "active_pursuit") {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const previousPrimary =
+      resolvePrimaryChoiceOwner(items.filter((entry) => entry.id !== target.id)) ?? null;
+    if (previousPrimary?.choiceStatus === "closed") {
+      return null;
+    }
+
+    const replaceMode = payload.replaceMode ?? "backup";
+    if (previousPrimary && previousPrimary.id !== target.id) {
+      previousPrimary.updatedAt = now;
+      previousPrimary.statusChangedAt = now;
+      previousPrimary.selectionRank = null;
+      if (replaceMode === "backup") {
+        previousPrimary.choiceStatus = "backup";
+        previousPrimary.replacedByShortlistItemId = null;
+        previousPrimary.droppedReason = null;
+      } else if (replaceMode === "replaced") {
+        previousPrimary.choiceStatus = "replaced";
+        previousPrimary.replacedByShortlistItemId = target.id;
+        previousPrimary.droppedReason = "better_alternative_selected";
+      } else {
+        previousPrimary.choiceStatus = "dropped";
+        previousPrimary.replacedByShortlistItemId = null;
+        previousPrimary.droppedReason = "better_alternative_selected";
+      }
+    }
+
+    for (const item of items) {
+      if (item.id === target.id) {
+        continue;
+      }
+      if (item.choiceStatus === "selected") {
+        item.choiceStatus = "backup";
+        item.selectionRank = null;
+        item.statusChangedAt = now;
+        item.updatedAt = now;
+      }
+    }
+
+    if (target.choiceStatus !== "selected") {
+      target.statusChangedAt = now;
+    }
+    target.choiceStatus = "selected";
+    target.selectionRank = 1;
+    target.selectedAt = target.selectedAt ?? now;
+    target.replacedByShortlistItemId = null;
+    target.droppedReason = null;
+    if (payload.decisionConfidence !== undefined) {
+      target.decisionConfidence = payload.decisionConfidence;
+    }
+    if (payload.decisionRationale !== undefined) {
+      target.decisionRationale = payload.decisionRationale;
+    }
+    if (payload.decisionRisks !== undefined) {
+      target.decisionRisks = normalizeDecisionRisks(payload.decisionRisks);
+    }
+    if (payload.lastDecisionReviewedAt !== undefined) {
+      target.lastDecisionReviewedAt = payload.lastDecisionReviewedAt;
+    }
+    target.updatedAt = now;
+
+    normalizeBackupRanks(items);
+    shortlist.updatedAt = now;
+
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName:
+        previousPrimary && previousPrimary.id !== target.id
+          ? "selected_choice_replaced"
+          : "selected_choice_marked",
+      sessionId: shortlist.sessionId,
+      payload: {
+        shortlistId: shortlist.id,
+        shortlistItemId: target.id,
+        previousPrimaryItemId: previousPrimary?.id ?? null,
+        replaceMode,
+        choiceStatus: target.choiceStatus
+      },
+      createdAt: now
+    });
+
+    return {
+      selectedItem: mapStoredShortlistItem(target),
+      previousPrimaryItem: previousPrimary ? mapStoredShortlistItem(previousPrimary) : null
+    };
+  }
+
+  async reorderShortlistItems(payload: {
+    shortlistId: string;
+    orderedBackupItemIds: string[];
+  }): Promise<ShortlistItem[] | null> {
+    const shortlist = this.shortlists.find((entry) => entry.id === payload.shortlistId) ?? null;
+    if (!shortlist) {
+      return null;
+    }
+
+    const items = this.shortlistItems.filter((entry) => entry.shortlistId === payload.shortlistId);
+    const selected = items.find((entry) => entry.choiceStatus === "selected" && entry.selectionRank === 1) ?? null;
+    if (!selected) {
+      return null;
+    }
+
+    const seen = new Set<string>();
+    const orderedBackups = payload.orderedBackupItemIds.map((id) => items.find((entry) => entry.id === id) ?? null);
+    if (
+      orderedBackups.some((entry) => !entry) ||
+      payload.orderedBackupItemIds.some((id) => {
+        if (seen.has(id)) {
+          return true;
+        }
+        seen.add(id);
+        return false;
+      }) ||
+      orderedBackups.some(
+        (entry) => !entry || isTerminalChoiceStatus(entry.choiceStatus) || entry.choiceStatus === "selected"
+      )
+    ) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const orderedIds = new Set(payload.orderedBackupItemIds);
+    for (const item of items) {
+      if (item.id === selected.id) {
+        item.selectionRank = 1;
+        continue;
+      }
+
+      if (orderedIds.has(item.id)) {
+        if (item.choiceStatus !== "backup") {
+          item.choiceStatus = "backup";
+          item.statusChangedAt = now;
+        }
+      } else if (item.choiceStatus === "backup") {
+        item.choiceStatus = "candidate";
+        item.selectionRank = null;
+        item.statusChangedAt = now;
+      }
+      item.updatedAt = now;
+    }
+
+    orderedBackups.forEach((item, index) => {
+      if (!item) {
+        return;
+      }
+      item.choiceStatus = "backup";
+      item.selectionRank = index + 2;
+      item.updatedAt = now;
+    });
+    shortlist.updatedAt = now;
+
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "selected_choice_backup_reordered",
+      sessionId: shortlist.sessionId,
+      payload: {
+        shortlistId: shortlist.id,
+        shortlistItemId: selected.id,
+        orderedBackupItemIds: payload.orderedBackupItemIds
+      },
+      createdAt: now
+    });
+
+    return items.sort(shortlistItemOrder).map((item) => mapStoredShortlistItem(item));
+  }
+
+  async dropShortlistItem(payload: {
+    shortlistId: string;
+    itemId: string;
+    droppedReason: DroppedReason;
+    decisionRationale?: string | null;
+  }): Promise<{
+    item: ShortlistItem;
+    promotedBackupItem: ShortlistItem | null;
+  } | null> {
+    const shortlist = this.shortlists.find((entry) => entry.id === payload.shortlistId) ?? null;
+    if (!shortlist) {
+      return null;
+    }
+
+    const items = this.shortlistItems.filter((entry) => entry.shortlistId === payload.shortlistId);
+    const item = items.find((entry) => entry.id === payload.itemId);
+    if (!item || isTerminalChoiceStatus(item.choiceStatus)) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    item.choiceStatus = "dropped";
+    item.selectionRank = null;
+    item.droppedReason = payload.droppedReason;
+    item.replacedByShortlistItemId = null;
+    item.statusChangedAt = now;
+    if (payload.decisionRationale !== undefined) {
+      item.decisionRationale = payload.decisionRationale;
+    }
+    item.updatedAt = now;
+
+    normalizeBackupRanks(items.filter((entry) => entry.id !== item.id));
+    shortlist.updatedAt = now;
+
+    this.validationEvents.push({
+      id: createId("workflow"),
+      eventName: "selected_choice_dropped",
+      sessionId: shortlist.sessionId,
+      payload: {
+        shortlistId: shortlist.id,
+        shortlistItemId: item.id,
+        droppedReason: payload.droppedReason
+      },
+      createdAt: now
+    });
+
+    return {
+      item: mapStoredShortlistItem(item),
+      promotedBackupItem: null
+    };
+  }
+
+  async getSelectedChoice(shortlistId: string): Promise<SelectedChoiceView | null> {
+    const shortlist = this.shortlists.find((entry) => entry.id === shortlistId) ?? null;
+    if (!shortlist) {
+      return null;
+    }
+
+    return buildSelectedChoiceView(
+      shortlistId,
+      this.shortlistItems.filter((entry) => entry.shortlistId === shortlistId).map((entry) => mapStoredShortlistItem(entry))
+    );
+  }
+
+  async getSelectedChoiceSummary(shortlistId: string): Promise<SelectedChoiceConciergeSummary | null> {
+    const shortlist = this.shortlists.find((entry) => entry.id === shortlistId) ?? null;
+    if (!shortlist) {
+      return null;
+    }
+
+    const items = await this.listShortlistItems(shortlistId);
+    const primaryOwner = resolvePrimaryChoiceOwner(items);
+    const financialReadiness = await this.getLatestFinancialReadiness(shortlist.sessionId ?? null);
+    const workflowNotifications = primaryOwner
+      ? await this.listWorkflowNotifications({
+          shortlistId,
+          propertyId: primaryOwner.canonicalPropertyId
+        })
+      : [];
+    const workflowActivity = shortlist.sessionId
+      ? (await this.listWorkflowActivity(shortlist.sessionId, 50)).filter(
+          (entry) =>
+            entry.shortlistId === shortlistId &&
+            (!primaryOwner ||
+              typeof entry.payload?.canonicalPropertyId !== "string" ||
+              entry.payload.canonicalPropertyId === primaryOwner.canonicalPropertyId)
+        )
+      : [];
+
+    return buildSelectedChoiceConciergeSummary({
+      shortlistId,
+      items,
+      financialReadiness,
+      offerReadiness: primaryOwner
+        ? await this.getOfferReadiness(primaryOwner.canonicalPropertyId, shortlistId)
+        : null,
+      offerPreparation: primaryOwner
+        ? await this.getLatestOfferPreparation({
+            propertyId: primaryOwner.canonicalPropertyId,
+            shortlistId
+          })
+        : null,
+      offerSubmission: primaryOwner
+        ? await this.getLatestOfferSubmission({
+            propertyId: primaryOwner.canonicalPropertyId,
+            shortlistId
+          })
+        : null,
+      negotiation: primaryOwner
+        ? await this.getNegotiation(primaryOwner.canonicalPropertyId, shortlistId)
+        : null,
+      underContract: primaryOwner
+        ? await this.getLatestUnderContractCoordination({
+            propertyId: primaryOwner.canonicalPropertyId,
+            shortlistId
+          })
+        : null,
+      closingReadiness: primaryOwner
+        ? await this.getLatestClosingReadiness({
+            propertyId: primaryOwner.canonicalPropertyId,
+            shortlistId
+          })
+        : null,
+      workflowNotifications,
+      workflowActivity
+    });
   }
 
   async deleteShortlistItem(shortlistId: string, itemId: string): Promise<boolean> {
@@ -6170,6 +7273,7 @@ export class InMemoryGeocodeCacheRepository implements GeocodeCacheRepository {
 type PrismaClientLike = {
   $connect?(): Promise<void>;
   $disconnect?(): Promise<void>;
+  $transaction<T>(fn: (tx: PrismaClientLike) => Promise<T>): Promise<T>;
   $queryRawUnsafe?(query: string): Promise<unknown>;
   property: {
     upsert(args: Record<string, unknown>): Promise<unknown>;
@@ -6413,7 +7517,7 @@ function mapPrismaShortlist(
 }
 
 function mapPrismaShortlistItem(record: Record<string, unknown>): ShortlistItem {
-  return {
+  return normalizeShortlistItemChoice({
     id: record.id as string,
     shortlistId: record.shortlistId as string,
     canonicalPropertyId: record.canonicalPropertyId as string,
@@ -6422,9 +7526,28 @@ function mapPrismaShortlistItem(record: Record<string, unknown>): ShortlistItem 
     sourceSearchDefinitionId: (record.sourceSearchDefinitionId as string | null) ?? null,
     capturedHome: clone(record.capturedHomePayload as ShortlistItem["capturedHome"]),
     reviewState: record.reviewState as ReviewState,
+    choiceStatus: ((record.choiceStatus as ChoiceStatus | null) ?? "candidate") as ChoiceStatus,
+    selectionRank: (record.selectionRank as number | null) ?? null,
+    decisionConfidence: (record.decisionConfidence as DecisionConfidence | null) ?? null,
+    decisionRationale: (record.decisionRationale as string | null) ?? null,
+    decisionRisks: parseDecisionRisksJson(record.decisionRisksJson),
+    lastDecisionReviewedAt:
+      record.lastDecisionReviewedAt instanceof Date
+        ? record.lastDecisionReviewedAt.toISOString()
+        : ((record.lastDecisionReviewedAt as string | null) ?? null),
+    selectedAt:
+      record.selectedAt instanceof Date
+        ? record.selectedAt.toISOString()
+        : ((record.selectedAt as string | null) ?? null),
+    statusChangedAt:
+      record.statusChangedAt instanceof Date
+        ? record.statusChangedAt.toISOString()
+        : (record.updatedAt as Date).toISOString(),
+    replacedByShortlistItemId: (record.replacedByShortlistItemId as string | null) ?? null,
+    droppedReason: (record.droppedReason as DroppedReason | null) ?? null,
     addedAt: (record.addedAt as Date).toISOString(),
     updatedAt: (record.updatedAt as Date).toISOString()
-  };
+  });
 }
 
 function mapPrismaFinancialReadiness(record: Record<string, unknown>): FinancialReadiness {
@@ -6561,6 +7684,10 @@ function mapPrismaOfferPreparation(record: Record<string, unknown>): OfferPrepar
         slowClosingTimelineDays: 45,
         affordabilityTolerancePercent: 0.05
       }
+    ),
+    strategyDefaultsProvenance: clone(
+      (record.strategyDefaultsProvenanceJson as OfferPreparation["strategyDefaultsProvenance"] | null) ??
+        null
     ),
     lastEvaluatedAt: (record.lastEvaluatedAt as Date).toISOString(),
     createdAt: (record.createdAt as Date).toISOString(),
@@ -8482,6 +9609,13 @@ export class PrismaSearchRepository implements SearchRepository {
     }
 
     const financialReadiness = mapPrismaFinancialReadiness(financialReadinessRecord);
+    const selectedChoiceSummary = payload.shortlistId
+      ? await this.getSelectedChoiceSummary(payload.shortlistId)
+      : null;
+    const activeOfferStrategy =
+      selectedChoiceSummary?.property?.canonicalPropertyId === payload.propertyId
+        ? selectedChoiceSummary.offerStrategy
+        : null;
     const offerReadiness = payload.offerReadinessId
       ? await this.client.offerReadiness.findUnique({
           where: {
@@ -8499,13 +9633,21 @@ export class PrismaSearchRepository implements SearchRepository {
       : null;
 
     const now = new Date().toISOString();
+    const strategyApplication = applyOfferPreparationStrategyDefaults({
+      payload,
+      strategy: activeOfferStrategy,
+      selectedItemId: selectedChoiceSummary?.selectedItemId ?? null,
+      shortlistId: payload.shortlistId ?? null,
+      propertyId: payload.propertyId,
+      now
+    });
     const evaluation = evaluateOfferPreparation({
       now,
       financialReadiness,
       recommendedOfferPrice,
       sessionId: payload.sessionId ?? financialReadiness.sessionId ?? null,
       partnerId: payload.partnerId ?? financialReadiness.partnerId ?? null,
-      patch: payload
+      patch: strategyApplication.patch
     });
 
     const record = await this.client.offerPreparation.create({
@@ -8546,6 +9688,7 @@ export class PrismaSearchRepository implements SearchRepository {
         nextStepsJson: evaluation.nextSteps,
         financialAlignmentJson: evaluation.financialAlignment,
         assumptionsJson: evaluation.assumptionsUsed,
+        strategyDefaultsProvenanceJson: strategyApplication.provenance,
         lastEvaluatedAt: new Date(now)
       }
     });
@@ -8557,7 +9700,8 @@ export class PrismaSearchRepository implements SearchRepository {
         offerPreparationId: record.id as string,
         propertyId: evaluation.propertyId,
         shortlistId: evaluation.shortlistId ?? null,
-        offerState: evaluation.offerState
+        offerState: evaluation.offerState,
+        strategyDefaultsAppliedFields: strategyApplication.provenance?.appliedFieldKeys ?? []
       }
     });
 
@@ -8713,6 +9857,7 @@ export class PrismaSearchRepository implements SearchRepository {
         nextStepsJson: evaluation.nextSteps,
         financialAlignmentJson: evaluation.financialAlignment,
         assumptionsJson: evaluation.assumptionsUsed,
+        strategyDefaultsProvenanceJson: evaluation.strategyDefaultsProvenance,
         lastEvaluatedAt: new Date(now)
       }
     });
@@ -10401,7 +11546,17 @@ export class PrismaSearchRepository implements SearchRepository {
         sourceHistoryId: payload.sourceHistoryId ?? null,
         sourceSearchDefinitionId: payload.sourceSearchDefinitionId ?? null,
         capturedHomePayload: payload.capturedHome,
-        reviewState: payload.reviewState ?? "undecided"
+        reviewState: payload.reviewState ?? "undecided",
+        choiceStatus: "candidate",
+        selectionRank: null,
+        decisionConfidence: null,
+        decisionRationale: null,
+        decisionRisksJson: [],
+        lastDecisionReviewedAt: null,
+        selectedAt: null,
+        statusChangedAt: new Date(),
+        replacedByShortlistItemId: null,
+        droppedReason: null
       }
     });
 
@@ -10425,13 +11580,10 @@ export class PrismaSearchRepository implements SearchRepository {
     const records = await this.client.shortlistItem.findMany({
       where: {
         shortlistId
-      },
-      orderBy: {
-        updatedAt: "desc"
       }
     });
 
-    return records.map((record) => mapPrismaShortlistItem(record));
+    return records.map((record) => mapPrismaShortlistItem(record)).sort(shortlistItemOrder);
   }
 
   async createOfferReadiness(payload: {
@@ -10931,6 +12083,10 @@ export class PrismaSearchRepository implements SearchRepository {
     itemId: string,
     patch: {
       reviewState?: ReviewState;
+      decisionConfidence?: DecisionConfidence | null;
+      decisionRationale?: string | null;
+      decisionRisks?: string[];
+      lastDecisionReviewedAt?: string | null;
     }
   ): Promise<ShortlistItem | null> {
     const existing = await this.client.shortlistItem.findUnique({
@@ -10942,27 +12098,530 @@ export class PrismaSearchRepository implements SearchRepository {
       return null;
     }
 
+    const now = new Date().toISOString();
+    const previousReviewState = existing.reviewState as ReviewState;
+    const previousDecisionSnapshot = JSON.stringify({
+      decisionConfidence: (existing.decisionConfidence as DecisionConfidence | null) ?? null,
+      decisionRationale: (existing.decisionRationale as string | null) ?? null,
+      decisionRisks: parseDecisionRisksJson(existing.decisionRisksJson),
+      lastDecisionReviewedAt:
+        existing.lastDecisionReviewedAt instanceof Date
+          ? existing.lastDecisionReviewedAt.toISOString()
+          : ((existing.lastDecisionReviewedAt as string | null) ?? null)
+    });
+
     const record = await this.client.shortlistItem.update({
       where: {
         id: itemId
       },
       data: {
-        ...(patch.reviewState !== undefined ? { reviewState: patch.reviewState } : {})
+        ...(patch.reviewState !== undefined ? { reviewState: patch.reviewState } : {}),
+        ...(patch.decisionConfidence !== undefined ? { decisionConfidence: patch.decisionConfidence } : {}),
+        ...(patch.decisionRationale !== undefined ? { decisionRationale: patch.decisionRationale } : {}),
+        ...(patch.decisionRisks !== undefined
+          ? { decisionRisksJson: normalizeDecisionRisks(patch.decisionRisks) }
+          : {}),
+        ...(patch.lastDecisionReviewedAt !== undefined
+          ? {
+              lastDecisionReviewedAt: patch.lastDecisionReviewedAt
+                ? new Date(patch.lastDecisionReviewedAt)
+                : null
+            }
+          : {})
       }
     });
 
     const shortlist = await this.getShortlist(shortlistId);
+    if (patch.reviewState !== undefined && patch.reviewState !== previousReviewState) {
+      await this.recordValidationEvent({
+        eventName: "review_state_changed",
+        sessionId: shortlist?.sessionId ?? null,
+        payload: {
+          shortlistId,
+          shortlistItemId: itemId,
+          reviewState: patch.reviewState ?? (record.reviewState as string)
+        }
+      });
+    }
+
+    const nextDecisionSnapshot = JSON.stringify({
+      decisionConfidence: (record.decisionConfidence as DecisionConfidence | null) ?? null,
+      decisionRationale: (record.decisionRationale as string | null) ?? null,
+      decisionRisks: parseDecisionRisksJson(record.decisionRisksJson),
+      lastDecisionReviewedAt:
+        record.lastDecisionReviewedAt instanceof Date
+          ? record.lastDecisionReviewedAt.toISOString()
+          : ((record.lastDecisionReviewedAt as string | null) ?? null)
+    });
+
+    if (previousDecisionSnapshot !== nextDecisionSnapshot) {
+      await this.recordValidationEvent({
+        eventName: "selected_choice_rationale_updated",
+        sessionId: shortlist?.sessionId ?? null,
+        payload: {
+          shortlistId,
+          shortlistItemId: itemId,
+          choiceStatus: (record.choiceStatus as ChoiceStatus | null) ?? "candidate",
+          decisionConfidence: (record.decisionConfidence as DecisionConfidence | null) ?? null
+        }
+      });
+    }
+
+    if (patch.lastDecisionReviewedAt !== undefined) {
+      await this.recordValidationEvent({
+        eventName: "selected_choice_reviewed",
+        sessionId: shortlist?.sessionId ?? null,
+        payload: {
+          shortlistId,
+          shortlistItemId: itemId,
+          reviewedAt: patch.lastDecisionReviewedAt ?? null
+        }
+      });
+    }
+
+    return mapPrismaShortlistItem(record);
+  }
+
+  async selectShortlistItem(payload: {
+    shortlistId: string;
+    itemId: string;
+    replaceMode?: "backup" | "replaced" | "dropped";
+    decisionConfidence?: DecisionConfidence | null;
+    decisionRationale?: string | null;
+    decisionRisks?: string[];
+    lastDecisionReviewedAt?: string | null;
+  }): Promise<{
+    selectedItem: ShortlistItem;
+    previousPrimaryItem: ShortlistItem | null;
+  } | null> {
+    const shortlist = await this.getShortlist(payload.shortlistId);
+    if (!shortlist) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const replaceMode = payload.replaceMode ?? "backup";
+    const result = await this.client.$transaction(async (tx) => {
+      const records = await tx.shortlistItem.findMany({
+        where: {
+          shortlistId: payload.shortlistId
+        }
+      });
+      const items = records.map((record) => mapPrismaShortlistItem(record));
+      const target = items.find((entry) => entry.id === payload.itemId) ?? null;
+      if (
+        !target ||
+        isTerminalChoiceStatus(target.choiceStatus) ||
+        target.choiceStatus === "under_contract" ||
+        target.choiceStatus === "active_pursuit"
+      ) {
+        return null;
+      }
+
+      const previousPrimary =
+        resolvePrimaryChoiceOwner(items.filter((entry) => entry.id !== target.id)) ?? null;
+      if (previousPrimary?.choiceStatus === "closed") {
+        return null;
+      }
+
+      const updates: Promise<unknown>[] = [];
+      if (previousPrimary && previousPrimary.id !== target.id) {
+        const previousData: Record<string, unknown> = {
+          selectionRank: null,
+          statusChangedAt: new Date(now)
+        };
+        if (replaceMode === "backup") {
+          previousData.choiceStatus = "backup";
+          previousData.replacedByShortlistItemId = null;
+          previousData.droppedReason = null;
+        } else if (replaceMode === "replaced") {
+          previousData.choiceStatus = "replaced";
+          previousData.replacedByShortlistItemId = target.id;
+          previousData.droppedReason = "better_alternative_selected";
+        } else {
+          previousData.choiceStatus = "dropped";
+          previousData.replacedByShortlistItemId = null;
+          previousData.droppedReason = "better_alternative_selected";
+        }
+        updates.push(
+          tx.shortlistItem.update({
+            where: { id: previousPrimary.id },
+            data: previousData
+          })
+        );
+      }
+
+      const existingSelected = items.filter(
+        (entry) => entry.id !== target.id && entry.choiceStatus === "selected"
+      );
+      for (const item of existingSelected) {
+        updates.push(
+          tx.shortlistItem.update({
+            where: { id: item.id },
+            data: {
+              choiceStatus: "backup",
+              selectionRank: null,
+              statusChangedAt: new Date(now)
+            }
+          })
+        );
+      }
+
+      const normalizedDecisionRisks =
+        payload.decisionRisks !== undefined
+          ? normalizeDecisionRisks(payload.decisionRisks)
+          : target.decisionRisks;
+      updates.push(
+        tx.shortlistItem.update({
+          where: { id: target.id },
+          data: {
+            choiceStatus: "selected",
+            selectionRank: 1,
+            decisionConfidence:
+              payload.decisionConfidence !== undefined ? payload.decisionConfidence : target.decisionConfidence,
+            decisionRationale:
+              payload.decisionRationale !== undefined ? payload.decisionRationale : target.decisionRationale,
+            decisionRisksJson: normalizedDecisionRisks,
+            ...(payload.lastDecisionReviewedAt !== undefined
+              ? {
+                  lastDecisionReviewedAt: payload.lastDecisionReviewedAt
+                    ? new Date(payload.lastDecisionReviewedAt)
+                    : null
+                }
+              : {}),
+            selectedAt: target.selectedAt ? new Date(target.selectedAt) : new Date(now),
+            statusChangedAt: target.choiceStatus === "selected" ? new Date(target.statusChangedAt) : new Date(now),
+            replacedByShortlistItemId: null,
+            droppedReason: null
+          }
+        })
+      );
+
+      await Promise.all(updates);
+
+      const nextRecords = await tx.shortlistItem.findMany({
+        where: {
+          shortlistId: payload.shortlistId
+        }
+      });
+      const nextItems = nextRecords.map((record) => mapPrismaShortlistItem(record));
+      const orderedBackups = nextItems
+        .filter((entry) => entry.choiceStatus === "backup")
+        .sort((left, right) => {
+          if ((left.selectionRank ?? Number.POSITIVE_INFINITY) !== (right.selectionRank ?? Number.POSITIVE_INFINITY)) {
+            return (left.selectionRank ?? Number.POSITIVE_INFINITY) - (right.selectionRank ?? Number.POSITIVE_INFINITY);
+          }
+          return right.updatedAt.localeCompare(left.updatedAt);
+        });
+      for (const [index, item] of orderedBackups.entries()) {
+        await tx.shortlistItem.update({
+          where: { id: item.id },
+          data: {
+            selectionRank: index + 2
+          }
+        });
+      }
+
+      const selectedRecord = await tx.shortlistItem.findUnique({
+        where: {
+          id: target.id
+        }
+      });
+      const previousRecord = previousPrimary
+        ? await tx.shortlistItem.findUnique({
+            where: {
+              id: previousPrimary.id
+            }
+          })
+        : null;
+
+      return {
+        selectedItem: selectedRecord ? mapPrismaShortlistItem(selectedRecord) : null,
+        previousPrimaryItem: previousRecord ? mapPrismaShortlistItem(previousRecord) : null
+      };
+    });
+
+    if (!result?.selectedItem) {
+      return null;
+    }
+
     await this.recordValidationEvent({
-      eventName: "review_state_changed",
-      sessionId: shortlist?.sessionId ?? null,
+      eventName:
+        result.previousPrimaryItem && result.previousPrimaryItem.id !== result.selectedItem.id
+          ? "selected_choice_replaced"
+          : "selected_choice_marked",
+      sessionId: shortlist.sessionId,
       payload: {
-        shortlistId,
-        shortlistItemId: itemId,
-        reviewState: patch.reviewState ?? (record.reviewState as string)
+        shortlistId: payload.shortlistId,
+        shortlistItemId: result.selectedItem.id,
+        previousPrimaryItemId: result.previousPrimaryItem?.id ?? null,
+        replaceMode,
+        choiceStatus: result.selectedItem.choiceStatus
       }
     });
 
-    return mapPrismaShortlistItem(record);
+    return result;
+  }
+
+  async reorderShortlistItems(payload: {
+    shortlistId: string;
+    orderedBackupItemIds: string[];
+  }): Promise<ShortlistItem[] | null> {
+    const shortlist = await this.getShortlist(payload.shortlistId);
+    if (!shortlist) {
+      return null;
+    }
+
+    const seen = new Set<string>();
+    if (payload.orderedBackupItemIds.some((id) => (seen.has(id) ? true : (seen.add(id), false)))) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const success = await this.client.$transaction(async (tx) => {
+      const records = await tx.shortlistItem.findMany({
+        where: {
+          shortlistId: payload.shortlistId
+        }
+      });
+      const items = records.map((record) => mapPrismaShortlistItem(record));
+      const selected = items.find((entry) => entry.choiceStatus === "selected" && entry.selectionRank === 1) ?? null;
+      if (!selected) {
+        return false;
+      }
+
+      const orderedBackups = payload.orderedBackupItemIds.map(
+        (id) => items.find((entry) => entry.id === id) ?? null
+      );
+      if (
+        orderedBackups.some((entry) => !entry) ||
+        orderedBackups.some(
+          (entry) => !entry || isTerminalChoiceStatus(entry.choiceStatus) || entry.choiceStatus === "selected"
+        )
+      ) {
+        return false;
+      }
+
+      const orderedIds = new Set(payload.orderedBackupItemIds);
+      for (const item of items) {
+        if (item.id === selected.id) {
+          await tx.shortlistItem.update({
+            where: { id: item.id },
+            data: {
+              selectionRank: 1
+            }
+          });
+          continue;
+        }
+
+        if (orderedIds.has(item.id)) {
+          const statusChanged = item.choiceStatus !== "backup";
+          await tx.shortlistItem.update({
+            where: { id: item.id },
+            data: {
+              choiceStatus: "backup",
+              selectionRank: payload.orderedBackupItemIds.indexOf(item.id) + 2,
+              ...(statusChanged ? { statusChangedAt: new Date(now) } : {})
+            }
+          });
+        } else if (item.choiceStatus === "backup") {
+          await tx.shortlistItem.update({
+            where: { id: item.id },
+            data: {
+              choiceStatus: "candidate",
+              selectionRank: null,
+              statusChangedAt: new Date(now)
+            }
+          });
+        }
+      }
+
+      return true;
+    });
+
+    if (!success) {
+      return null;
+    }
+
+    await this.recordValidationEvent({
+      eventName: "selected_choice_backup_reordered",
+      sessionId: shortlist.sessionId,
+      payload: {
+        shortlistId: payload.shortlistId,
+        orderedBackupItemIds: payload.orderedBackupItemIds
+      }
+    });
+
+    return this.listShortlistItems(payload.shortlistId);
+  }
+
+  async dropShortlistItem(payload: {
+    shortlistId: string;
+    itemId: string;
+    droppedReason: DroppedReason;
+    decisionRationale?: string | null;
+  }): Promise<{
+    item: ShortlistItem;
+    promotedBackupItem: ShortlistItem | null;
+  } | null> {
+    const shortlist = await this.getShortlist(payload.shortlistId);
+    if (!shortlist) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const droppedItem = await this.client.$transaction(async (tx) => {
+      const existing = await tx.shortlistItem.findUnique({
+        where: {
+          id: payload.itemId
+        }
+      });
+      if (!existing || (existing.shortlistId as string) !== payload.shortlistId) {
+        return null;
+      }
+
+      const current = mapPrismaShortlistItem(existing);
+      if (isTerminalChoiceStatus(current.choiceStatus)) {
+        return null;
+      }
+
+      await tx.shortlistItem.update({
+        where: {
+          id: payload.itemId
+        },
+        data: {
+          choiceStatus: "dropped",
+          selectionRank: null,
+          droppedReason: payload.droppedReason,
+          ...(payload.decisionRationale !== undefined ? { decisionRationale: payload.decisionRationale } : {}),
+          replacedByShortlistItemId: null,
+          statusChangedAt: new Date(now)
+        }
+      });
+
+      const siblingRecords = await tx.shortlistItem.findMany({
+        where: {
+          shortlistId: payload.shortlistId
+        }
+      });
+      const siblingItems = siblingRecords.map((record) => mapPrismaShortlistItem(record)).filter((item) => item.id !== payload.itemId);
+      const orderedBackups = siblingItems
+        .filter((item) => item.choiceStatus === "backup")
+        .sort((left, right) => {
+          if ((left.selectionRank ?? Number.POSITIVE_INFINITY) !== (right.selectionRank ?? Number.POSITIVE_INFINITY)) {
+            return (left.selectionRank ?? Number.POSITIVE_INFINITY) - (right.selectionRank ?? Number.POSITIVE_INFINITY);
+          }
+          return right.updatedAt.localeCompare(left.updatedAt);
+        });
+      for (const [index, item] of orderedBackups.entries()) {
+        await tx.shortlistItem.update({
+          where: { id: item.id },
+          data: {
+            selectionRank: index + 2
+          }
+        });
+      }
+
+      const record = await tx.shortlistItem.findUnique({
+        where: {
+          id: payload.itemId
+        }
+      });
+      return record ? mapPrismaShortlistItem(record) : null;
+    });
+
+    if (!droppedItem) {
+      return null;
+    }
+
+    await this.recordValidationEvent({
+      eventName: "selected_choice_dropped",
+      sessionId: shortlist.sessionId,
+      payload: {
+        shortlistId: payload.shortlistId,
+        shortlistItemId: payload.itemId,
+        droppedReason: payload.droppedReason
+      }
+    });
+
+    return {
+      item: droppedItem,
+      promotedBackupItem: null
+    };
+  }
+
+  async getSelectedChoice(shortlistId: string): Promise<SelectedChoiceView | null> {
+    const shortlist = await this.getShortlist(shortlistId);
+    if (!shortlist) {
+      return null;
+    }
+
+    const items = await this.listShortlistItems(shortlistId);
+    return buildSelectedChoiceView(shortlistId, items);
+  }
+
+  async getSelectedChoiceSummary(shortlistId: string): Promise<SelectedChoiceConciergeSummary | null> {
+    const shortlist = await this.getShortlist(shortlistId);
+    if (!shortlist) {
+      return null;
+    }
+
+    const items = await this.listShortlistItems(shortlistId);
+    const primaryOwner = resolvePrimaryChoiceOwner(items);
+    const financialReadiness = await this.getLatestFinancialReadiness(shortlist.sessionId ?? null);
+    const workflowNotifications = primaryOwner
+      ? await this.listWorkflowNotifications({
+          shortlistId,
+          propertyId: primaryOwner.canonicalPropertyId
+        })
+      : [];
+    const workflowActivity = shortlist.sessionId
+      ? (await this.listWorkflowActivity(shortlist.sessionId, 50)).filter(
+          (entry) =>
+            entry.shortlistId === shortlistId &&
+            (!primaryOwner ||
+              typeof entry.payload?.canonicalPropertyId !== "string" ||
+              entry.payload.canonicalPropertyId === primaryOwner.canonicalPropertyId)
+        )
+      : [];
+
+    return buildSelectedChoiceConciergeSummary({
+      shortlistId,
+      items,
+      financialReadiness,
+      offerReadiness: primaryOwner
+        ? await this.getOfferReadiness(primaryOwner.canonicalPropertyId, shortlistId)
+        : null,
+      offerPreparation: primaryOwner
+        ? await this.getLatestOfferPreparation({
+            propertyId: primaryOwner.canonicalPropertyId,
+            shortlistId
+          })
+        : null,
+      offerSubmission: primaryOwner
+        ? await this.getLatestOfferSubmission({
+            propertyId: primaryOwner.canonicalPropertyId,
+            shortlistId
+          })
+        : null,
+      negotiation: primaryOwner
+        ? await this.getNegotiation(primaryOwner.canonicalPropertyId, shortlistId)
+        : null,
+      underContract: primaryOwner
+        ? await this.getLatestUnderContractCoordination({
+            propertyId: primaryOwner.canonicalPropertyId,
+            shortlistId
+          })
+        : null,
+      closingReadiness: primaryOwner
+        ? await this.getLatestClosingReadiness({
+            propertyId: primaryOwner.canonicalPropertyId,
+            shortlistId
+          })
+        : null,
+      workflowNotifications,
+      workflowActivity
+    });
   }
 
   async deleteShortlistItem(shortlistId: string, itemId: string): Promise<boolean> {

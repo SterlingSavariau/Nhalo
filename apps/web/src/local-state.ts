@@ -1,5 +1,6 @@
 import { DEFAULT_PROPERTY_TYPES, DEFAULT_WEIGHTS } from "@nhalo/config";
 import type {
+  AuthenticatedUser,
   PilotContext,
   PropertyType,
   SearchRequest,
@@ -70,12 +71,47 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isNullableString(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null || typeof value === "string";
+}
+
 function isBooleanRecord(value: unknown): value is Record<string, boolean> {
   return Boolean(
     value &&
       typeof value === "object" &&
       Object.values(value as Record<string, unknown>).every((entry) => typeof entry === "boolean")
   );
+}
+
+function sanitizeAuthenticatedUser(raw: unknown): AuthenticatedUser | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const value = raw as Record<string, unknown>;
+  if (
+    value.provider !== "google" ||
+    !isNonEmptyString(value.subject) ||
+    !isNonEmptyString(value.email) ||
+    typeof value.emailVerified !== "boolean" ||
+    !isNullableString(value.name) ||
+    !isNullableString(value.givenName) ||
+    !isNullableString(value.familyName) ||
+    !isNullableString(value.pictureUrl)
+  ) {
+    return null;
+  }
+
+  return {
+    provider: "google",
+    subject: value.subject,
+    email: value.email,
+    emailVerified: value.emailVerified,
+    name: value.name ?? null,
+    givenName: value.givenName ?? null,
+    familyName: value.familyName ?? null,
+    pictureUrl: value.pictureUrl ?? null
+  };
 }
 
 function sanitizePilotContext(raw: unknown): PilotContext | null {
@@ -121,6 +157,8 @@ export function getOrCreateSessionIdentity(storage: Pick<Storage, "getItem" | "s
       sessionId: existing.sessionId,
       partnerId: isNonEmptyString(existing.partnerId) ? existing.partnerId : null,
       pilotLinkId: isNonEmptyString(existing.pilotLinkId) ? existing.pilotLinkId : null,
+      authProvider: existing.authProvider === "google" ? "google" : null,
+      user: sanitizeAuthenticatedUser(existing.user),
       source: "local_storage"
     };
   }
@@ -132,6 +170,39 @@ export function getOrCreateSessionIdentity(storage: Pick<Storage, "getItem" | "s
     sessionId,
     source: "local_storage"
   };
+}
+
+export function saveSessionIdentity(
+  storage: Pick<Storage, "setItem"> | null,
+  identity: SessionIdentity
+): void {
+  if (!storage) {
+    return;
+  }
+
+  storage.setItem(
+    SESSION_KEY,
+    JSON.stringify({
+      sessionId: identity.sessionId,
+      partnerId: identity.partnerId ?? null,
+      pilotLinkId: identity.pilotLinkId ?? null,
+      authProvider: identity.authProvider ?? null,
+      user: identity.user ?? null
+    })
+  );
+}
+
+export function clearAuthenticatedUser(
+  storage: Pick<Storage, "getItem" | "setItem"> | null
+): SessionIdentity {
+  const current = getOrCreateSessionIdentity(storage);
+  const nextIdentity: SessionIdentity = {
+    ...current,
+    authProvider: null,
+    user: null
+  };
+  saveSessionIdentity(storage, nextIdentity);
+  return nextIdentity;
 }
 
 export function loadPilotContext(storage: Pick<Storage, "getItem"> | null): PilotContext | null {
@@ -155,13 +226,13 @@ export function savePilotContext(
     return;
   }
   storage.setItem(PILOT_CONTEXT_KEY, JSON.stringify(context));
-  const session = safeParse<Record<string, unknown>>(storage.getItem(SESSION_KEY)) ?? {};
-  session.partnerId = context.partnerId;
-  session.pilotLinkId = context.pilotLinkId;
-  if (!session.sessionId) {
-    session.sessionId = generateSessionId();
-  }
-  storage.setItem(SESSION_KEY, JSON.stringify(session));
+  const session = getOrCreateSessionIdentity(storage);
+  saveSessionIdentity(storage, {
+    ...session,
+    partnerId: context.partnerId,
+    pilotLinkId: context.pilotLinkId,
+    source: "local_storage"
+  });
 }
 
 export function loadUiPreferences(storage: Pick<Storage, "getItem"> | null): UiPreferences {

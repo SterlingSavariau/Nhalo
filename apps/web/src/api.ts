@@ -1,10 +1,13 @@
 import type {
+  AuthenticatedUser,
   BuyerTransactionCommandCenterView,
   CollaborationActivityRecord,
   DataQualityEvent,
   DataQualitySummary,
   DemoScenario,
+  DecisionConfidence,
   DecisionExplanationBundle,
+  DroppedReason,
   FeedbackCategory,
   FeedbackRecord,
   FinancialReadiness,
@@ -42,6 +45,8 @@ import type {
   SharedComment,
   SharedShortlist,
   SharedShortlistView,
+  SelectedChoiceConciergeSummary,
+  SelectedChoiceView,
   Shortlist,
   ShortlistItem,
   SupportContextSummary,
@@ -59,8 +64,105 @@ import type {
   ReviewState
 } from "@nhalo/types";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+type ApiClientEnv = {
+  DEV?: boolean;
+  VITE_API_URL?: string;
+  NHALO_API_URL?: string;
+};
+
+function readConfiguredApiUrl(env: ApiClientEnv): string {
+  return env.VITE_API_URL?.trim() || env.NHALO_API_URL?.trim() || "";
+}
+
+function resolveApiBaseUrl(env: ApiClientEnv = import.meta.env): string {
+  const configuredBaseUrl = readConfiguredApiUrl(env);
+
+  // In local dev, keep browser requests same-origin and let Vite proxy them to the API.
+  if (env.DEV) {
+    return "";
+  }
+
+  return configuredBaseUrl || "http://localhost:3000";
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 let activePilotLinkId: string | null = null;
+
+export interface GoogleAuthResult {
+  sessionId: string | null;
+  authProvider: AuthenticatedUser["provider"];
+  user: AuthenticatedUser;
+}
+
+export interface LocationSuggestionResult {
+  id: string;
+  label: string;
+  detail: string;
+  locationType: "city";
+  locationValue: string;
+  stateCode: string;
+}
+
+export function resolveApiErrorOrigin(
+  env: ApiClientEnv = import.meta.env,
+  currentOrigin?: string
+): string {
+  if (env.DEV) {
+    return readConfiguredApiUrl(env) || "http://localhost:3000";
+  }
+
+  const resolvedBaseUrl = resolveApiBaseUrl(env);
+  if (resolvedBaseUrl) {
+    return resolvedBaseUrl;
+  }
+
+  if (currentOrigin) {
+    return currentOrigin;
+  }
+
+  return "the current origin";
+}
+
+function describeApiOrigin(): string {
+  return resolveApiErrorOrigin(
+    import.meta.env,
+    typeof window !== "undefined" ? window.location.origin : undefined
+  );
+}
+
+function tryParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+async function readApiErrorMessage(response: Response, fallback: string): Promise<string> {
+  const bodyText = await response.text();
+  const payload = bodyText ? tryParseJson(bodyText) : null;
+
+  if (payload && typeof payload === "object") {
+    const errorPayload = (payload as { error?: { message?: unknown }; message?: unknown }).error;
+    if (errorPayload && typeof errorPayload.message === "string" && errorPayload.message.trim()) {
+      return errorPayload.message;
+    }
+
+    if (typeof (payload as { message?: unknown }).message === "string") {
+      return (payload as { message: string }).message;
+    }
+  }
+
+  if (bodyText.trim()) {
+    return bodyText.trim();
+  }
+
+  if (response.status >= 500) {
+    return `Unable to reach the Nhalo API at ${describeApiOrigin()}.`;
+  }
+
+  return fallback;
+}
 
 function buildSessionHeaders(sessionId?: string | null): Record<string, string> {
   return {
@@ -71,6 +173,52 @@ function buildSessionHeaders(sessionId?: string | null): Record<string, string> 
 
 export function setPilotLinkContext(pilotLinkId: string | null): void {
   activePilotLinkId = pilotLinkId;
+}
+
+export async function signInWithGoogle(payload: {
+  credential: string;
+  sessionId?: string | null;
+}): Promise<GoogleAuthResult> {
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE_URL}/auth/google`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...buildSessionHeaders(payload.sessionId)
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch {
+    throw new Error(`Unable to reach the Nhalo API at ${describeApiOrigin()}.`);
+  }
+
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, "Google sign-in failed"));
+  }
+
+  return response.json();
+}
+
+export async function fetchLocationSuggestions(
+  query: string,
+  limit = 8
+): Promise<LocationSuggestionResult[]> {
+  const params = new URLSearchParams({
+    q: query,
+    limit: String(limit)
+  });
+
+  const response = await fetch(`${API_BASE_URL}/locations/suggest?${params.toString()}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Location suggestions failed");
+  }
+
+  const payload = await response.json();
+  return payload.suggestions;
 }
 
 export async function searchHomes(payload: SearchRequest, sessionId?: string | null): Promise<SearchResponse> {
@@ -1643,7 +1791,11 @@ export async function updateShortlistItem(
   shortlistId: string,
   itemId: string,
   patch: {
-    reviewState: ReviewState;
+    reviewState?: ReviewState;
+    decisionConfidence?: DecisionConfidence | null;
+    decisionRationale?: string | null;
+    decisionRisks?: string[];
+    lastDecisionReviewedAt?: string | null;
   }
 ): Promise<ShortlistItem> {
   const response = await fetch(`${API_BASE_URL}/shortlists/${shortlistId}/items/${itemId}`, {
@@ -1657,6 +1809,115 @@ export async function updateShortlistItem(
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error?.message ?? "Shortlist item update failed");
+  }
+
+  return response.json();
+}
+
+export async function selectShortlistItem(
+  shortlistId: string,
+  itemId: string,
+  payload: {
+    replaceMode?: "backup" | "replaced" | "dropped";
+    decisionConfidence?: DecisionConfidence | null;
+    decisionRationale?: string | null;
+    decisionRisks?: string[];
+    lastDecisionReviewedAt?: string | null;
+  }
+): Promise<{
+  selectedItem: ShortlistItem;
+  previousPrimaryItem: ShortlistItem | null;
+  summary: SelectedChoiceConciergeSummary | null;
+}> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${shortlistId}/items/${itemId}/select`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Selected choice update failed");
+  }
+
+  return response.json();
+}
+
+export async function reorderShortlistItems(
+  shortlistId: string,
+  orderedBackupItemIds: string[]
+): Promise<{
+  items: ShortlistItem[];
+  selectedChoice: SelectedChoiceView | null;
+  summary: SelectedChoiceConciergeSummary | null;
+}> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${shortlistId}/items/reorder`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      orderedBackupItemIds
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shortlist reorder failed");
+  }
+
+  return response.json();
+}
+
+export async function dropShortlistItem(
+  shortlistId: string,
+  itemId: string,
+  payload: {
+    droppedReason: DroppedReason;
+    decisionRationale?: string | null;
+  }
+): Promise<{
+  item: ShortlistItem;
+  promotedBackupItem: ShortlistItem | null;
+  summary: SelectedChoiceConciergeSummary | null;
+}> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${shortlistId}/items/${itemId}/drop`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Shortlist item drop failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchSelectedChoice(shortlistId: string): Promise<SelectedChoiceView> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${shortlistId}/selected-choice`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Selected choice fetch failed");
+  }
+
+  return response.json();
+}
+
+export async function fetchSelectedChoiceSummary(
+  shortlistId: string
+): Promise<SelectedChoiceConciergeSummary> {
+  const response = await fetch(`${API_BASE_URL}/shortlists/${shortlistId}/selected-choice/summary`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message ?? "Selected choice summary fetch failed");
   }
 
   return response.json();

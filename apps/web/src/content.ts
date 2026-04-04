@@ -98,6 +98,21 @@ export const SHORTLIST_COPY = {
   descriptionPlaceholder: "Why this set of homes matters for the partner conversation.",
   addAction: "Save to shortlist",
   removeAction: "Remove from shortlist",
+  selectedChoiceLabel: "Selected choice",
+  backupsLabel: "Backups",
+  otherHomesLabel: "Other shortlisted homes",
+  decisionRationaleTitle: "Decision rationale",
+  rationaleFieldLabel: "Why this home holds this spot in the decision stack",
+  decisionConfidenceLabel: "Decision confidence",
+  confidenceUnset: "Not set",
+  editRationaleAction: "Edit rationale",
+  saveRationaleAction: "Save rationale",
+  cancelRationaleAction: "Cancel",
+  moveBackupUpAction: "Move up backup",
+  moveBackupDownAction: "Move down backup",
+  selectedChoiceFallback: "This home owns the active workflow path for the shortlist.",
+  backupFallback: "Keep this home as a fallback if the selected choice changes.",
+  candidateFallback: "Promote this home when it becomes the strongest option in the shortlist.",
   notesPlaceholder: "Example: Strong safety, but the tradeoff is size.",
   compareExplanation:
     "This compares the stored shortlist capture against the currently returned result. Historical values come from saved data only.",
@@ -112,6 +127,21 @@ export const SHORTLIST_COPY = {
   reviewerDecisionPlaceholder: "Optional note about why you agree, disagree, or want to discuss.",
   immutableWarning:
     "Stored home facts and scores are fixed here. Comments and reviewer decisions are separate workflow notes."
+} as const;
+
+export const OFFER_STRATEGY_COPY = {
+  title: "Offer strategy",
+  strategyConfidenceLabel: "Strategy confidence",
+  urgencyLabel: "Urgency",
+  concessionLabel: "Concessions",
+  nextActionLabel: "Recommended next offer action",
+  pricePositionTitle: "Price position",
+  rationaleTitle: "Why this posture",
+  risksTitle: "Market risks",
+  provisionalWarning: "Market inputs are incomplete or weak, so this strategy is provisional.",
+  noStrategyTitle: "Offer strategy is not active yet",
+  noStrategyBody:
+    "Select a current home and complete enough readiness context before Nhalo recommends a market-aware offer posture."
 } as const;
 
 export const OFFER_READINESS_COPY = {
@@ -168,6 +198,22 @@ export const OFFER_PREPARATION_COPY = {
   title: "Offer preparation",
   intro:
     "Offer preparation drafts the exact terms the buyer wants to make on this home. It stops at ready to submit and does not execute the offer.",
+  strategyGuidanceTitle: "Selected-choice strategy guidance",
+  strategyDefaultsTitle: "Strategy-informed defaults",
+  strategyDefaultsAvailable:
+    "Leave strategy-owned fields blank to let Nhalo seed this new draft from the current selected-choice strategy.",
+  strategyDefaultsInactive:
+    "Current selected-choice strategy is not strong enough to prefill terms. Review market inputs before leaning on it.",
+  strategyDefaultsAppliedLabel: "Strategy defaults applied",
+  strategyDefaultsAppliedFallback:
+    "This draft was seeded from a previous selected-choice strategy. Buyer edits remain the source of truth.",
+  strategyCurrentUnavailable:
+    "The current selected-choice strategy is no longer active for this property.",
+  strategySuggestedOfferPriceLabel: "Suggested offer price",
+  strategySuggestedTimelineLabel: "Suggested closing timeline",
+  strategyConfidenceLabel: "Strategy confidence",
+  strategyPostureLabel: "Offer posture",
+  strategyNextActionLabel: "Strategy next action",
   startAction: "Start offer draft",
   updateAction: "Update offer draft",
   blockedAction: "Finish financial readiness first",
@@ -706,6 +752,18 @@ export function buildWorkflowActivityLabel(
       return "Home added to shortlist";
     case "shortlist_item_removed":
       return "Home removed from shortlist";
+    case "selected_choice_marked":
+      return "Selected choice marked";
+    case "selected_choice_replaced":
+      return "Selected choice replaced";
+    case "selected_choice_dropped":
+      return "Selected choice dropped";
+    case "selected_choice_backup_reordered":
+      return "Backup order updated";
+    case "selected_choice_rationale_updated":
+      return "Decision rationale updated";
+    case "selected_choice_reviewed":
+      return "Decision review recorded";
     case "note_created":
       return "Note added";
     case "note_updated":

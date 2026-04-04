@@ -1,0 +1,11 @@
+{
+  "models": [
+    {
+      "title": "Gemma 4",
+      "model": "gemma-4",
+      "apiBase": "http://localhost:1234/v1",
+      "provider": "openai",
+      "apiKey": "lm-studio"
+    }
+  ],
+}

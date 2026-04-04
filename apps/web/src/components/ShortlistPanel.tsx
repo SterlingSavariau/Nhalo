@@ -12,6 +12,7 @@ import type {
   SharedShortlist,
   ResultNote,
   ReviewState,
+  SelectedChoiceConciergeSummary,
   Shortlist,
   ShortlistItem,
   WorkflowNotification,
@@ -29,12 +30,16 @@ import { OfferSubmissionCard } from "./OfferSubmissionCard";
 import { OfferReadinessCard } from "./OfferReadinessCard";
 import { ClosingReadinessCard } from "./ClosingReadinessCard";
 import { UnderContractCoordinationCard } from "./UnderContractCoordinationCard";
+import { SelectedChoiceSummaryCard } from "./SelectedChoiceSummaryCard";
+import { DecisionRationaleEditor } from "./DecisionRationaleEditor";
+import { OfferStrategyCard } from "./OfferStrategyCard";
 
 interface ShortlistPanelProps {
   shortlists: Shortlist[];
   selectedShortlistId: string | null;
   financialReadiness: FinancialReadiness | null;
   notifications?: WorkflowNotification[];
+  selectedChoiceSummary?: SelectedChoiceConciergeSummary | null;
   items: ShortlistItem[];
   offerPreparations: OfferPreparation[];
   offerSubmissions: OfferSubmission[];
@@ -52,6 +57,18 @@ interface ShortlistPanelProps {
   onDelete(shortlistId: string): void;
   onRemoveItem(shortlistId: string, itemId: string): void;
   onReviewStateChange(shortlistId: string, itemId: string, reviewState: ReviewState): void;
+  onUpdateDecision?(
+    shortlistId: string,
+    itemId: string,
+    patch: {
+      decisionRationale?: string | null;
+      decisionConfidence?: ShortlistItem["decisionConfidence"];
+      lastDecisionReviewedAt?: string | null;
+    }
+  ): void;
+  onSelectChoice?(shortlistId: string, itemId: string): void;
+  onDropChoice?(shortlistId: string, itemId: string): void;
+  onMoveBackup?(shortlistId: string, itemId: string, direction: "up" | "down"): void;
   onCreateOfferReadiness(payload: {
     shortlistId: string;
     propertyId: string;
@@ -301,11 +318,54 @@ function formatTimestamp(value: string): string {
   return new Date(value).toLocaleString();
 }
 
+function choiceLabel(item: ShortlistItem): string {
+  switch (item.choiceStatus) {
+    case "selected":
+      return "Selected choice";
+    case "backup":
+      return `Backup${item.selectionRank ? ` #${item.selectionRank - 1}` : ""}`;
+    case "active_pursuit":
+      return "Active pursuit";
+    case "under_contract":
+      return "Under contract";
+    case "closed":
+      return "Closed";
+    case "dropped":
+      return "Dropped";
+    case "replaced":
+      return "Replaced";
+    default:
+      return "Candidate";
+  }
+}
+
+function choicePriority(item: ShortlistItem): number {
+  switch (item.choiceStatus) {
+    case "closed":
+      return 0;
+    case "under_contract":
+      return 1;
+    case "active_pursuit":
+      return 2;
+    case "selected":
+      return 3;
+    case "backup":
+      return 4;
+    case "candidate":
+      return 5;
+    case "dropped":
+      return 6;
+    case "replaced":
+      return 7;
+  }
+}
+
 export function ShortlistPanel({
   shortlists,
   selectedShortlistId,
   financialReadiness,
   notifications = [],
+  selectedChoiceSummary = null,
   items,
   offerPreparations,
   offerSubmissions,
@@ -322,6 +382,10 @@ export function ShortlistPanel({
   onDelete,
   onRemoveItem,
   onReviewStateChange,
+  onUpdateDecision,
+  onSelectChoice,
+  onDropChoice,
+  onMoveBackup,
   onCreateOfferReadiness,
   onUpdateOfferReadiness,
   onCreateOfferPreparation,
@@ -361,6 +425,7 @@ export function ShortlistPanel({
     () => shortlists.find((entry) => entry.id === selectedShortlistId) ?? null,
     [selectedShortlistId, shortlists]
   );
+  const activeShortlistId = selectedShortlist?.id ?? "";
   const offerPreparationsByPropertyId = useMemo(() => {
     const map = new Map<string, OfferPreparation>();
     for (const entry of offerPreparations) {
@@ -422,6 +487,60 @@ export function ShortlistPanel({
     }
     return map;
   }, [negotiations]);
+  const sortedItems = useMemo(
+    () =>
+      [...items].sort((left, right) => {
+        const priorityDelta = choicePriority(left) - choicePriority(right);
+        if (priorityDelta !== 0) {
+          return priorityDelta;
+        }
+        if ((left.selectionRank ?? Number.POSITIVE_INFINITY) !== (right.selectionRank ?? Number.POSITIVE_INFINITY)) {
+          return (left.selectionRank ?? Number.POSITIVE_INFINITY) - (right.selectionRank ?? Number.POSITIVE_INFINITY);
+        }
+        return right.updatedAt.localeCompare(left.updatedAt);
+      }),
+    [items]
+  );
+  const primaryItem = useMemo(
+    () =>
+      sortedItems.find((item) =>
+        ["selected", "active_pursuit", "under_contract", "closed"].includes(item.choiceStatus)
+      ) ?? null,
+    [sortedItems]
+  );
+  const backupCount = useMemo(
+    () => sortedItems.filter((item) => item.choiceStatus === "backup").length,
+    [sortedItems]
+  );
+  const backupItems = useMemo(
+    () => sortedItems.filter((item) => item.choiceStatus === "backup"),
+    [sortedItems]
+  );
+  const secondaryItems = useMemo(
+    () =>
+      sortedItems.filter((item) => item.id !== primaryItem?.id && item.choiceStatus !== "backup"),
+    [primaryItem?.id, sortedItems]
+  );
+
+  function renderReviewState(item: ShortlistItem) {
+    return (
+      <label>
+        <span>Review state</span>
+        <select
+          value={item.reviewState}
+          onChange={(event) =>
+            onReviewStateChange(activeShortlistId, item.id, event.target.value as ReviewState)
+          }
+        >
+          {REVIEW_STATES.map((state) => (
+            <option key={state} value={state}>
+              {state.replace("_", " ")}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
 
   return (
     <section className="activity-panel shortlist-panel">
@@ -554,196 +673,348 @@ export function ShortlistPanel({
               ) : null}
             </div>
           ) : null}
-          <div className="activity-list">
-            {items.map((item) => {
-              const note = notes.find((entry) => entry.entityId === item.id) ?? null;
-              const draft = draftNotes[item.id] ?? note?.body ?? "";
+          {selectedChoiceSummary ? (
+            <>
+              <SelectedChoiceSummaryCard
+                summary={selectedChoiceSummary}
+                title="Selected choice concierge"
+              />
+              <OfferStrategyCard strategy={selectedChoiceSummary.offerStrategy} />
+            </>
+          ) : (
+            <article className={`activity-card ${primaryItem ? "active-card" : ""}`}>
+              <div>
+                <p className="section-label">Selected choice decision layer</p>
+                <strong>
+                  {primaryItem
+                    ? `${primaryItem.capturedHome.address} · ${choiceLabel(primaryItem)}`
+                    : "No selected choice is active"}
+                </strong>
+                <p className="muted">
+                  {primaryItem?.decisionRationale?.trim()
+                    ? primaryItem.decisionRationale
+                    : primaryItem
+                      ? "This home owns the active workflow narrative for the shortlist."
+                      : "Promote a shortlisted home to make one property the primary decision track."}
+                </p>
+                <p className="muted">
+                  {backupCount} backup{backupCount === 1 ? "" : "s"}
+                  {primaryItem?.decisionConfidence ? ` · ${primaryItem.decisionConfidence} decision confidence` : ""}
+                </p>
+              </div>
+            </article>
+          )}
+          {primaryItem ? (
+            <div className="activity-list">
+              {(() => {
+                const note = notes.find((entry) => entry.entityId === primaryItem.id) ?? null;
+                const draft = draftNotes[primaryItem.id] ?? note?.body ?? "";
 
-              return (
-                <article className="activity-card" key={item.id}>
-                  <div>
-                    <p className="section-label">
-                      {item.capturedHome.address} · {item.capturedHome.scores.nhalo} Nhalo
-                    </p>
-                    <strong>
-                      {item.capturedHome.price.toLocaleString("en-US", {
-                        style: "currency",
-                        currency: "USD",
-                        maximumFractionDigits: 0
-                      })}{" "}
-                      · {item.capturedHome.bedrooms} bd · {item.capturedHome.sqft.toLocaleString()} sqft
-                    </strong>
-                    <p className="muted">
-                      Captured {formatTimestamp(item.addedAt)} · {item.capturedHome.scores.overallConfidence} confidence
-                    </p>
-                  </div>
+                return (
+                  <article className="activity-card active-card" key={primaryItem.id}>
+                    <div>
+                      <p className="section-label">
+                        {choiceLabel(primaryItem)} · {primaryItem.capturedHome.address} · {primaryItem.capturedHome.scores.nhalo} Nhalo
+                      </p>
+                      <strong>
+                        {primaryItem.capturedHome.price.toLocaleString("en-US", {
+                          style: "currency",
+                          currency: "USD",
+                          maximumFractionDigits: 0
+                        })}{" "}
+                        · {primaryItem.capturedHome.bedrooms} bd · {primaryItem.capturedHome.sqft.toLocaleString()} sqft
+                      </strong>
+                      <p className="muted">
+                        Captured {formatTimestamp(primaryItem.addedAt)} · {primaryItem.capturedHome.scores.overallConfidence} confidence
+                      </p>
+                      {primaryItem.decisionRisks.length > 0 ? (
+                        <p className="muted">Decision risks: {primaryItem.decisionRisks.join(" · ")}</p>
+                      ) : null}
+                    </div>
 
-                  <div className="workflow-controls">
-                    <label>
-                      <span>Review state</span>
-                      <select
-                        value={item.reviewState}
+                    <DecisionRationaleEditor
+                      item={primaryItem}
+                      onSave={(patch) => onUpdateDecision?.(activeShortlistId, primaryItem.id, patch)}
+                    />
+
+                    <div className="workflow-controls">
+                      {renderReviewState(primaryItem)}
+
+                      <div className="activity-actions">
+                        {onDropChoice && primaryItem.choiceStatus !== "closed" ? (
+                          <button className="chip" onClick={() => onDropChoice(activeShortlistId, primaryItem.id)} type="button">
+                            Drop choice
+                          </button>
+                        ) : null}
+                        {historicalCompareEnabled ? (
+                          <button className="chip" onClick={() => onOpenHistoricalCompare(primaryItem.id)} type="button">
+                            Compare to current
+                          </button>
+                        ) : null}
+                        <button className="chip" onClick={() => onRemoveItem(activeShortlistId, primaryItem.id)} type="button">
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+
+                    <BuyerTransactionCommandCenterCard
+                      notifications={
+                        (notificationsByPropertyId.get(primaryItem.canonicalPropertyId) ?? []).filter(
+                          (entry) => entry.moduleName === "transaction_command_center"
+                        )
+                      }
+                      summary={commandCentersByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                    />
+
+                    <OfferReadinessCard
+                      item={primaryItem}
+                      offerReadiness={offerReadinessByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      onCreate={onCreateOfferReadiness}
+                      onUpdate={onUpdateOfferReadiness}
+                    />
+                    <OfferPreparationCard
+                      anchorPrice={primaryItem.capturedHome.price}
+                      financialReadiness={financialReadiness}
+                      notifications={
+                        (notificationsByPropertyId.get(primaryItem.canonicalPropertyId) ?? []).filter(
+                          (entry) => entry.moduleName === "offer_preparation"
+                        )
+                      }
+                      offerPreparation={offerPreparationsByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      offerReadiness={offerReadinessByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      offerStrategy={selectedChoiceSummary?.offerStrategy ?? null}
+                      onCreate={onCreateOfferPreparation}
+                      onUpdate={onUpdateOfferPreparation}
+                      propertyAddressLabel={primaryItem.capturedHome.address}
+                      propertyId={primaryItem.canonicalPropertyId}
+                      shortlistId={primaryItem.shortlistId}
+                    />
+                    <OfferSubmissionCard
+                      notifications={
+                        (notificationsByPropertyId.get(primaryItem.canonicalPropertyId) ?? []).filter(
+                          (entry) => entry.moduleName === "offer_submission"
+                        )
+                      }
+                      offerPreparation={offerPreparationsByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      offerSubmission={offerSubmissionsByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      onCreate={onCreateOfferSubmission}
+                      onRespondToCounter={onRespondToOfferSubmissionCounter}
+                      onSubmit={onSubmitOfferSubmission}
+                      onUpdate={onUpdateOfferSubmission}
+                      propertyAddressLabel={primaryItem.capturedHome.address}
+                      propertyId={primaryItem.canonicalPropertyId}
+                      shortlistId={primaryItem.shortlistId}
+                    />
+                    <UnderContractCoordinationCard
+                      notifications={
+                        (notificationsByPropertyId.get(primaryItem.canonicalPropertyId) ?? []).filter(
+                          (entry) => entry.moduleName === "under_contract"
+                        )
+                      }
+                      offerSubmission={offerSubmissionsByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      underContract={underContractsByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      onCreate={onCreateUnderContract}
+                      onUpdate={onUpdateUnderContract}
+                      onUpdateMilestone={onUpdateUnderContractMilestone}
+                      onUpdateTask={onUpdateUnderContractTask}
+                      propertyAddressLabel={primaryItem.capturedHome.address}
+                      propertyId={primaryItem.canonicalPropertyId}
+                      shortlistId={primaryItem.shortlistId}
+                    />
+                    <ClosingReadinessCard
+                      closingReadiness={closingReadinessByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      notifications={
+                        (notificationsByPropertyId.get(primaryItem.canonicalPropertyId) ?? []).filter(
+                          (entry) => entry.moduleName === "closing_readiness"
+                        )
+                      }
+                      underContract={underContractsByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      onCreate={onCreateClosingReadiness}
+                      onMarkClosed={onMarkClosingComplete}
+                      onMarkReady={onMarkClosingReady}
+                      onUpdate={onUpdateClosingReadiness}
+                      onUpdateChecklistItem={onUpdateClosingChecklistItem}
+                      onUpdateMilestone={onUpdateClosingMilestone}
+                      propertyAddressLabel={primaryItem.capturedHome.address}
+                      propertyId={primaryItem.canonicalPropertyId}
+                      shortlistId={primaryItem.shortlistId}
+                    />
+                    <NegotiationTrackerCard
+                      item={primaryItem}
+                      negotiation={negotiationsByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      offerReadiness={offerReadinessByPropertyId.get(primaryItem.canonicalPropertyId) ?? null}
+                      events={
+                        negotiationEventsByRecordId[
+                          negotiationsByPropertyId.get(primaryItem.canonicalPropertyId)?.id ?? ""
+                        ] ?? []
+                      }
+                      onAddEvent={onAddNegotiationEvent}
+                      onCreate={onCreateNegotiation}
+                      onUpdate={onUpdateNegotiation}
+                    />
+
+                    <label className="note-editor">
+                      <span>{RESULT_COPY.resultNotesTitle}</span>
+                      <textarea
+                        placeholder={SHORTLIST_COPY.notesPlaceholder}
+                        value={draft}
                         onChange={(event) =>
-                          onReviewStateChange(
-                            selectedShortlist.id,
-                            item.id,
-                            event.target.value as ReviewState
-                          )
+                          setDraftNotes((current) => ({
+                            ...current,
+                            [primaryItem.id]: event.target.value
+                          }))
                         }
-                      >
-                        {REVIEW_STATES.map((state) => (
-                          <option key={state} value={state}>
-                            {state.replace("_", " ")}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     </label>
 
                     <div className="activity-actions">
+                      <button
+                        className="chip"
+                        disabled={!draft.trim()}
+                        onClick={() => onSaveNote(primaryItem.id, note?.id ?? null, draft.trim())}
+                        type="button"
+                      >
+                        {note ? "Update note" : "Save note"}
+                      </button>
+                      {note ? (
+                        <button className="chip" onClick={() => onDeleteNote(note.id)} type="button">
+                          Delete note
+                        </button>
+                      ) : null}
+                    </div>
+                  </article>
+                );
+              })()}
+            </div>
+          ) : null}
+
+          {backupItems.length > 0 ? (
+            <div className="activity-section">
+              <div className="summary-header">
+                <h4>{SHORTLIST_COPY.backupsLabel}</h4>
+                <p className="muted">{backupItems.length} ordered fallback homes</p>
+              </div>
+              <div className="activity-list">
+                {backupItems.map((item, index) => (
+                  <article className="activity-card" key={item.id}>
+                    <div>
+                      <p className="section-label">
+                        {choiceLabel(item)} · {item.capturedHome.address}
+                      </p>
+                      <strong>
+                        {item.capturedHome.price.toLocaleString("en-US", {
+                          style: "currency",
+                          currency: "USD",
+                          maximumFractionDigits: 0
+                        })}{" "}
+                        · {item.capturedHome.bedrooms} bd · {item.capturedHome.sqft.toLocaleString()} sqft
+                      </strong>
+                      <p className="muted">
+                        {item.decisionConfidence
+                          ? `${item.decisionConfidence} decision confidence`
+                          : SHORTLIST_COPY.confidenceUnset}
+                      </p>
+                    </div>
+
+                    <DecisionRationaleEditor
+                      compact
+                      item={item}
+                      onSave={(patch) => onUpdateDecision?.(activeShortlistId, item.id, patch)}
+                    />
+
+                    <div className="activity-actions">
+                      {onSelectChoice ? (
+                        <button className="chip" onClick={() => onSelectChoice(activeShortlistId, item.id)} type="button">
+                          Set as selected choice
+                        </button>
+                      ) : null}
+                      {onMoveBackup ? (
+                        <button
+                          className="chip"
+                          disabled={index === 0}
+                          onClick={() => onMoveBackup(activeShortlistId, item.id, "up")}
+                          type="button"
+                        >
+                          {SHORTLIST_COPY.moveBackupUpAction}
+                        </button>
+                      ) : null}
+                      {onMoveBackup ? (
+                        <button
+                          className="chip"
+                          disabled={index === backupItems.length - 1}
+                          onClick={() => onMoveBackup(activeShortlistId, item.id, "down")}
+                          type="button"
+                        >
+                          {SHORTLIST_COPY.moveBackupDownAction}
+                        </button>
+                      ) : null}
                       {historicalCompareEnabled ? (
                         <button className="chip" onClick={() => onOpenHistoricalCompare(item.id)} type="button">
                           Compare to current
                         </button>
                       ) : null}
-                      <button
-                        className="chip"
-                        onClick={() => onRemoveItem(selectedShortlist.id, item.id)}
-                        type="button"
-                      >
+                      <button className="chip" onClick={() => onRemoveItem(activeShortlistId, item.id)} type="button">
                         Remove
                       </button>
                     </div>
-                  </div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
-                  <BuyerTransactionCommandCenterCard
-                    notifications={
-                      (notificationsByPropertyId.get(item.canonicalPropertyId) ?? []).filter(
-                        (entry) => entry.moduleName === "transaction_command_center"
-                      )
-                    }
-                    summary={commandCentersByPropertyId.get(item.canonicalPropertyId) ?? null}
-                  />
+          {secondaryItems.length > 0 ? (
+            <div className="activity-section">
+              <div className="summary-header">
+                <h4>{SHORTLIST_COPY.otherHomesLabel}</h4>
+                <p className="muted">{secondaryItems.length} additional homes in the shortlist</p>
+              </div>
+              <div className="activity-list">
+                {secondaryItems.map((item) => (
+                  <article className="activity-card" key={item.id}>
+                    <div>
+                      <p className="section-label">
+                        {choiceLabel(item)} · {item.capturedHome.address}
+                      </p>
+                      <strong>
+                        {item.capturedHome.price.toLocaleString("en-US", {
+                          style: "currency",
+                          currency: "USD",
+                          maximumFractionDigits: 0
+                        })}{" "}
+                        · {item.capturedHome.bedrooms} bd · {item.capturedHome.sqft.toLocaleString()} sqft
+                      </strong>
+                      <p className="muted">
+                        Captured {formatTimestamp(item.addedAt)} · {item.capturedHome.scores.overallConfidence} confidence
+                      </p>
+                      {item.decisionRationale?.trim() ? <p className="muted">{item.decisionRationale}</p> : null}
+                    </div>
 
-                  <OfferReadinessCard
-                    item={item}
-                    offerReadiness={offerReadinessByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    onCreate={onCreateOfferReadiness}
-                    onUpdate={onUpdateOfferReadiness}
-                  />
-                  <OfferPreparationCard
-                    anchorPrice={item.capturedHome.price}
-                    financialReadiness={financialReadiness}
-                    notifications={
-                      (notificationsByPropertyId.get(item.canonicalPropertyId) ?? []).filter(
-                        (entry) => entry.moduleName === "offer_preparation"
-                      )
-                    }
-                    offerPreparation={offerPreparationsByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    offerReadiness={offerReadinessByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    onCreate={onCreateOfferPreparation}
-                    onUpdate={onUpdateOfferPreparation}
-                    propertyAddressLabel={item.capturedHome.address}
-                    propertyId={item.canonicalPropertyId}
-                    shortlistId={item.shortlistId}
-                  />
-                  <OfferSubmissionCard
-                    notifications={
-                      (notificationsByPropertyId.get(item.canonicalPropertyId) ?? []).filter(
-                        (entry) => entry.moduleName === "offer_submission"
-                      )
-                    }
-                    offerPreparation={offerPreparationsByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    offerSubmission={offerSubmissionsByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    onCreate={onCreateOfferSubmission}
-                    onRespondToCounter={onRespondToOfferSubmissionCounter}
-                    onSubmit={onSubmitOfferSubmission}
-                    onUpdate={onUpdateOfferSubmission}
-                    propertyAddressLabel={item.capturedHome.address}
-                    propertyId={item.canonicalPropertyId}
-                    shortlistId={item.shortlistId}
-                  />
-                  <UnderContractCoordinationCard
-                    notifications={
-                      (notificationsByPropertyId.get(item.canonicalPropertyId) ?? []).filter(
-                        (entry) => entry.moduleName === "under_contract"
-                      )
-                    }
-                    offerSubmission={offerSubmissionsByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    underContract={underContractsByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    onCreate={onCreateUnderContract}
-                    onUpdate={onUpdateUnderContract}
-                    onUpdateMilestone={onUpdateUnderContractMilestone}
-                    onUpdateTask={onUpdateUnderContractTask}
-                    propertyAddressLabel={item.capturedHome.address}
-                    propertyId={item.canonicalPropertyId}
-                    shortlistId={item.shortlistId}
-                  />
-                  <ClosingReadinessCard
-                    closingReadiness={closingReadinessByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    notifications={
-                      (notificationsByPropertyId.get(item.canonicalPropertyId) ?? []).filter(
-                        (entry) => entry.moduleName === "closing_readiness"
-                      )
-                    }
-                    underContract={underContractsByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    onCreate={onCreateClosingReadiness}
-                    onMarkClosed={onMarkClosingComplete}
-                    onMarkReady={onMarkClosingReady}
-                    onUpdate={onUpdateClosingReadiness}
-                    onUpdateChecklistItem={onUpdateClosingChecklistItem}
-                    onUpdateMilestone={onUpdateClosingMilestone}
-                    propertyAddressLabel={item.capturedHome.address}
-                    propertyId={item.canonicalPropertyId}
-                    shortlistId={item.shortlistId}
-                  />
-                  <NegotiationTrackerCard
-                    item={item}
-                    negotiation={negotiationsByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    offerReadiness={offerReadinessByPropertyId.get(item.canonicalPropertyId) ?? null}
-                    events={
-                      negotiationEventsByRecordId[
-                        negotiationsByPropertyId.get(item.canonicalPropertyId)?.id ?? ""
-                      ] ?? []
-                    }
-                    onAddEvent={onAddNegotiationEvent}
-                    onCreate={onCreateNegotiation}
-                    onUpdate={onUpdateNegotiation}
-                  />
+                    <div className="workflow-controls">
+                      {renderReviewState(item)}
+                      <div className="activity-actions">
+                        {item.choiceStatus === "candidate" && onSelectChoice ? (
+                          <button className="chip" onClick={() => onSelectChoice(activeShortlistId, item.id)} type="button">
+                            Set as selected choice
+                          </button>
+                        ) : null}
+                        {historicalCompareEnabled ? (
+                          <button className="chip" onClick={() => onOpenHistoricalCompare(item.id)} type="button">
+                            Compare to current
+                          </button>
+                        ) : null}
+                        <button className="chip" onClick={() => onRemoveItem(activeShortlistId, item.id)} type="button">
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
-                  <label className="note-editor">
-                    <span>{RESULT_COPY.resultNotesTitle}</span>
-                    <textarea
-                      placeholder={SHORTLIST_COPY.notesPlaceholder}
-                      value={draft}
-                      onChange={(event) =>
-                        setDraftNotes((current) => ({
-                          ...current,
-                          [item.id]: event.target.value
-                        }))
-                      }
-                    />
-                  </label>
-
-                  <div className="activity-actions">
-                    <button
-                      className="chip"
-                      disabled={!draft.trim()}
-                      onClick={() => onSaveNote(item.id, note?.id ?? null, draft.trim())}
-                      type="button"
-                    >
-                      {note ? "Update note" : "Save note"}
-                    </button>
-                    {note ? (
-                      <button className="chip" onClick={() => onDeleteNote(note.id)} type="button">
-                        Delete note
-                      </button>
-                    ) : null}
-                  </div>
-                </article>
-              );
-            })}
-            {items.length === 0 ? <p className="muted">No homes saved in this shortlist yet.</p> : null}
-          </div>
+          {items.length === 0 ? <p className="muted">No homes saved in this shortlist yet.</p> : null}
         </div>
       ) : null}
 

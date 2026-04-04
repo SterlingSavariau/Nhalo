@@ -14,12 +14,14 @@ Nhalo is a family-first home decision engine that ranks homes by price, size, an
 
 ## Run Locally
 
-1. Install dependencies with `npm install`.
-2. Copy `.env.example` to `.env`.
-3. Start PostgreSQL with `docker compose up -d`.
-4. Generate Prisma client with `npm run db:generate`.
-5. Start the API with `npm run dev:api`.
-6. Start the UI with `npm run dev:web`.
+1. Copy `.env.example` to `.env`.
+2. Start the full stack with `docker compose up --build`.
+3. Open the UI at `http://localhost:5173`.
+4. Reach the API at `http://localhost:3000`.
+
+The Docker stack now runs PostgreSQL, the Fastify API, and the Vite web app together. On startup, the API container runs `prisma db push` and `prisma generate` before entering watch mode, so you do not need to run `yarn dev:api` or `yarn dev:web` on the host.
+
+To stop the stack, run `docker compose down`. Add `-v` if you also want to remove the local Postgres volume.
 
 ## Example Search Request
 

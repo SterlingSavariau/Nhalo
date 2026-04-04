@@ -1,4 +1,4 @@
-import type { ReviewState, ScoredHome } from "@nhalo/types";
+import type { ReviewState, ScoredHome, ShortlistItem } from "@nhalo/types";
 import {
   RESULT_COPY,
   SHORTLIST_COPY,
@@ -18,6 +18,7 @@ interface ResultCardProps {
   shortlistDisabled?: boolean;
   shortlistLabel?: string | null;
   reviewState?: ReviewState | null;
+  shortlistItem?: ShortlistItem | null;
   onToggleCompare(homeId: string): void;
   onToggleShortlist?(home: ScoredHome): void;
   onOpenDetails(homeId: string): void;
@@ -50,6 +51,7 @@ export function ResultCard({
   shortlistDisabled,
   shortlistLabel,
   reviewState,
+  shortlistItem,
   onToggleCompare,
   onToggleShortlist,
   onOpenDetails,
@@ -57,6 +59,22 @@ export function ResultCard({
 }: ResultCardProps) {
   const decisionLabels = buildDecisionLabels(home, homes);
   const tradeoffSummary = buildTradeoffSummary(home);
+  const shortlistStatusLabel =
+    shortlistItem?.choiceStatus === "selected"
+      ? "Selected choice"
+      : shortlistItem?.choiceStatus === "backup"
+        ? `Backup${shortlistItem.selectionRank ? ` #${shortlistItem.selectionRank - 1}` : ""}`
+        : shortlistItem?.choiceStatus === "active_pursuit"
+          ? "Active pursuit"
+          : shortlistItem?.choiceStatus === "under_contract"
+            ? "Under contract"
+            : shortlistItem?.choiceStatus === "closed"
+              ? "Closed"
+              : shortlistItem?.choiceStatus === "dropped"
+                ? "Dropped"
+                : shortlistItem?.choiceStatus === "replaced"
+                  ? "Replaced"
+                  : null;
 
   return (
     <article className="result-card">
@@ -110,6 +128,7 @@ export function ResultCard({
               Shortlisted{reviewState ? ` · ${reviewState.replace("_", " ")}` : ""}
             </span>
           ) : null}
+          {shortlistStatusLabel ? <span className="chip active">{shortlistStatusLabel}</span> : null}
         </div>
       ) : null}
 

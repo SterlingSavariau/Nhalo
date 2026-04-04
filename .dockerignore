@@ -1,0 +1,10 @@
+.git
+.DS_Store
+node_modules
+dist
+.vite
+coverage
+apps/api/dist
+apps/web/dist
+packages/db/prisma/generated
+.env

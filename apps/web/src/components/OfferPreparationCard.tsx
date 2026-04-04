@@ -3,6 +3,7 @@ import type {
   FinancialReadiness,
   OfferPreparation,
   OfferReadiness,
+  SelectedChoiceOfferStrategy,
   WorkflowNotification
 } from "@nhalo/types";
 import { DecisionExplainabilityPanel } from "./DecisionExplainabilityPanel";
@@ -17,6 +18,7 @@ interface OfferPreparationCardProps {
   notifications?: WorkflowNotification[];
   financialReadiness: FinancialReadiness | null;
   offerReadiness?: OfferReadiness | null;
+  offerStrategy?: SelectedChoiceOfferStrategy | null;
   offerPreparation?: OfferPreparation | null;
   onCreate(payload: {
     propertyId: string;
@@ -89,6 +91,28 @@ function percent(value: number | null | undefined): string {
   return `${value.toFixed(1)}%`;
 }
 
+function humanize(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
+function suggestedClosingTimelineDays(
+  strategy: SelectedChoiceOfferStrategy | null | undefined
+): number | null {
+  if (!strategy || strategy.strategyConfidence === "low") {
+    return null;
+  }
+
+  if (strategy.offerPosture === "prepare_competitive_offer") {
+    return 14;
+  }
+
+  if (strategy.offerPosture === "prepare_disciplined_offer") {
+    return 30;
+  }
+
+  return null;
+}
+
 export function OfferPreparationCard({
   propertyId,
   propertyAddressLabel,
@@ -97,6 +121,7 @@ export function OfferPreparationCard({
   notifications = [],
   financialReadiness,
   offerReadiness,
+  offerStrategy = null,
   offerPreparation,
   onCreate,
   onUpdate
@@ -120,8 +145,11 @@ export function OfferPreparationCard({
   const [buyerRationale, setBuyerRationale] = useState("");
 
   useEffect(() => {
-    const defaultOfferPrice = offerReadiness?.recommendedOfferPrice ?? anchorPrice;
-    setOfferPrice(String(offerPreparation?.offerPrice ?? defaultOfferPrice ?? ""));
+    setOfferPrice(
+      offerPreparation?.offerPrice !== null && offerPreparation?.offerPrice !== undefined
+        ? String(offerPreparation.offerPrice)
+        : ""
+    );
     setEarnestMoneyAmount(String(offerPreparation?.earnestMoneyAmount ?? ""));
     setDownPaymentType(offerPreparation?.downPaymentType ?? "percent");
     setDownPaymentAmount(String(offerPreparation?.downPaymentAmount ?? ""));
@@ -133,14 +161,29 @@ export function OfferPreparationCard({
     setFinancingContingency(offerPreparation?.financingContingency ?? "included");
     setInspectionContingency(offerPreparation?.inspectionContingency ?? "included");
     setAppraisalContingency(offerPreparation?.appraisalContingency ?? "included");
-    setClosingTimelineDays(String(offerPreparation?.closingTimelineDays ?? 30));
+    setClosingTimelineDays(
+      offerPreparation?.closingTimelineDays !== null && offerPreparation?.closingTimelineDays !== undefined
+        ? String(offerPreparation.closingTimelineDays)
+        : ""
+    );
     setPossessionTiming(offerPreparation?.possessionTiming ?? "at_closing");
     setPossessionDaysAfterClosing(String(offerPreparation?.possessionDaysAfterClosing ?? ""));
     setNotes(offerPreparation?.notes ?? "");
     setBuyerRationale(offerPreparation?.buyerRationale ?? "");
-  }, [anchorPrice, financialReadiness?.downPaymentPreferencePercent, offerPreparation, offerReadiness?.recommendedOfferPrice]);
+  }, [financialReadiness?.downPaymentPreferencePercent, offerPreparation]);
 
   const canStart = Boolean(financialReadiness?.id);
+  const strategyDefaultsAvailable =
+    Boolean(offerStrategy) &&
+    offerStrategy?.strategyConfidence !== "low" &&
+    (offerStrategy?.offerPosture === "prepare_disciplined_offer" ||
+      offerStrategy?.offerPosture === "prepare_competitive_offer");
+  const strategySuggestedOfferPrice =
+    strategyDefaultsAvailable ? offerStrategy?.pricePosition.recommendedOfferPrice ?? null : null;
+  const strategySuggestedTimeline = strategyDefaultsAvailable
+    ? suggestedClosingTimelineDays(offerStrategy)
+    : null;
+  const strategyProvenance = offerPreparation?.strategyDefaultsProvenance ?? null;
 
   return (
     <div className="activity-card negotiation-card">
@@ -177,6 +220,47 @@ export function OfferPreparationCard({
         title="Active alerts"
         emptyMessage="No active offer preparation alerts."
       />
+
+      {offerStrategy || strategyProvenance ? (
+        <div className="summary-block">
+          <h3>{OFFER_PREPARATION_COPY.strategyGuidanceTitle}</h3>
+          {offerStrategy ? (
+            <>
+              <p>
+                {OFFER_PREPARATION_COPY.strategyPostureLabel}: {humanize(offerStrategy.offerPosture)} ·{" "}
+                {OFFER_PREPARATION_COPY.strategyConfidenceLabel}: {humanize(offerStrategy.strategyConfidence)}
+              </p>
+              <p className="muted">
+                {OFFER_PREPARATION_COPY.strategyNextActionLabel}:{" "}
+                {humanize(offerStrategy.recommendedNextOfferAction)}
+              </p>
+              <p className="muted">
+                {strategyDefaultsAvailable
+                  ? OFFER_PREPARATION_COPY.strategyDefaultsAvailable
+                  : OFFER_PREPARATION_COPY.strategyDefaultsInactive}
+              </p>
+              {strategyDefaultsAvailable ? (
+                <p className="muted">
+                  {OFFER_PREPARATION_COPY.strategySuggestedOfferPriceLabel}:{" "}
+                  {currency(strategySuggestedOfferPrice)} · {OFFER_PREPARATION_COPY.strategySuggestedTimelineLabel}:{" "}
+                  {strategySuggestedTimeline !== null ? `${strategySuggestedTimeline} days` : "Not suggested"}
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <p className="muted">{OFFER_PREPARATION_COPY.strategyCurrentUnavailable}</p>
+          )}
+          {strategyProvenance ? (
+            <p className="muted">
+              {OFFER_PREPARATION_COPY.strategyDefaultsAppliedLabel}:{" "}
+              {strategyProvenance.appliedFieldKeys.map((field) => humanize(field)).join(" · ") ||
+                OFFER_PREPARATION_COPY.strategyDefaultsAppliedFallback}
+              {" · "}
+              {new Date(strategyProvenance.appliedAt).toLocaleString()}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="summary-grid">
         <div className="summary-block">
@@ -227,7 +311,16 @@ export function OfferPreparationCard({
       <div className="offer-readiness-grid">
         <label>
           <span>{OFFER_PREPARATION_COPY.offerPriceLabel}</span>
-          <input inputMode="numeric" onChange={(event) => setOfferPrice(event.target.value)} value={offerPrice} />
+          <input
+            inputMode="numeric"
+            onChange={(event) => setOfferPrice(event.target.value)}
+            placeholder={
+              !offerPreparation && strategySuggestedOfferPrice !== null
+                ? String(strategySuggestedOfferPrice)
+                : undefined
+            }
+            value={offerPrice}
+          />
         </label>
         <label>
           <span>{OFFER_PREPARATION_COPY.earnestMoneyLabel}</span>
@@ -309,6 +402,11 @@ export function OfferPreparationCard({
           <input
             inputMode="numeric"
             onChange={(event) => setClosingTimelineDays(event.target.value)}
+            placeholder={
+              !offerPreparation && strategySuggestedTimeline !== null
+                ? String(strategySuggestedTimeline)
+                : undefined
+            }
             value={closingTimelineDays}
           />
         </label>

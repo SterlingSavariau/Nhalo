@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyPreferencesToRequest,
+  clearAuthenticatedUser,
   dismissWalkthrough,
   dismissOnboarding,
   getOrCreateSessionIdentity,
@@ -11,6 +12,7 @@ import {
   loadUiPreferences,
   markValidationPromptSeen,
   savePilotContext,
+  saveSessionIdentity,
   saveStakeholderNote,
   saveUiPreferences,
   shouldShowValidationPrompt
@@ -38,6 +40,58 @@ describe("local-state", () => {
 
     expect(first.sessionId).toBeTruthy();
     expect(second.sessionId).toBe(first.sessionId);
+  });
+
+  it("persists an authenticated Google user on the existing session", () => {
+    const storage = createMemoryStorage();
+    const session = getOrCreateSessionIdentity(storage);
+
+    saveSessionIdentity(storage, {
+      ...session,
+      authProvider: "google",
+      user: {
+        provider: "google",
+        subject: "google-user-1",
+        email: "sterling@example.com",
+        emailVerified: true,
+        name: "Sterling",
+        givenName: "Sterling",
+        familyName: "Savariau",
+        pictureUrl: "https://example.com/avatar.png"
+      }
+    });
+
+    const nextIdentity = getOrCreateSessionIdentity(storage);
+
+    expect(nextIdentity.sessionId).toBe(session.sessionId);
+    expect(nextIdentity.authProvider).toBe("google");
+    expect(nextIdentity.user?.email).toBe("sterling@example.com");
+  });
+
+  it("can clear the authenticated user while preserving the base session", () => {
+    const storage = createMemoryStorage();
+    const session = getOrCreateSessionIdentity(storage);
+
+    saveSessionIdentity(storage, {
+      ...session,
+      partnerId: "partner-1",
+      pilotLinkId: "pilot-link-1",
+      authProvider: "google",
+      user: {
+        provider: "google",
+        subject: "google-user-1",
+        email: "sterling@example.com",
+        emailVerified: true
+      }
+    });
+
+    const nextIdentity = clearAuthenticatedUser(storage);
+
+    expect(nextIdentity.sessionId).toBe(session.sessionId);
+    expect(nextIdentity.partnerId).toBe("partner-1");
+    expect(nextIdentity.pilotLinkId).toBe("pilot-link-1");
+    expect(nextIdentity.authProvider).toBeNull();
+    expect(nextIdentity.user).toBeNull();
   });
 
   it("handles corrupted local preferences safely", () => {

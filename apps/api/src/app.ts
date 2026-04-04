@@ -15,6 +15,7 @@ import {
 } from "@nhalo/db";
 import { DEMO_SEARCH_SCENARIOS, createMockProviders, createProviders } from "@nhalo/providers";
 import type {
+  AuthenticatedUser,
   CollaborationActivityRecord,
   DependencyReadinessRecord,
   DataQualitySeverity,
@@ -50,8 +51,11 @@ import type {
   ValidationEventName
 } from "@nhalo/types";
 import Fastify from "fastify";
+import { OAuth2Client } from "google-auth-library";
+import { randomUUID } from "node:crypto";
 import { ZodError, z } from "zod";
 import { ApiError, isApiError } from "./errors";
+import { suggestUsLocations } from "./location-suggestions";
 import { createLogger, type AppLogger } from "./logger";
 import { MetricsCollector } from "./metrics";
 import { resolveEffectiveCapabilities } from "./capabilities";
@@ -105,6 +109,16 @@ const metricsEventSchema = z.object({
 const shareSnapshotSchema = z.object({
   sessionId: z.string().trim().min(1).optional(),
   expiresInDays: z.number().int().positive().max(365).optional()
+});
+
+const googleAuthSchema = z.object({
+  credential: z.string().trim().min(1),
+  sessionId: z.string().trim().min(1).optional()
+});
+
+const locationSuggestionQuerySchema = z.object({
+  q: z.string().trim().min(1),
+  limit: z.coerce.number().int().positive().max(10).optional()
 });
 
 const feedbackSchema = z.object({
@@ -458,7 +472,41 @@ const shortlistItemCreateSchema = z.object({
 });
 
 const shortlistItemUpdateSchema = z.object({
-  reviewState: z.enum(["undecided", "interested", "needs_review", "rejected"])
+  reviewState: z.enum(["undecided", "interested", "needs_review", "rejected"]).optional(),
+  decisionConfidence: z.enum(["low", "medium", "high", "confirmed"]).nullable().optional(),
+  decisionRationale: z.string().trim().max(2000).nullable().optional(),
+  decisionRisks: z.array(z.string().trim().min(1).max(240)).max(12).optional(),
+  lastDecisionReviewedAt: z.string().datetime().nullable().optional()
+}).refine((payload) => Object.keys(payload).length > 0, {
+  message: "At least one editable shortlist item field is required"
+});
+
+const shortlistItemSelectSchema = z.object({
+  replaceMode: z.enum(["backup", "replaced", "dropped"]).optional(),
+  decisionConfidence: z.enum(["low", "medium", "high", "confirmed"]).nullable().optional(),
+  decisionRationale: z.string().trim().max(2000).nullable().optional(),
+  decisionRisks: z.array(z.string().trim().min(1).max(240)).max(12).optional(),
+  lastDecisionReviewedAt: z.string().datetime().nullable().optional()
+});
+
+const shortlistItemReorderSchema = z.object({
+  orderedBackupItemIds: z.array(z.string().trim().min(1)).max(20)
+});
+
+const shortlistItemDropSchema = z.object({
+  droppedReason: z.enum([
+    "better_alternative_selected",
+    "financial_mismatch",
+    "property_fit_changed",
+    "market_status_changed",
+    "seller_terms_unfavorable",
+    "inspection_or_disclosure_concern",
+    "buyer_preference_changed",
+    "deal_fell_through",
+    "duplicate_or_invalid",
+    "other"
+  ]),
+  decisionRationale: z.string().trim().max(2000).nullable().optional()
 });
 
 const offerReadinessCreateSchema = z.object({
@@ -676,6 +724,62 @@ const PILOT_FEATURE_KEYS = [
   "shortlistCollaborationEnabled",
   "exportResultsEnabled"
 ] as const;
+
+let googleOAuthClient: OAuth2Client | null = null;
+
+function createSessionId(): string {
+  return `nhalo_${randomUUID()}`;
+}
+
+function getGoogleClientIds(): string[] {
+  return (process.env.GOOGLE_CLIENT_ID ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+function getGoogleOAuthClient(): OAuth2Client {
+  if (!googleOAuthClient) {
+    googleOAuthClient = new OAuth2Client();
+  }
+  return googleOAuthClient;
+}
+
+async function verifyGoogleCredential(credential: string): Promise<AuthenticatedUser> {
+  const audiences = getGoogleClientIds();
+  if (audiences.length === 0) {
+    throw new ApiError(503, "AUTH_NOT_CONFIGURED", "Google sign-in is not configured.");
+  }
+
+  try {
+    const ticket = await getGoogleOAuthClient().verifyIdToken({
+      idToken: credential,
+      audience: audiences
+    });
+    const payload = ticket.getPayload();
+
+    if (!payload?.sub || !payload.email) {
+      throw new ApiError(401, "GOOGLE_AUTH_INVALID", "Google did not return a usable account.");
+    }
+
+    return {
+      provider: "google",
+      subject: payload.sub,
+      email: payload.email,
+      emailVerified: Boolean(payload.email_verified),
+      name: payload.name ?? null,
+      givenName: payload.given_name ?? null,
+      familyName: payload.family_name ?? null,
+      pictureUrl: payload.picture ?? null
+    };
+  } catch (error) {
+    if (isApiError(error)) {
+      throw error;
+    }
+
+    throw new ApiError(401, "GOOGLE_AUTH_FAILED", "Google could not verify this sign-in.");
+  }
+}
 
 function extractSessionId(request: {
   headers?: Record<string, unknown>;
@@ -2176,6 +2280,25 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
     environment: config.runtimeEnvironment,
     build: reliability.getBuildMetadata()
   }));
+
+  app.post("/auth/google", async (request, reply) => {
+    const payload = googleAuthSchema.parse(request.body ?? {});
+    const user = await verifyGoogleCredential(payload.credential);
+    const sessionId = extractSessionId(request, payload.sessionId) ?? payload.sessionId ?? createSessionId();
+
+    return reply.status(200).send({
+      sessionId,
+      authProvider: "google",
+      user
+    });
+  });
+
+  app.get("/locations/suggest", async (request) => {
+    const query = locationSuggestionQuerySchema.parse(request.query ?? {});
+    return {
+      suggestions: suggestUsLocations(query.q, query.limit ?? 8)
+    };
+  });
 
   app.get("/version", async () => {
     if (!config.deployment.versionEndpointEnabled) {
@@ -5905,8 +6028,185 @@ export async function buildApp(dependencies?: Partial<AppDependencies>) {
       );
     }
 
-    metrics.recordReviewStateChange();
+    if (patch.reviewState !== undefined) {
+      metrics.recordReviewStateChange();
+    }
     return item;
+  });
+
+  app.post("/shortlists/:id/items/:itemId/select", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Shortlists");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string; itemId?: string };
+    const shortlistId = params.id?.trim();
+    const itemId = params.itemId?.trim();
+    const payload = shortlistItemSelectSchema.parse(request.body ?? {});
+
+    if (!shortlistId || !itemId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid shortlist item id", [
+          { field: "id", message: "shortlist id and item id are required" }
+        ])
+      );
+    }
+
+    const result = await persistence.searchRepository.selectShortlistItem({
+      shortlistId,
+      itemId,
+      ...payload
+    });
+    if (!result) {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "SELECTED_CHOICE_CONFLICT",
+          "This shortlist item could not be promoted to the selected choice."
+        )
+      );
+    }
+
+    const summary = await persistence.searchRepository.getSelectedChoiceSummary(shortlistId);
+    return {
+      selectedItem: result.selectedItem,
+      previousPrimaryItem: result.previousPrimaryItem,
+      summary
+    };
+  });
+
+  app.post("/shortlists/:id/items/reorder", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Shortlists");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string };
+    const shortlistId = params.id?.trim();
+    const payload = shortlistItemReorderSchema.parse(request.body ?? {});
+
+    if (!shortlistId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid shortlist id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const items = await persistence.searchRepository.reorderShortlistItems({
+      shortlistId,
+      orderedBackupItemIds: payload.orderedBackupItemIds
+    });
+    if (!items) {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "SELECTED_CHOICE_REORDER_CONFLICT",
+          "Backups could not be reordered for this shortlist."
+        )
+      );
+    }
+
+    const selectedChoice = await persistence.searchRepository.getSelectedChoice(shortlistId);
+    const summary = await persistence.searchRepository.getSelectedChoiceSummary(shortlistId);
+    return {
+      items,
+      selectedChoice,
+      summary
+    };
+  });
+
+  app.post("/shortlists/:id/items/:itemId/drop", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Shortlists");
+    }
+
+    ensureWriteCapable(reliability);
+    const params = request.params as { id?: string; itemId?: string };
+    const shortlistId = params.id?.trim();
+    const itemId = params.itemId?.trim();
+    const payload = shortlistItemDropSchema.parse(request.body ?? {});
+
+    if (!shortlistId || !itemId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid shortlist item id", [
+          { field: "id", message: "shortlist id and item id are required" }
+        ])
+      );
+    }
+
+    const result = await persistence.searchRepository.dropShortlistItem({
+      shortlistId,
+      itemId,
+      droppedReason: payload.droppedReason,
+      decisionRationale: payload.decisionRationale
+    });
+    if (!result) {
+      return reply.status(409).send(
+        buildErrorPayload(
+          "SELECTED_CHOICE_DROP_CONFLICT",
+          "This shortlist item could not be dropped."
+        )
+      );
+    }
+
+    const summary = await persistence.searchRepository.getSelectedChoiceSummary(shortlistId);
+    return {
+      item: result.item,
+      promotedBackupItem: result.promotedBackupItem,
+      summary
+    };
+  });
+
+  app.get("/shortlists/:id/selected-choice", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Shortlists");
+    }
+
+    const params = request.params as { id?: string };
+    const shortlistId = params.id?.trim();
+
+    if (!shortlistId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid shortlist id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const selectedChoice = await persistence.searchRepository.getSelectedChoice(shortlistId);
+    if (!selectedChoice) {
+      return reply.status(404).send(
+        buildErrorPayload("SHORTLIST_NOT_FOUND", "No shortlist was found for this id.")
+      );
+    }
+
+    return selectedChoice;
+  });
+
+  app.get("/shortlists/:id/selected-choice/summary", async (request, reply) => {
+    if (!config.workflow.shortlistsEnabled) {
+      throw featureDisabled("Shortlists");
+    }
+
+    const params = request.params as { id?: string };
+    const shortlistId = params.id?.trim();
+
+    if (!shortlistId) {
+      return reply.status(400).send(
+        buildErrorPayload("VALIDATION_ERROR", "Invalid shortlist id", [
+          { field: "id", message: "id is required" }
+        ])
+      );
+    }
+
+    const summary = await persistence.searchRepository.getSelectedChoiceSummary(shortlistId);
+    if (!summary) {
+      return reply.status(404).send(
+        buildErrorPayload("SHORTLIST_NOT_FOUND", "No shortlist was found for this id.")
+      );
+    }
+
+    return summary;
   });
 
   app.delete("/shortlists/:id/items/:itemId", async (request, reply) => {

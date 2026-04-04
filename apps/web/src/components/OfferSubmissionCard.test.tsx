@@ -70,6 +70,7 @@ describe("OfferSubmissionCard", () => {
             slowClosingTimelineDays: 45,
             affordabilityTolerancePercent: 0.05
           },
+          strategyDefaultsProvenance: null,
           lastEvaluatedAt: "2026-04-01T20:10:00.000Z",
           createdAt: "2026-04-01T20:00:00.000Z",
           updatedAt: "2026-04-01T20:10:00.000Z"

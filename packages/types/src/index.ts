@@ -97,10 +97,23 @@ export interface SearchRequest {
   weights?: SearchWeights;
 }
 
+export interface AuthenticatedUser {
+  provider: "google";
+  subject: string;
+  email: string;
+  emailVerified: boolean;
+  name?: string | null;
+  givenName?: string | null;
+  familyName?: string | null;
+  pictureUrl?: string | null;
+}
+
 export interface SessionIdentity {
   sessionId: string | null;
   partnerId?: string | null;
   pilotLinkId?: string | null;
+  authProvider?: AuthenticatedUser["provider"] | null;
+  user?: AuthenticatedUser | null;
   source: "local_storage" | "header" | "query" | "body" | "none";
 }
 
@@ -675,9 +688,15 @@ export interface ScoredHome {
   listingProvider?: string | null;
   sourceListingId?: string | null;
   listingFetchedAt?: string | null;
+  listingStatus?: ListingStatus | null;
+  daysOnMarket?: number | null;
   canonicalPropertyId?: string;
   distanceMiles?: number;
   insideRequestedRadius?: boolean;
+  pricePerSqft?: number | null;
+  medianPricePerSqft?: number | null;
+  comparableSampleSize?: number | null;
+  comparableStrategyUsed?: string | null;
   qualityFlags?: string[];
   integrityFlags?: string[];
   dataWarnings?: string[];
@@ -1117,10 +1136,25 @@ export interface OfferPreparationSummary {
   lastEvaluatedAt: string;
 }
 
+export type OfferPreparationStrategySuggestedField = "offerPrice" | "closingTimelineDays";
+
+export interface OfferPreparationStrategyDefaultsProvenance {
+  appliedAt: string;
+  appliedFieldKeys: OfferPreparationStrategySuggestedField[];
+  sourceSelectedItemId: string | null;
+  sourceShortlistId: string | null;
+  sourcePropertyId: string;
+  sourceStrategyConfidence: OfferStrategyConfidence;
+  sourceOfferPosture: OfferPosture;
+  sourceRecommendedNextOfferAction: RecommendedNextOfferAction;
+  sourceLastEvaluatedAt: string | null;
+}
+
 export interface OfferPreparation extends OfferPreparationInputs, OfferPreparationSummary {
   id: string;
   sessionId?: string | null;
   partnerId?: string | null;
+  strategyDefaultsProvenance: OfferPreparationStrategyDefaultsProvenance | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1999,6 +2033,37 @@ export interface NegotiationSummary {
   guidance: NegotiationGuidance;
 }
 
+export type ChoiceStatus =
+  | "candidate"
+  | "backup"
+  | "selected"
+  | "active_pursuit"
+  | "under_contract"
+  | "closed"
+  | "dropped"
+  | "replaced";
+
+export type DecisionStage =
+  | "considering"
+  | "selected_choice"
+  | "offer_pursuit"
+  | "contract_to_close"
+  | "finished";
+
+export type DecisionConfidence = "low" | "medium" | "high" | "confirmed";
+
+export type DroppedReason =
+  | "better_alternative_selected"
+  | "financial_mismatch"
+  | "property_fit_changed"
+  | "market_status_changed"
+  | "seller_terms_unfavorable"
+  | "inspection_or_disclosure_concern"
+  | "buyer_preference_changed"
+  | "deal_fell_through"
+  | "duplicate_or_invalid"
+  | "other";
+
 export interface Shortlist {
   id: string;
   sessionId: string | null;
@@ -2020,8 +2085,157 @@ export interface ShortlistItem {
   sourceSearchDefinitionId?: string | null;
   capturedHome: ScoredHome;
   reviewState: ReviewState;
+  choiceStatus: ChoiceStatus;
+  selectionRank?: number | null;
+  decisionConfidence?: DecisionConfidence | null;
+  decisionRationale?: string | null;
+  decisionRisks: string[];
+  lastDecisionReviewedAt?: string | null;
+  selectedAt?: string | null;
+  statusChangedAt: string;
+  replacedByShortlistItemId?: string | null;
+  droppedReason?: DroppedReason | null;
   addedAt: string;
   updatedAt: string;
+}
+
+export interface SelectedChoiceView {
+  shortlistId: string;
+  selectedItem: ShortlistItem | null;
+  backups: ShortlistItem[];
+  candidates: ShortlistItem[];
+  terminalItems: ShortlistItem[];
+}
+
+export interface SelectedChoiceConciergeSummary {
+  shortlistId: string;
+  selectedItemId: string | null;
+  hasSelectedChoice: boolean;
+  choiceStatus: ChoiceStatus | "none";
+  decisionStage: DecisionStage | "none";
+  property: {
+    shortlistItemId: string;
+    canonicalPropertyId: string;
+    address: string;
+    city: string;
+    state: string;
+    price: number;
+    nhaloScore: number;
+    overallConfidence: ScoredHome["scores"]["overallConfidence"];
+    capturedHome: ScoredHome;
+  } | null;
+  decision: {
+    selectionRank: number | null;
+    backupCount: number;
+    decisionConfidence: DecisionConfidence | null;
+    decisionRationale: string | null;
+    decisionRisks: string[];
+    lastDecisionReviewedAt: string | null;
+    selectedAt: string | null;
+    statusChangedAt: string | null;
+    droppedReason: DroppedReason | null;
+    replacedByShortlistItemId: string | null;
+  };
+  readiness: {
+    financialReadinessId: string | null;
+    financialReadinessState: FinancialReadinessState | null;
+    affordabilityClassification: AffordabilityClassification | null;
+    offerReadinessId: string | null;
+    offerReadinessStatus: OfferReadinessStatus | null;
+    offerReadinessScore: number | null;
+    recommendedOfferPrice: number | null;
+    offerRecommendationConfidence: OfferReadiness["confidence"] | null;
+  };
+  workflow: {
+    offerPreparationId: string | null;
+    offerPreparationState: OfferPreparationState | null;
+    offerSubmissionId: string | null;
+    offerSubmissionState: OfferSubmissionState | null;
+    negotiationId: string | null;
+    negotiationStatus: NegotiationStatus | null;
+    underContractCoordinationId: string | null;
+    underContractState: UnderContractCoordinationState | null;
+    closingReadinessId: string | null;
+    closingReadinessState: ClosingReadinessState | null;
+    transactionCommandCenter: BuyerTransactionCommandCenterView | null;
+  };
+  alerts: {
+    unreadCount: number;
+    criticalCount: number;
+    warningCount: number;
+    notifications: WorkflowNotification[];
+  };
+  offerStrategy: SelectedChoiceOfferStrategy | null;
+  concierge: {
+    headline: string;
+    recommendationSummary: string;
+    nextAction: string;
+    nextSteps: string[];
+    topRisks: string[];
+    blockers: string[];
+    sourceModule:
+      | "selected_choice"
+      | "financial_readiness"
+      | "offer_readiness"
+      | "offer_preparation"
+      | "offer_submission"
+      | "negotiation"
+      | "under_contract"
+      | "closing_readiness"
+      | "transaction_command_center";
+    lastUpdatedAt: string | null;
+  };
+}
+
+export type OfferStrategyConfidence = "high" | "medium" | "low";
+export type OfferPosture =
+  | "not_ready"
+  | "verify_before_offering"
+  | "prepare_disciplined_offer"
+  | "prepare_competitive_offer"
+  | "hold_and_monitor"
+  | "do_not_advance";
+export type OfferUrgencyLevel = "blocked" | "low" | "medium" | "high";
+export type ConcessionStrategy =
+  | "keep_terms_clean"
+  | "limit_concession_requests"
+  | "case_by_case"
+  | "defer_until_more_certain";
+export type RecommendedNextOfferAction =
+  | "complete_financial_readiness"
+  | "complete_offer_readiness"
+  | "review_market_inputs"
+  | "draft_disciplined_offer"
+  | "draft_competitive_offer"
+  | "hold_and_monitor"
+  | "do_not_advance";
+
+export interface SelectedChoiceOfferStrategy {
+  strategyConfidence: OfferStrategyConfidence;
+  offerPosture: OfferPosture;
+  urgencyLevel: OfferUrgencyLevel;
+  concessionStrategy: ConcessionStrategy;
+  recommendedNextOfferAction: RecommendedNextOfferAction;
+  pricePosition: {
+    listPrice: number | null;
+    recommendedOfferPrice: number | null;
+    pricePerSqft: number | null;
+    medianPricePerSqft: number | null;
+    versusList: "below_list" | "at_list" | "above_list" | "unknown";
+    versusMarket: "discount_to_market" | "near_market" | "premium_to_market" | "unknown";
+  };
+  marketContext: {
+    listingStatus: ListingStatus | null;
+    daysOnMarket: number | null;
+    comparableSampleSize: number | null;
+    comparableStrategyUsed: string | null;
+    overallConfidence: ScoredHome["scores"]["overallConfidence"] | null;
+    listingDataSource: ListingDataSource | null;
+    limitedComparables: boolean;
+  };
+  marketRisks: string[];
+  strategyRationale: string[];
+  lastEvaluatedAt: string | null;
 }
 
 export type ResultNoteEntityType =
@@ -2138,6 +2352,12 @@ export type WorkflowActivityType =
   | "shortlist_deleted"
   | "shortlist_item_added"
   | "shortlist_item_removed"
+  | "selected_choice_marked"
+  | "selected_choice_replaced"
+  | "selected_choice_dropped"
+  | "selected_choice_backup_reordered"
+  | "selected_choice_rationale_updated"
+  | "selected_choice_reviewed"
   | "offer_readiness_created"
   | "offer_readiness_updated"
   | "offer_status_changed"
@@ -2271,6 +2491,12 @@ export type ValidationEventName =
   | "plan_capability_resolved"
   | "share_feature_used"
   | "shortlist_feature_used"
+  | "selected_choice_marked"
+  | "selected_choice_replaced"
+  | "selected_choice_dropped"
+  | "selected_choice_backup_reordered"
+  | "selected_choice_rationale_updated"
+  | "selected_choice_reviewed"
   | PilotActivityType
   | WorkflowActivityType
   | CollaborationActivityType;
@@ -2416,6 +2642,8 @@ export interface PersistedSearchResult {
   listingProvider: string | null;
   sourceListingId: string | null;
   listingFetchedAt: string | null;
+  listingStatus?: ListingStatus | null;
+  daysOnMarket?: number | null;
   rawListingInputs: Record<string, unknown> | null;
   normalizedListingInputs: Record<string, unknown> | null;
   canonicalPropertyId: string | null;
@@ -2835,8 +3063,39 @@ export interface SearchRepository {
     itemId: string,
     patch: {
       reviewState?: ReviewState;
+      decisionConfidence?: DecisionConfidence | null;
+      decisionRationale?: string | null;
+      decisionRisks?: string[];
+      lastDecisionReviewedAt?: string | null;
     }
   ): Promise<ShortlistItem | null>;
+  selectShortlistItem(payload: {
+    shortlistId: string;
+    itemId: string;
+    replaceMode?: "backup" | "replaced" | "dropped";
+    decisionConfidence?: DecisionConfidence | null;
+    decisionRationale?: string | null;
+    decisionRisks?: string[];
+    lastDecisionReviewedAt?: string | null;
+  }): Promise<{
+    selectedItem: ShortlistItem;
+    previousPrimaryItem: ShortlistItem | null;
+  } | null>;
+  reorderShortlistItems(payload: {
+    shortlistId: string;
+    orderedBackupItemIds: string[];
+  }): Promise<ShortlistItem[] | null>;
+  dropShortlistItem(payload: {
+    shortlistId: string;
+    itemId: string;
+    droppedReason: DroppedReason;
+    decisionRationale?: string | null;
+  }): Promise<{
+    item: ShortlistItem;
+    promotedBackupItem: ShortlistItem | null;
+  } | null>;
+  getSelectedChoice(shortlistId: string): Promise<SelectedChoiceView | null>;
+  getSelectedChoiceSummary(shortlistId: string): Promise<SelectedChoiceConciergeSummary | null>;
   deleteShortlistItem(shortlistId: string, itemId: string): Promise<boolean>;
   createResultNote(payload: {
     sessionId?: string | null;

@@ -58,6 +58,16 @@ describe("ShortlistPanel", () => {
             sourceHistoryId: null,
             sourceSearchDefinitionId: null,
             reviewState: "undecided",
+            choiceStatus: "selected",
+            selectionRank: 1,
+            decisionConfidence: "high",
+            decisionRationale: "Best overall fit for the household.",
+            decisionRisks: [],
+            lastDecisionReviewedAt: "2026-03-24T12:00:00.000Z",
+            selectedAt: "2026-03-24T12:00:00.000Z",
+            statusChangedAt: "2026-03-24T12:00:00.000Z",
+            replacedByShortlistItemId: null,
+            droppedReason: null,
             addedAt: "2026-03-24T12:00:00.000Z",
             updatedAt: "2026-03-24T12:00:00.000Z",
             capturedHome: {
@@ -110,6 +120,82 @@ describe("ShortlistPanel", () => {
                 size: 78,
                 safety: 84,
                 nhalo: 77,
+                safetyConfidence: "high",
+                overallConfidence: "high",
+                formulaVersion: "nhalo-v1"
+              }
+            }
+          },
+          {
+            id: "item-2",
+            shortlistId: "shortlist-1",
+            canonicalPropertyId: "canonical-2",
+            sourceSnapshotId: "snapshot-1",
+            sourceHistoryId: null,
+            sourceSearchDefinitionId: null,
+            reviewState: "interested",
+            choiceStatus: "backup",
+            selectionRank: 2,
+            decisionConfidence: "medium",
+            decisionRationale: "Keep this as the first fallback if pricing softens.",
+            decisionRisks: [],
+            lastDecisionReviewedAt: "2026-03-24T12:00:00.000Z",
+            selectedAt: null,
+            statusChangedAt: "2026-03-24T12:00:00.000Z",
+            replacedByShortlistItemId: null,
+            droppedReason: null,
+            addedAt: "2026-03-24T12:00:00.000Z",
+            updatedAt: "2026-03-24T12:00:00.000Z",
+            capturedHome: {
+              id: "home-2",
+              address: "456 Backup Ave",
+              city: "Southfield",
+              state: "MI",
+              zipCode: "48075",
+              propertyType: "single_family",
+              price: 372000,
+              sqft: 2050,
+              bedrooms: 4,
+              bathrooms: 2.5,
+              canonicalPropertyId: "canonical-2",
+              distanceMiles: 2.8,
+              insideRequestedRadius: true,
+              qualityFlags: [],
+              strengths: [],
+              risks: [],
+              confidenceReasons: [],
+              explainability: {
+                headline: "Slightly cheaper fallback option",
+                strengths: [],
+                risks: [],
+                scoreDrivers: {
+                  primary: "price",
+                  secondary: "size",
+                  weakest: "safety"
+                }
+              },
+              provenance: {
+                listingDataSource: "live",
+                listingProvider: "ListingProvider",
+                listingFetchedAt: null,
+                sourceListingId: "src-2",
+                safetyDataSource: "cached_live",
+                crimeProvider: "CrimeProvider",
+                schoolProvider: "SchoolProvider",
+                crimeFetchedAt: null,
+                schoolFetchedAt: null,
+                geocodeDataSource: "live",
+                geocodeProvider: "GeocoderProvider",
+                geocodeFetchedAt: null,
+                geocodePrecision: "rooftop"
+              },
+              neighborhoodSafetyScore: 80,
+              explanation: "Slightly cheaper fallback option",
+              scores: {
+                price: 75,
+                size: 76,
+                safety: 80,
+                nhalo: 75,
                 safetyConfidence: "high",
                 overallConfidence: "high",
                 formulaVersion: "nhalo-v1"
@@ -557,12 +643,15 @@ describe("ShortlistPanel", () => {
         onDelete={vi.fn()}
         onDeleteNote={vi.fn()}
         onOpenHistoricalCompare={vi.fn()}
+        onMoveBackup={vi.fn()}
         onRemoveItem={vi.fn()}
         onReviewStateChange={vi.fn()}
         onSaveNote={vi.fn()}
         onSelect={vi.fn()}
+        onSelectChoice={vi.fn()}
         onSubmitOfferSubmission={vi.fn()}
         onTogglePinned={vi.fn()}
+        onUpdateDecision={vi.fn()}
         onUpdateNegotiation={vi.fn()}
         onUpdateOfferPreparation={vi.fn()}
         onUpdateOfferSubmission={vi.fn()}
@@ -586,7 +675,7 @@ describe("ShortlistPanel", () => {
             description: "Pilot set",
             sourceSnapshotId: "snapshot-1",
             pinned: true,
-            itemCount: 1,
+            itemCount: 2,
             createdAt: "2026-03-24T12:00:00.000Z",
             updatedAt: "2026-03-24T12:00:00.000Z"
           }
@@ -608,8 +697,12 @@ describe("ShortlistPanel", () => {
 
     expect(markup).toContain("Family shortlist");
     expect(markup).toContain("123 Main St");
+    expect(markup).toContain("Backups");
+    expect(markup).toContain("456 Backup Ave");
     expect(markup).toContain("Workflow history");
     expect(markup).toContain("Compare to current");
+    expect(markup).toContain("Edit rationale");
+    expect(markup).toContain("Move down backup");
     expect(markup).toContain("Offer readiness");
     expect(markup).toContain("Recommended offer");
     expect(markup).toContain("Offer preparation");
